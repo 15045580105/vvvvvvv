@@ -1,47 +1,29 @@
-#设备模型类
-from enum import Enum
+# 设备模型类
+
+from PyQt5 import QtCore
+
 from app.core.base_model import BaseModel
 
 
-class DeviceStatus(Enum):
-    DISCONNECTED = "离线"
-    CONNECTING = "连接中"
-    CONNECTED = "在线"
-    ERROR = "错误"
-
-
 class DeviceModel(BaseModel):
-    """设备数据模型"""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.devices = []  # list of dicts
+        self.load_mock()
 
-    def __init__(self):
-        super().__init__()
-        self.device_info = {
-            'ip': '',
-            'port': 22,
-            'username': '',
-            'password': '',
-            'name': '',
-            'type': '',
-            'status': DeviceStatus.DISCONNECTED,
-            'last_connected': None
-        }
+    def load_mock(self):
+        self.devices = [
+            {"name": "CCUA-主控制器", "ip": "192.168.1.100", "doip": "✅ 在线", "ssh": "✅ 已连接",
+             "time": "2024-11-19 14:30:22"},
+            {"name": "CCU0-实时核1", "ip": "192.168.1.101", "doip": "✅ 在线", "ssh": "✅ 已连接",
+             "time": "2024-11-19 14:31:05"},
+            {"name": "CCU1-实时核2", "ip": "192.168.1.102", "doip": "❌ 离线", "ssh": "⏏️ 断开", "time": "--"},
+        ]
+        self.dataChanged.emit()
 
-    @property
-    def ip(self):
-        return self.device_info['ip']
-
-    @ip.setter
-    def ip(self, value):
-        self.update_data('ip', value)
-        self.device_info['ip'] = value
-
-    @property
-    def status(self):
-        return self.device_info['status']
-
-    @status.setter
-    def status(self, value):
-        self.update_data('status', value)
-        self.device_info['status'] = value
-        if value == DeviceStatus.CONNECTED:
-            self.device_info['last_connected'] = datetime.now()
+    def refresh(self):
+        # update timestamp of first device as sample
+        now = QtCore.QDateTime.currentDateTime().toString("yyyy-MM-dd hh:mm:ss")
+        if self.devices:
+            self.devices[0]["time"] = now
+        self.dataChanged.emit()

@@ -1,41 +1,21 @@
-# app/core/base_controller.py
-from abc import ABC, abstractmethod
-from PyQt5.QtWidgets import QWidget
-from PyQt5.QtCore import QObject, pyqtSignal
+from PyQt5 import QtCore
+
+from app.core.base_model import BaseModel
+from app.presentation.views.base_view import BaseView
 
 
-class BaseController(QObject, ABC):
-    """
-    控制器基类 - 所有模块控制器必须实现的接口
-    确保所有控制器都提供统一的接口方法
-    """
+class BaseController(QtCore.QObject):
+    """Base controller connecting model and view."""
 
-    # 通用信号
-    view_ready = pyqtSignal(QWidget)  # 视图就绪
-    data_updated = pyqtSignal(dict)  # 数据更新
-    operation_completed = pyqtSignal(str, bool)  # 操作完成 (操作名, 成功与否)
+    def __init__(self, model: BaseModel, view: BaseView, parent=None):
+        super().__init__(parent)
+        self.model = model
+        self.view = view
+        self.connect_signals()
 
-    def __init__(self, module_name: str):
-        super().__init__()
-        self.module_name = module_name
-        self._view = None
+    def connect_signals(self):
+        if hasattr(self.model, 'dataChanged'):
+            self.model.dataChanged.connect(self.on_model_changed)
 
-    @abstractmethod
-    def get_view(self) -> QWidget:
-        """获取控制器管理的视图 - 必须实现"""
-        pass
-
-    @abstractmethod
-    def initialize(self) -> bool:
-        """初始化控制器 - 必须实现"""
-        pass
-
-    @abstractmethod
-    def cleanup(self):
-        """清理控制器资源 - 必须实现"""
-        pass
-
-    @abstractmethod
-    def refresh_data(self):
-        """刷新数据 - 必须实现"""
+    def on_model_changed(self):
         pass
