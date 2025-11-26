@@ -1,7 +1,7 @@
 from PyQt5 import QtWidgets
 from PyQt5.QtCore import Qt as _Qt
 
-from app.common.ui.widgets import ModernButton
+from app.common.ui.widgets import ModernButton, TableButton
 from app.presentation.views.base_view import BaseView
 
 # Compatibility constants to avoid linter false-positives and keep PyQt5 behavior
@@ -48,7 +48,7 @@ class LogDownloadView(BaseView):
         self.table.setMinimumHeight(420)  # 增加表格整体高度，避免文字被裁剪
         self.table.setWordWrap(False)
         vheader = self.table.verticalHeader()
-        vheader.setDefaultSectionSize(42)    # 默认行高稍微更高，留出按钮与文字空间
+        vheader.setDefaultSectionSize(50)    # 默认行高稍微更高，留出按钮与文字空间
         vheader.setMinimumSectionSize(38)
         hheader = self.table.horizontalHeader()
         hheader.setStretchLastSection(False)
@@ -101,8 +101,8 @@ class LogDownloadView(BaseView):
             btn_layout = QtWidgets.QHBoxLayout(btn_widget)
             btn_layout.setContentsMargins(ACTION_COL_HMARGIN,4,ACTION_COL_HMARGIN,4)
             btn_layout.setSpacing(ACTION_BTN_SPACING)
-            download_btn = ModernButton("下载", "#10B981", "⬇️")
-            view_btn = ModernButton("查看", "#0EA5E9", "👁️")
+            download_btn = TableButton("下载", "#10B981", "⬇️")
+            view_btn = TableButton("查看", "#0EA5E9", "👁️")
             for b in (download_btn, view_btn):
                 b.setFixedSize(ACTION_BTN_W, ACTION_BTN_H)
                 b.setSizePolicy(QtWidgets.QSizePolicy.Fixed, QtWidgets.QSizePolicy.Fixed)
@@ -111,3 +111,14 @@ class LogDownloadView(BaseView):
             btn_layout.addWidget(view_btn)
             btn_layout.addStretch(1)
             self.table.setCellWidget(i,6,btn_widget)
+if __name__ == '__main__':
+    import sys
+    app = QtWidgets.QApplication(sys.argv)
+    w = LogDownloadView()
+    w.populate([
+        ("diagnostics_20240601.log", "2.3 MB", "2024-06-01 14:23:45"),
+        ("error_20240601.log", "1.1 MB", "2024-06-01 13:15:22"),
+        ("system_20240601.log", "5.6 MB", "2024-06-01 12:05:10"),
+    ])
+    w.show()
+    sys.exit(app.exec_())

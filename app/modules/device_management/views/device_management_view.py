@@ -1,10 +1,12 @@
-from PyQt5 import QtWidgets, QtCore
-from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QTableView,
-                             QPushButton, QLabel, QToolBar, QHeaderView)
-from PyQt5.QtCore import Qt, pyqtSignal
+from PyQt5 import QtWidgets
+from PyQt5.QtWidgets import QHeaderView
+from PyQt5.QtCore import Qt as _Qt
 
-from app.common.ui.widgets import ModernButton
+from app.common.ui.widgets import ModernButton, TableButton
 from app.presentation.views.base_view import BaseView
+
+# Compatibility constants
+ALIGN_CENTER = int(getattr(_Qt, "AlignCenter", 132))
 
 
 class DeviceView(BaseView):
@@ -28,10 +30,26 @@ class DeviceView(BaseView):
         self.table = QtWidgets.QTableWidget(0, 6)
         self.table.setHorizontalHeaderLabels(["设备名称", "IP地址", "DoIP状态", "SSH状态", "连接时间", "操作"])
         self.table.verticalHeader().setVisible(False)
-        self.table.horizontalHeader().setStretchLastSection(True)
+        # 表格布局优化：提高行高、关闭自动换行、设置列宽策略
+        self.table.setWordWrap(False)
+        vheader = self.table.verticalHeader()
+        vheader.setDefaultSectionSize(48)
+        vheader.setMinimumSectionSize(44)
+        hheader = self.table.horizontalHeader()
+        hheader.setStretchLastSection(False)
+        # 使用 QHeaderView 的枚举，避免类型检查问题
+        hheader.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        hheader.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        hheader.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        hheader.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
+        hheader.setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
+        hheader.setSectionResizeMode(5, QHeaderView.ResizeMode.Fixed)
+        # 操作列固定宽度，适配两个 TableButton
+        action_col_width = 160
+        self.table.setColumnWidth(5, action_col_width)
+        # 交替行色、按行选择
         self.table.setAlternatingRowColors(True)
         self.table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
-        self.table.verticalHeader().setDefaultSectionSize(44)
         self.layout.addWidget(self.table)
 
     def populate(self, devices):
@@ -39,15 +57,26 @@ class DeviceView(BaseView):
         for row, dev in enumerate(devices):
             for col, key in enumerate(["name", "ip", "doip", "ssh", "time"]):
                 item = QtWidgets.QTableWidgetItem(dev[key])
-                item.setTextAlignment(QtCore.Qt.AlignCenter)
+                item.setTextAlignment(ALIGN_CENTER)
                 self.table.setItem(row, col, item)
-            # action cell placeholder
+            # 操作列：居中显示 TableButton
             action_widget = QtWidgets.QWidget()
             h = QtWidgets.QHBoxLayout(action_widget)
-            h.setContentsMargins(2,2,2,2)
-            h.setSpacing(4)
-            view_btn = ModernButton("详情", "#6B7280")
+            h.setContentsMargins(8,4,8,4)
+            h.setSpacing(8)
+            view_btn = TableButton("详情", "#6B7280")
+            h.addStretch(1)
             h.addWidget(view_btn)
-            h.addStretch()
+            h.addStretch(1)
             self.table.setCellWidget(row, 5, action_widget)
 
+if __name__ == '__main__':
+    import sys
+    app = QtWidgets.QApplication(sys.argv)
+    w = DeviceView()
+    w.populate([
+        {"name": "设备1", "ip": "192.168.1.1", "doip": "已连接", "ssh": "已连接", "time": "2023-05-01 12:34:56"},
+        {"name": "设备2", "ip": "192.168.1.2", "doip": "已连接", "ssh": "已连接", "time": "2023-05-01 12:34:56"},
+    ])
+    w.show()
+    sys.exit(app.exec_())
