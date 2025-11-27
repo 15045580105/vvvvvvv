@@ -1,3 +1,4 @@
+# python
 from PyQt5 import QtWidgets, QtCore, QtGui
 
 from app.common.ui.widgets import ModernButton, TableButton
@@ -75,18 +76,24 @@ class UpgradeView(BaseView):
         self.device_table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
         self.device_table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
         self.device_table.setWordWrap(False)
+
+        # 行高与最小宽度优化
         vheader = self.device_table.verticalHeader()
-        vheader.setDefaultSectionSize(44)
-        vheader.setMinimumSectionSize(40)
+        vheader.setDefaultSectionSize(48)
+        vheader.setMinimumSectionSize(44)
+        self.device_table.setMinimumWidth(720)
+
+        # 列宽策略优化
         hheader = self.device_table.horizontalHeader()
         hheader.setStretchLastSection(False)
-        hheader.setSectionResizeMode(0, QtWidgets.QHeaderView.ResizeToContents)
-        hheader.setSectionResizeMode(1, QtWidgets.QHeaderView.ResizeToContents)
-        hheader.setSectionResizeMode(2, QtWidgets.QHeaderView.Fixed)
-        self.device_table.setColumnWidth(2, 200)  # Progress column
-        hheader.setSectionResizeMode(3, QtWidgets.QHeaderView.ResizeToContents)
-        hheader.setSectionResizeMode(4, QtWidgets.QHeaderView.Fixed)
-        self.device_table.setColumnWidth(4, 180)
+        hheader.setSectionResizeMode(0, QtWidgets.QHeaderView.Stretch)           # 设备
+        hheader.setSectionResizeMode(1, QtWidgets.QHeaderView.Stretch)           # 阶段
+        hheader.setSectionResizeMode(2, QtWidgets.QHeaderView.Fixed)             # 进度
+        self.device_table.setColumnWidth(2, 260)
+        hheader.setSectionResizeMode(3, QtWidgets.QHeaderView.ResizeToContents)  # 状态
+        hheader.setSectionResizeMode(4, QtWidgets.QHeaderView.Fixed)             # 操作
+        self.device_table.setColumnWidth(4, 220)
+
         device_layout.addWidget(self.device_table)
 
         # Helper buttons under table
@@ -129,9 +136,11 @@ class UpgradeView(BaseView):
         self.device_table.setRowCount(len(devices))
         for row, dev in enumerate(devices):
             self.device_table.setItem(row, 0, QtWidgets.QTableWidgetItem(dev))
+
             stage = QtWidgets.QTableWidgetItem("未开始")
             stage.setTextAlignment(ALIGN_CENTER)
             self.device_table.setItem(row, 1, stage)
+
             progress_widget = QtWidgets.QWidget()
             pw_layout = QtWidgets.QHBoxLayout(progress_widget)
             pw_layout.setContentsMargins(6, 4, 6, 4)
@@ -145,9 +154,11 @@ class UpgradeView(BaseView):
             pw_layout.addWidget(TableButton("取消", "#EF4444", "✕"))
             pw_layout.addStretch(1)
             self.device_table.setCellWidget(row, 2, progress_widget)
+
             status_item = QtWidgets.QTableWidgetItem("等待")
             status_item.setTextAlignment(ALIGN_CENTER)
             self.device_table.setItem(row, 3, status_item)
+
             action_widget = QtWidgets.QWidget()
             aw_layout = QtWidgets.QHBoxLayout(action_widget)
             aw_layout.setContentsMargins(6, 4, 6, 4)

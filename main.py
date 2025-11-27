@@ -65,7 +65,7 @@ if __name__ == "__main__":
     app = QtWidgets.QApplication(sys.argv)
     app.setApplicationName("车载诊断工具")
     app.setOrganizationName("Automotive Diagnostics")
-    app.setApplicationDisplayName("车载诊断工具平台 v1.0 (MVC)")
+    app.setApplicationDisplayName("车载诊断工具平台 v1.0")
     controller = MainController()
     controller.get_view().show()
     sys.exit(app.exec_())

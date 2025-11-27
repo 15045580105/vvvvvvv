@@ -5,7 +5,6 @@ from PyQt5.QtCore import Qt as _Qt
 from app.common.ui.widgets import ModernButton, TableButton
 from app.presentation.views.base_view import BaseView
 
-# Compatibility constants
 ALIGN_CENTER = int(getattr(_Qt, "AlignCenter", 132))
 
 
@@ -13,70 +12,133 @@ class DeviceView(BaseView):
     def setup_ui(self):
         self.layout = QtWidgets.QVBoxLayout(self)
         self.layout.setSpacing(16)
-        control_group = QtWidgets.QGroupBox("设备控制")
-        control_layout = QtWidgets.QHBoxLayout()
-        control_layout.setSpacing(12)
-        control_layout.addWidget(QtWidgets.QLabel("📡 快速操作:"))
-        self.scan_btn = ModernButton("扫描设备", "#0EA5E9", "🔍")
-        self.connect_btn = ModernButton("连接选中", "#059669", "🔗")
-        self.disconnect_btn = ModernButton("断开连接", "#F59E0B", "⏏️")
-        self.delete_btn = ModernButton("删除设备", "#EF4444", "🗑️")
-        for b in [self.scan_btn, self.connect_btn, self.disconnect_btn, self.delete_btn]:
-            control_layout.addWidget(b)
-        control_layout.addStretch()
-        control_group.setLayout(control_layout)
-        self.layout.addWidget(control_group)
 
-        self.table = QtWidgets.QTableWidget(0, 6)
-        self.table.setHorizontalHeaderLabels(["设备名称", "IP地址", "DoIP状态", "SSH状态", "连接时间", "操作"])
+        # 输入区域
+        input_group = QtWidgets.QGroupBox("添加设备")
+        form_layout = QtWidgets.QHBoxLayout()
+        form_layout.setSpacing(12)
+
+        self.ip_input = QtWidgets.QLineEdit()
+        self.ip_input.setPlaceholderText("IP地址")
+        self.port_input = QtWidgets.QLineEdit()
+        self.port_input.setPlaceholderText("SSH端口")
+        self.user_input = QtWidgets.QLineEdit()
+        self.user_input.setPlaceholderText("用户名")
+        self.name_input = QtWidgets.QLineEdit()
+        self.name_input.setPlaceholderText("设备名")
+
+        self.add_btn = ModernButton("添加设备", "#0EA5E9", "➕")
+
+        for w in [self.ip_input, self.port_input, self.user_input, self.name_input, self.add_btn]:
+            form_layout.addWidget(w)
+        form_layout.addStretch()
+        input_group.setLayout(form_layout)
+        self.layout.addWidget(input_group)
+
+        # 设备表格
+        self.table = QtWidgets.QTableWidget(0, 7)
+        self.table.setHorizontalHeaderLabels(["序号", "设备名", "IP地址", "SSH端口", "连接状态", "详情", "操作"])
         self.table.verticalHeader().setVisible(False)
-        # 表格布局优化：提高行高、关闭自动换行、设置列宽策略
         self.table.setWordWrap(False)
         vheader = self.table.verticalHeader()
-        vheader.setDefaultSectionSize(48)
+        vheader.setDefaultSectionSize(52)
         vheader.setMinimumSectionSize(44)
         hheader = self.table.horizontalHeader()
-        hheader.setStretchLastSection(False)
-        # 使用 QHeaderView 的枚举，避免类型检查问题
-        hheader.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
-        hheader.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
-        hheader.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
-        hheader.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
-        hheader.setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
-        hheader.setSectionResizeMode(5, QHeaderView.ResizeMode.Fixed)
-        # 操作列固定宽度，适配两个 TableButton
-        action_col_width = 160
-        self.table.setColumnWidth(5, action_col_width)
-        # 交替行色、按行选择
+
+        # 列宽策略：操作列 Stretch，设备名列 Interactive，详情列 Fixed
+        hheader.setStretchLastSection(True)
+        hheader.setSectionResizeMode(0, QHeaderView.ResizeToContents)  # 序号
+        hheader.setSectionResizeMode(1, QHeaderView.Interactive)       # 设备名
+        hheader.setSectionResizeMode(2, QHeaderView.ResizeToContents)  # IP地址
+        hheader.setSectionResizeMode(3, QHeaderView.ResizeToContents)  # 端口
+        hheader.setSectionResizeMode(4, QHeaderView.ResizeToContents)  # 状态
+        hheader.setSectionResizeMode(5, QHeaderView.Fixed)             # 详情
+        hheader.setSectionResizeMode(6, QHeaderView.Stretch)           # 操作
+
+        # 初始列宽
+        self.table.setColumnWidth(1, 220)   # 设备名
+        self.table.setColumnWidth(5, 90)    # 详情按钮列
+
         self.table.setAlternatingRowColors(True)
         self.table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
+        self.table.setHorizontalScrollMode(QtWidgets.QAbstractItemView.ScrollPerPixel)
         self.layout.addWidget(self.table)
 
+        # 操作日志区
+        log_group = QtWidgets.QGroupBox("操作日志")
+        log_layout = QtWidgets.QVBoxLayout()
+        self.log_view = QtWidgets.QTextEdit()
+        self.log_view.setReadOnly(True)
+        self.log_view.setPlaceholderText("这里显示用户的操作日志...")
+        log_layout.addWidget(self.log_view)
+        log_group.setLayout(log_layout)
+        self.layout.addWidget(log_group)
+
     def populate(self, devices):
+        """
+        devices: list of dict
+        期望字段：
+          name, ip, port, status
+        若不存在则尝试从旧字段映射（兼容旧模型）
+        """
         self.table.setRowCount(len(devices))
         for row, dev in enumerate(devices):
-            for col, key in enumerate(["name", "ip", "doip", "ssh", "time"]):
-                item = QtWidgets.QTableWidgetItem(dev[key])
-                item.setTextAlignment(ALIGN_CENTER)
-                self.table.setItem(row, col, item)
-            # 操作列：居中显示 TableButton
-            action_widget = QtWidgets.QWidget()
-            h = QtWidgets.QHBoxLayout(action_widget)
-            h.setContentsMargins(8,4,8,4)
-            h.setSpacing(8)
-            view_btn = TableButton("详情", "#6B7280")
-            h.addStretch(1)
-            h.addWidget(view_btn)
-            h.addStretch(1)
-            self.table.setCellWidget(row, 5, action_widget)
+            name = dev.get("name", "")
+            ip = dev.get("ip", "")
+            port = dev.get("port", dev.get("ssh_port", "22"))
+            status = dev.get("status") or dev.get("ssh") or dev.get("doip") or "未知"
 
-if __name__ == '__main__':
-    import sys
-    app = QtWidgets.QApplication(sys.argv)
-    w = DeviceView()
-    w.populate([
-        {"name": "设备1", "ip": "192.168.1.1", "doip": "已连接", "ssh": "已连接", "time": "2023-05-01 12:34:56"},
-        {"name": "设备2", "ip": "192.168.1.2", "doip": "已连接", "ssh": "已连接", "time": "2023-05-01 12:34:56"},
-    ])
-    w.show()
-    sys.exit(app.exec_())
+            # 序号
+            index_item = QtWidgets.QTableWidgetItem(str(row + 1))
+            index_item.setTextAlignment(ALIGN_CENTER)
+            self.table.setItem(row, 0, index_item)
+            # 设备名
+            name_item = QtWidgets.QTableWidgetItem(name)
+            name_item.setTextAlignment(ALIGN_CENTER)
+            self.table.setItem(row, 1, name_item)
+            # IP
+            ip_item = QtWidgets.QTableWidgetItem(ip)
+            ip_item.setTextAlignment(ALIGN_CENTER)
+            self.table.setItem(row, 2, ip_item)
+            # 端口
+            port_item = QtWidgets.QTableWidgetItem(str(port))
+            port_item.setTextAlignment(ALIGN_CENTER)
+            self.table.setItem(row, 3, port_item)
+            # 状态
+            status_item = QtWidgets.QTableWidgetItem(status)
+            status_item.setTextAlignment(ALIGN_CENTER)
+            self.table.setItem(row, 4, status_item)
+
+            # 详情列
+            detail_widget = QtWidgets.QWidget()
+            dh = QtWidgets.QHBoxLayout(detail_widget)
+            dh.setContentsMargins(4, 4, 4, 4)
+            dh.setSpacing(4)
+            detail_label = QtWidgets.QLabel("详情")
+            dh.addStretch(1)
+            dh.addWidget(detail_label)
+            dh.addStretch(1)
+            self.table.setCellWidget(row, 5, detail_widget)
+
+            # 操作列
+            action_widget = QtWidgets.QWidget()
+            ah = QtWidgets.QHBoxLayout(action_widget)
+            ah.setContentsMargins(4, 4, 4, 4)
+            ah.setSpacing(8)
+
+            connect_btn = TableButton("连接设备", "#059669")
+            disconnect_btn = TableButton("断开连接", "#F59E0B")
+            delete_btn = TableButton("删除设备", "#EF4444")
+            upgrade_btn = TableButton("软件升级", "#6366F1")
+            query_btn = TableButton("状态查询", "#0EA5E9")
+
+            # 给按钮设置最小宽度，避免列压缩过小时文本被挤压重叠
+            for b in [connect_btn, disconnect_btn, delete_btn, upgrade_btn, query_btn]:
+                b.setMinimumWidth(84)
+                ah.addWidget(b)
+            ah.addStretch(1)
+
+            self.table.setCellWidget(row, 6, action_widget)
+
+    def append_log(self, text: str):
+        self.log_view.append(text)

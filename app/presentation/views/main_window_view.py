@@ -6,7 +6,7 @@ class MainView(QtWidgets.QMainWindow):
         self.setup_ui()
 
     def setup_ui(self):
-        self.setWindowTitle("车载诊断工具平台 v1.0 (MVC重构)")
+        self.setWindowTitle("车载诊断工具平台 v1.0 ")
         self.setMinimumSize(1400, 900)
         self.toolbar = QtWidgets.QToolBar("快速操作")
         self.toolbar.setIconSize(QtCore.QSize(20,20))
