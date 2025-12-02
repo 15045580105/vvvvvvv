@@ -41,7 +41,8 @@ class MainView(QtWidgets.QMainWindow):
         self.status_bar.addPermanentWidget(QtWidgets.QLabel("SSH: ✅ 已连接"))
         self.status_bar.addPermanentWidget(QtWidgets.QLabel("SFTP: ⏸️ 离线"))
         self.status_bar.addPermanentWidget(QtWidgets.QLabel(" | "))
-        self.status_bar.addPermanentWidget(QtWidgets.QLabel("💻 CPU: 12% | 内存: 2.3GB | 📡 3设备在线"))
+        self.performance_label = QtWidgets.QLabel("💻 CPU: -- | 内存: -- | 📡 --设备在线")
+        self.status_bar.addPermanentWidget(self.performance_label)
         self.setStatusBar(self.status_bar)
 
     def build_navigation(self, structure):
@@ -71,3 +72,19 @@ class MainView(QtWidgets.QMainWindow):
 
     def hide_search_results(self):
         self.search_result_list.hide()
+
+    @QtCore.pyqtSlot(dict)
+    def update_performance_summary(self, payload: dict):
+        cpu = payload.get("cpu_percent")
+        mem = payload.get("memory_usage")
+        online = payload.get("device_online")
+        total = payload.get("device_total")
+        cpu_txt = f"{cpu:.0f}%" if isinstance(cpu, (int, float)) else "--"
+        mem_txt = mem if isinstance(mem, str) else "--"
+        if isinstance(online, int) and isinstance(total, int) and total:
+            device_txt = f"{online}/{total}设备在线"
+        elif isinstance(online, int):
+            device_txt = f"{online}设备在线"
+        else:
+            device_txt = "--设备在线"
+        self.performance_label.setText(f"💻 CPU: {cpu_txt} | 内存: {mem_txt} | 📡 {device_txt}")

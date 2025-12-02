@@ -3,11 +3,13 @@ from typing import Optional, Type
 from PyQt5 import QtCore, QtWidgets, QtGui
 from PyQt5.QtCore import Qt, QEvent
 
-from app.common.ui.constants import PAGE_TEXT_TO_KEY, NAV_STRUCTURE, TAB_PAGES, DIALOG_PAGES
+from app.common.ui.constants import PAGE_TEXT_TO_KEY, NAV_STRUCTURE, TAB_PAGES, DIALOG_PAGES, PAGE_DEVICE
 from app.common.ui.style import APP_STYLE
 from app.core.base_controller import BaseController
 from app.presentation.model.main_window_model import MainModel
 from app.presentation.views.main_window_view import MainView
+from app.services.system.performance_status_service import PerformanceStatusService
+from app.modules.device_management.models.device_model import DeviceModel
 
 logger = logging.getLogger(__name__)
 
@@ -15,6 +17,7 @@ logger = logging.getLogger(__name__)
 class MainController(BaseController):
 
     SEARCH_DEBOUNCE_MS = 300
+    PERFORMANCE_POLL_MS = 3000
 
     def __init__(self) -> None:
         self.model: MainModel = MainModel()
@@ -25,9 +28,14 @@ class MainController(BaseController):
         self._search_timer: Optional[QtCore.QTimer] = None
         self._pending_search_text: str = ""
         self._search_result_shown: bool = False
+        self._performance_timer: Optional[QtCore.QTimer] = None
+        self._performance_service = PerformanceStatusService()
+        self._active_workers = []
         self._init_ui()
         self._init_search()
         self._init_navigation()
+        self._init_device_metrics_source()
+        self._init_performance_monitor()
 
     # ----------------- UI初始化 -----------------
     def _init_ui(self) -> None:
@@ -45,12 +53,26 @@ class MainController(BaseController):
         self._search_timer.setSingleShot(True)
         self._search_timer.setInterval(self.SEARCH_DEBOUNCE_MS)
         self._search_timer.timeout.connect(self._do_search)
-        QtWidgets.QApplication.instance().focusChanged.connect(self.on_focus_changed)  # type: ignore[attr-defined]
+        QtWidgets.QApplication.instance().focusChanged.connect(self.on_focus_changed)
 
     # ----------------- 导航相关初始化 -----------------
     def _init_navigation(self) -> None:
         self._build_navigation()
         self.view.nav_tree.itemClicked.connect(self.on_nav_item_clicked)
+
+    def _init_device_metrics_source(self) -> None:
+        controller = self.model.get(PAGE_DEVICE)
+        device_model = getattr(controller, "model", None)
+        if isinstance(device_model, DeviceModel):
+            self._performance_service.set_device_model(device_model)
+            device_model.dataChanged.connect(self._refresh_performance)
+
+    def _init_performance_monitor(self) -> None:
+        self._performance_timer = QtCore.QTimer(self.view)
+        self._performance_timer.setInterval(self.PERFORMANCE_POLL_MS)
+        self._performance_timer.timeout.connect(self._refresh_performance)
+        self._performance_timer.start()
+        self._refresh_performance()
 
     # ----------------- 页面与Tab构建 -----------------
     def _build_pages(self) -> None:
@@ -189,6 +211,37 @@ class MainController(BaseController):
             self.view.hide_search_results()
             self._search_result_shown = False
 
+    # ----------------- 性能监控 -----------------
+    def _refresh_performance(self) -> None:
+        if self._performance_timer is None:
+            return
+        QtCore.QTimer.singleShot(0, self._async_collect_performance)
+
+    def _async_collect_performance(self) -> None:
+        worker = _PerformanceWorker(self._performance_service)
+        worker.signals.result.connect(self.view.update_performance_summary)
+        worker.signals.finished.connect(lambda w=worker: self._active_workers.remove(w) if w in self._active_workers else None)
+        self._active_workers.append(worker)
+        QtCore.QThreadPool.globalInstance().start(worker)
+
     # ----------------- 工具方法 -----------------
     def get_view(self) -> MainView:
         return self.view
+
+
+class _PerformanceWorkerSignals(QtCore.QObject):
+    result = QtCore.pyqtSignal(dict)
+    finished = QtCore.pyqtSignal()
+
+
+class _PerformanceWorker(QtCore.QRunnable):
+    def __init__(self, service: PerformanceStatusService) -> None:
+        super().__init__()
+        self._service = service
+        self.signals = _PerformanceWorkerSignals()
+
+    @QtCore.pyqtSlot()
+    def run(self) -> None:
+        payload = self._service.collect_summary()
+        self.signals.result.emit(payload)
+        self.signals.finished.emit()
