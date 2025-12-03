@@ -55,6 +55,7 @@
 # if __name__ == '__main__':
 #     main()
 import sys
+
 from PyQt5 import QtWidgets, QtCore
 
 from app.presentation.controller.main_window_controller import MainController

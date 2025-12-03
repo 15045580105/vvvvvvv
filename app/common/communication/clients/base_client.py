@@ -1,1 +1,2 @@
-# 客户端基类
+def connect(host, port):
+    pass
