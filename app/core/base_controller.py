@@ -19,3 +19,7 @@ class BaseController(QtCore.QObject):
 
     def on_model_changed(self):
         pass
+
+    def get_view(self):
+        """统一提供视图访问接口，供 MainController 构建 Tab 使用"""
+        return self.view

@@ -89,8 +89,8 @@ class PageConfig:
         (PAGE_LOG_CONFIG, PAGE_LOG_CONFIG_DISPLAY, LogConfigController, PAGE_TYPE_TAB),
         (PAGE_UPGRADE, PAGE_UPGRADE_DISPLAY, UpgradeController, PAGE_TYPE_TAB),
         (PAGE_SCRIPT, PAGE_SCRIPT_DISPLAY, ScriptExecController, PAGE_TYPE_TAB),
-        (PAGE_PERFORMANCE, PAGE_PERFORMANCE_DISPLAY, PerformanceController, PAGE_TYPE_DIALOG),
-        (PAGE_UDS, PAGE_UDS_DISPLAY, UDSSequenceController, PAGE_TYPE_DIALOG),
+        (PAGE_PERFORMANCE, PAGE_PERFORMANCE_DISPLAY, PerformanceController, PAGE_TYPE_TAB),
+        (PAGE_UDS, PAGE_UDS_DISPLAY, UDSSequenceController, PAGE_TYPE_TAB),
     ]
 
     # 导航树结构

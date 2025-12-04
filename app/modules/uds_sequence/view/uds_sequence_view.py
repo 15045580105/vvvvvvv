@@ -3,7 +3,7 @@ from PyQt5 import QtWidgets
 from app.common.ui.widgets import ModernButton
 
 
-class UDSSequenceView(QtWidgets.QDialog):
+class UDSSequenceView(QtWidgets.QWidget):
     def __init__(self, model, parent=None):
         super().__init__(parent)
         self.model = model
