@@ -2,29 +2,50 @@ import hashlib
 import uuid
 import platform
 import socket
+import subprocess
+from functools import lru_cache
+
+
+def _run_command(cmd: str) -> str:
+    try:
+        result = subprocess.check_output(cmd, shell=True, stderr=subprocess.DEVNULL, text=True)
+        lines = [line.strip() for line in result.splitlines() if line.strip() and "SerialNumber" not in line]
+        return "|".join(lines)
+    except Exception:
+        return ""
+
+
+@lru_cache(maxsize=1)
+def _extended_hardware_fingerprint() -> str:
+    pieces = [
+        socket.gethostname(),
+        socket.getfqdn(),
+        platform.system(),
+        platform.release(),
+        platform.version(),
+        platform.machine(),
+        platform.processor(),
+        str(uuid.getnode()),
+    ]
+    wmic_cmds = [
+        "wmic baseboard get SerialNumber",
+        "wmic bios get SerialNumber",
+        "wmic cpu get ProcessorId",
+        "wmic diskdrive get SerialNumber",
+    ]
+    for cmd in wmic_cmds:
+        output = _run_command(cmd)
+        if output:
+            pieces.append(output)
+    payload = "|".join(filter(None, pieces))
+    return payload or "fallback-machine-info"
 
 
 def get_machine_code():
-    """获取机器唯一标识码"""
+    """获取机器唯一标识码，更长且包含更多硬件信息"""
     try:
-        # 获取主机名
-        hostname = socket.gethostname()
-
-        # 获取MAC地址
-        mac = uuid.getnode()
-
-        # 获取系统信息
-        system_info = platform.system() + platform.release()
-
-        # 组合信息并生成hash
-        machine_info = f"{hostname}-{mac}-{system_info}"
-        machine_hash = hashlib.md5(machine_info.encode()).hexdigest()
-
-        # 取前16位作为机器码
-        machine_code = machine_hash[:16].upper()
-
-        return machine_code
-
-    except Exception as e:
-        # 如果获取失败，返回默认值
-        return "DEFAULT_MACHINE_CODE"
+        machine_info = _extended_hardware_fingerprint()
+        machine_hash = hashlib.sha256(machine_info.encode()).hexdigest().upper()
+        return machine_hash
+    except Exception:
+        return "DEFAULT_MACHINE_CODE" * 4

@@ -3,7 +3,7 @@ from typing import Optional, Type
 from PyQt5 import QtCore, QtWidgets, QtGui
 from PyQt5.QtCore import Qt, QEvent
 
-from app.common.ui.constants import PAGE_TEXT_TO_KEY, NAV_STRUCTURE, TAB_PAGES, DIALOG_PAGES, PAGE_DEVICE
+from app.common.ui.constants import PAGE_TEXT_TO_KEY, DIALOG_PAGES, PageConfig, TAB_PAGES, NAV_STRUCTURE
 from app.common.ui.style import APP_STYLE
 from app.core.base_controller import BaseController
 from app.presentation.model.main_window_model import MainModel
@@ -59,9 +59,39 @@ class MainController(BaseController):
     def _init_navigation(self) -> None:
         self._build_navigation()
         self.view.nav_tree.itemClicked.connect(self.on_nav_item_clicked)
+        # 统一接收页面切换信号（例如设备管理发出的switch_page）
+        device_ctrl = self.model.get(PageConfig.PAGE_DEVICE)
+        if device_ctrl is not None and hasattr(device_ctrl, 'switch_page'):
+            device_ctrl.switch_page.connect(self.handle_switch_page_request)
+
+    def handle_switch_page_request(self, payload: dict, target_tab: str) -> None:
+        """统一处理来自各模块的页面跳转请求。
+
+        :param payload: 业务数据（如当前选中设备信息）
+        :param target_tab: 目标Tab显示文本（包含emoji），例如 '🚗 设备升级' 或 '📊 拓扑监控'
+        """
+        # 1. 尝试根据显示文本找到已存在的tab
+        idx = self._find_tab_index_by_text(target_tab)
+        if idx is not None:
+            self.view.workspace.setCurrentIndex(idx)
+        else:
+            # 2. 若不存在，则根据显示文本反查注册key，再通过TAB_PAGES拿到controller，新建tab
+            page_key = self._page_text_to_key.get(target_tab)
+            controller = self.model.get(page_key) if page_key else None
+            if controller and hasattr(controller, 'get_view'):
+                self._open_tab_for_controller(controller, target_tab)
+            # 再次获取 index
+            idx = self._find_tab_index_by_text(target_tab)
+            if idx is None:
+                return
+        # 3. 将payload透传给对应controller（如果其实现了 handle_switch_payload 接口）
+        page_key = self._page_text_to_key.get(target_tab)
+        controller = self.model.get(page_key) if page_key else None
+        if controller and hasattr(controller, 'handle_switch_payload'):
+            controller.handle_switch_payload(payload)
 
     def _init_device_metrics_source(self) -> None:
-        controller = self.model.get(PAGE_DEVICE)
+        controller = self.model.get(PageConfig.PAGE_DEVICE)
         device_model = getattr(controller, "model", None)
         if isinstance(device_model, DeviceModel):
             self._performance_service.set_device_model(device_model)

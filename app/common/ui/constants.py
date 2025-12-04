@@ -1,4 +1,4 @@
-# 控制器类导入
+# 控制器类导入（放在基础常量之后，避免循环导入）
 from app.modules.device_management.controller.device_management_controller import DeviceController
 from app.modules.device_topology.controller.device_topology_controller import TopologyController
 from app.modules.device_upgrade.controller.device_upgrade_controller import UpgradeController
@@ -11,81 +11,141 @@ from app.modules.performance_management.controller.performance_management_contro
 from app.modules.script_exec.controller.script_exec_controller import ScriptExecController
 from app.modules.uds_sequence.controller.uds_sequence_controller import UDSSequenceController
 
-# 页面类型常量
-PAGE_TYPE_TAB = False
-PAGE_TYPE_DIALOG = True
+class PageConfig:
+    """页面配置管理类，封装所有页面相关的常量和配置。"""
 
-# 页面emoji常量
-EMOJI_DEVICE = "📁"
-EMOJI_TOPOLOGY = "📊"
-EMOJI_DTC = "⚠️"
-EMOJI_DID = "🔍"
-EMOJI_LOG_DOWNLOAD = "📥"
-EMOJI_FILE_TRANSFER = "🔄"
-EMOJI_LOG_CONFIG = "📝"
-EMOJI_UPGRADE = "🚗"
-EMOJI_SCRIPT = "🧭"
-EMOJI_PERFORMANCE = "⚙️"
-EMOJI_UDS = "🧪"
+    # 页面类型常量
+    PAGE_TYPE_TAB = False
+    PAGE_TYPE_DIALOG = True
 
-# 页面注册名常量
-PAGE_DEVICE = "设备管理"
-PAGE_TOPOLOGY = "拓扑监控"
-PAGE_DTC = "DTC故障诊断"
-PAGE_DID = "DID数据管理"
-PAGE_LOG_DOWNLOAD = "日志下载"
-PAGE_FILE_TRANSFER = "文件传输中心"
-PAGE_LOG_CONFIG = "日志配置"
-PAGE_UPGRADE = "设备升级"
-PAGE_SCRIPT = "脚本执行"
-PAGE_PERFORMANCE = "性能监控"
-PAGE_UDS = "UDS指令编排"
+    # 页面emoji常量
+    EMOJI_DEVICE = "📁"
+    EMOJI_TOPOLOGY = "📊"
+    EMOJI_DTC = "⚠️"
+    EMOJI_DID = "🔍"
+    EMOJI_LOG_DOWNLOAD = "📥"
+    EMOJI_FILE_TRANSFER = "🔄"
+    EMOJI_LOG_CONFIG = "📝"
+    EMOJI_UPGRADE = "🚗"
+    EMOJI_SCRIPT = "🧭"
+    EMOJI_PERFORMANCE = "⚙️"
+    EMOJI_UDS = "🧪"
+
+    # 页面注册名常量
+    PAGE_DEVICE = "设备管理"
+    PAGE_TOPOLOGY = "拓扑监控"
+    PAGE_DTC = "DTC故障诊断"
+    PAGE_DID = "DID数据管理"
+    PAGE_LOG_DOWNLOAD = "日志下载"
+    PAGE_FILE_TRANSFER = "文件传输中心"
+    PAGE_LOG_CONFIG = "日志配置"
+    PAGE_UPGRADE = "设备升级"
+    PAGE_SCRIPT = "脚本执行"
+    PAGE_PERFORMANCE = "性能监控"
+    PAGE_UDS = "UDS指令编排"
+
+    # 导航分组常量
+    NAV_GROUP_DEVICE = "🏎️ 设备管理"
+    NAV_GROUP_DIAG = "🛠 诊断功能"
+    NAV_GROUP_FILE = "📂 文件管理"
+    NAV_GROUP_UPGRADE = "🚀 设备升级"
+    NAV_GROUP_CONFIG = "⚙️ 配置中心"
+    NAV_GROUP_ADV = "🧬 高级功能"
+
+    # 页面显示名常量（带emoji，用于Tab标签等）
+    PAGE_DEVICE_DISPLAY = f"{EMOJI_DEVICE} {PAGE_DEVICE}"
+    PAGE_TOPOLOGY_DISPLAY = f"{EMOJI_TOPOLOGY} {PAGE_TOPOLOGY}"
+    PAGE_DTC_DISPLAY = f"{EMOJI_DTC} {PAGE_DTC}"
+    PAGE_DID_DISPLAY = f"{EMOJI_DID} {PAGE_DID}"
+    PAGE_LOG_DOWNLOAD_DISPLAY = f"{EMOJI_LOG_DOWNLOAD} {PAGE_LOG_DOWNLOAD}"
+    PAGE_FILE_TRANSFER_DISPLAY = f"{EMOJI_FILE_TRANSFER} {PAGE_FILE_TRANSFER}"
+    PAGE_LOG_CONFIG_DISPLAY = f"{EMOJI_LOG_CONFIG} {PAGE_LOG_CONFIG}"
+    PAGE_UPGRADE_DISPLAY = f"{EMOJI_UPGRADE} {PAGE_UPGRADE}"
+    PAGE_SCRIPT_DISPLAY = f"{EMOJI_SCRIPT} {PAGE_SCRIPT}"
+    PAGE_PERFORMANCE_DISPLAY = f"{EMOJI_PERFORMANCE} {PAGE_PERFORMANCE}"
+    PAGE_UDS_DISPLAY = f"{EMOJI_UDS} {PAGE_UDS}"
+
+    # 二级菜单Tab名称常量（用于跳转等调用）
+    DEVICE_MANAGEMENT_TAB_NAME = PAGE_DEVICE_DISPLAY
+    TOPOLOGY_MONITOR_TAB_NAME = PAGE_TOPOLOGY_DISPLAY
+    PERFORMANCE_MONITOR_TAB_NAME = PAGE_PERFORMANCE_DISPLAY
+    DTC_DIAGNOSTIC_TAB_NAME = PAGE_DTC_DISPLAY
+    DID_MANAGEMENT_TAB_NAME = PAGE_DID_DISPLAY
+    UDS_SEQUENCE_TAB_NAME = PAGE_UDS_DISPLAY
+    FILE_TRANSFER_TAB_NAME = PAGE_FILE_TRANSFER_DISPLAY
+    LOG_DOWNLOAD_TAB_NAME = PAGE_LOG_DOWNLOAD_DISPLAY
+    DEVICE_UPGRADE_TAB_NAME = PAGE_UPGRADE_DISPLAY
+    LOG_CONFIG_TAB_NAME = PAGE_LOG_CONFIG_DISPLAY
+    SCRIPT_EXEC_TAB_NAME = PAGE_SCRIPT_DISPLAY
+
+    # 统一页面定义：(注册名, 显示名, 控制器类, 是否对话框)
+    PAGE_DEFINITIONS = [
+        (PAGE_DEVICE, PAGE_DEVICE_DISPLAY, DeviceController, PAGE_TYPE_TAB),
+        (PAGE_TOPOLOGY, PAGE_TOPOLOGY_DISPLAY, TopologyController, PAGE_TYPE_TAB),
+        (PAGE_DTC, PAGE_DTC_DISPLAY, DTCController, PAGE_TYPE_TAB),
+        (PAGE_DID, PAGE_DID_DISPLAY, DIDController, PAGE_TYPE_TAB),
+        (PAGE_LOG_DOWNLOAD, PAGE_LOG_DOWNLOAD_DISPLAY, LogDownloadController, PAGE_TYPE_TAB),
+        (PAGE_FILE_TRANSFER, PAGE_FILE_TRANSFER_DISPLAY, FileTransferController, PAGE_TYPE_TAB),
+        (PAGE_LOG_CONFIG, PAGE_LOG_CONFIG_DISPLAY, LogConfigController, PAGE_TYPE_TAB),
+        (PAGE_UPGRADE, PAGE_UPGRADE_DISPLAY, UpgradeController, PAGE_TYPE_TAB),
+        (PAGE_SCRIPT, PAGE_SCRIPT_DISPLAY, ScriptExecController, PAGE_TYPE_TAB),
+        (PAGE_PERFORMANCE, PAGE_PERFORMANCE_DISPLAY, PerformanceController, PAGE_TYPE_DIALOG),
+        (PAGE_UDS, PAGE_UDS_DISPLAY, UDSSequenceController, PAGE_TYPE_DIALOG),
+    ]
+
+    # 导航树结构
+    NAV_STRUCTURE = {
+        NAV_GROUP_DEVICE: {"children": [PAGE_DEVICE_DISPLAY,
+                                        PAGE_TOPOLOGY_DISPLAY,
+                                        PAGE_PERFORMANCE_DISPLAY]},
+        NAV_GROUP_DIAG: {"children": [PAGE_DTC_DISPLAY,
+                                      PAGE_DID_DISPLAY,
+                                      PAGE_UDS_DISPLAY]},
+        NAV_GROUP_FILE: {"children": [PAGE_FILE_TRANSFER_DISPLAY,
+                                      PAGE_LOG_DOWNLOAD_DISPLAY]},
+        NAV_GROUP_UPGRADE: {"children": [PAGE_UPGRADE_DISPLAY]},
+        NAV_GROUP_CONFIG: {"children": [PAGE_LOG_CONFIG_DISPLAY]},
+        NAV_GROUP_ADV: {"children": [PAGE_SCRIPT_DISPLAY]},
+    }
+
+    @classmethod
+    def get_tab_pages(cls):
+        """获取Tab页面列表：[(注册名, 显示名, 控制器类)]"""
+        return [(k, d, c) for k, d, c, is_dialog in cls.PAGE_DEFINITIONS if not is_dialog]
+
+    @classmethod
+    def get_dialog_pages(cls):
+        """获取对话框页面列表：[(注册名, 控制器类)]"""
+        return [(k, c) for k, d, c, is_dialog in cls.PAGE_DEFINITIONS if is_dialog]
+
+    @classmethod
+    def get_page_config(cls):
+        """获取页面配置列表：[(注册名, 显示名)]"""
+        return [(k, d) for k, d, c, is_dialog in cls.PAGE_DEFINITIONS]
+
+    @classmethod
+    def get_page_keys(cls):
+        """获取页面注册名列表"""
+        return [k for k, _ in cls.get_page_config()]
+
+    @classmethod
+    def get_page_display_texts(cls):
+        """获取页面显示名列表"""
+        return [d for _, d in cls.get_page_config()]
+
+    @classmethod
+    def get_page_text_to_key(cls):
+        """获取显示名到注册名的映射字典"""
+        return dict(cls.get_page_config())
 
 
-# 导航分组常量
-NAV_GROUP_DEVICE = "🏎️ 设备管理"
-NAV_GROUP_DIAG = "🛠 诊断功能"
-NAV_GROUP_FILE = "📂 文件管理"
-NAV_GROUP_UPGRADE = "🚀 设备升级"
-NAV_GROUP_CONFIG = "⚙️ 配置中心"
-NAV_GROUP_ADV = "🧬 高级功能"
+# 自动推导各类页面结构，避免重复（使用类方法）
+TAB_PAGES = PageConfig.get_tab_pages()
+DIALOG_PAGES = PageConfig.get_dialog_pages()
+PAGE_CONFIG = PageConfig.get_page_config()
+PAGE_KEYS = PageConfig.get_page_keys()
+PAGE_DISPLAY_TEXTS = PageConfig.get_page_display_texts()
+PAGE_TEXT_TO_KEY = PageConfig.get_page_text_to_key()
 
-# 统一页面定义：(注册名, 显示名, 控制器类, 是否对话框)
-PAGE_DEFINITIONS = [
-    (PAGE_DEVICE, f"{EMOJI_DEVICE} {PAGE_DEVICE}", DeviceController, PAGE_TYPE_TAB),
-    (PAGE_TOPOLOGY, f"{EMOJI_TOPOLOGY} {PAGE_TOPOLOGY}", TopologyController, PAGE_TYPE_TAB),
-    (PAGE_DTC, f"{EMOJI_DTC} {PAGE_DTC}", DTCController, PAGE_TYPE_TAB),
-    (PAGE_DID, f"{EMOJI_DID} {PAGE_DID}", DIDController, PAGE_TYPE_TAB),
-    (PAGE_LOG_DOWNLOAD, f"{EMOJI_LOG_DOWNLOAD} {PAGE_LOG_DOWNLOAD}", LogDownloadController, PAGE_TYPE_TAB),
-    (PAGE_FILE_TRANSFER, f"{EMOJI_FILE_TRANSFER} {PAGE_FILE_TRANSFER}", FileTransferController, PAGE_TYPE_TAB),
-    (PAGE_LOG_CONFIG, f"{EMOJI_LOG_CONFIG} {PAGE_LOG_CONFIG}", LogConfigController, PAGE_TYPE_TAB),
-    (PAGE_UPGRADE, f"{EMOJI_UPGRADE} {PAGE_UPGRADE}", UpgradeController, PAGE_TYPE_TAB),
-    (PAGE_SCRIPT, f"{EMOJI_SCRIPT} {PAGE_SCRIPT}", ScriptExecController, PAGE_TYPE_TAB),
-    (PAGE_PERFORMANCE, f"{EMOJI_PERFORMANCE} {PAGE_PERFORMANCE}", PerformanceController, PAGE_TYPE_DIALOG),
-    (PAGE_UDS, f"{EMOJI_UDS} {PAGE_UDS}", UDSSequenceController, PAGE_TYPE_DIALOG),
-]
-
-# 自动推导各类页面结构，避免重复
-TAB_PAGES = [(k, d, c) for k, d, c, is_dialog in PAGE_DEFINITIONS if not is_dialog]
-DIALOG_PAGES = [(k, c) for k, d, c, is_dialog in PAGE_DEFINITIONS if is_dialog]
-PAGE_CONFIG = [(k, d) for k, d, c, is_dialog in PAGE_DEFINITIONS]
-PAGE_KEYS = [k for k, _ in PAGE_CONFIG]
-PAGE_DISPLAY_TEXTS = [d for _, d in PAGE_CONFIG]
-PAGE_TEXT_TO_KEY = dict(PAGE_CONFIG)
-
-
-
-# 导航树结构
-NAV_STRUCTURE = {
-    NAV_GROUP_DEVICE: {"children": [f"{EMOJI_DEVICE} {PAGE_DEVICE}",
-                                    f"{EMOJI_TOPOLOGY} {PAGE_TOPOLOGY}",
-                                    f"{EMOJI_PERFORMANCE} {PAGE_PERFORMANCE}"]},
-    NAV_GROUP_DIAG: {"children": [f"{EMOJI_DTC} {PAGE_DTC}",
-                                  f"{EMOJI_DID} {PAGE_DID}",
-                                  f"{EMOJI_UDS} {PAGE_UDS}"]},
-    NAV_GROUP_FILE: {"children": [f"{EMOJI_FILE_TRANSFER} {PAGE_FILE_TRANSFER}",
-                                  f"{EMOJI_LOG_DOWNLOAD} {PAGE_LOG_DOWNLOAD}"]},
-    NAV_GROUP_UPGRADE: {"children": [f"{EMOJI_UPGRADE} {PAGE_UPGRADE}"]},
-    NAV_GROUP_CONFIG: {"children": [f"{EMOJI_LOG_CONFIG} {PAGE_LOG_CONFIG}"]},
-    NAV_GROUP_ADV: {"children": [f"{EMOJI_SCRIPT} {PAGE_SCRIPT}"]},
-}
+# 导航树结构（直接使用类属性）
+NAV_STRUCTURE = PageConfig.NAV_STRUCTURE

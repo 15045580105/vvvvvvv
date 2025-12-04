@@ -169,6 +169,13 @@ class UpgradeView(BaseView):
             action_widget.setLayout(aw_layout)
             self.device_table.setCellWidget(row, 4, action_widget)
 
+    def show_device_targets(self, devices):
+        """在升级界面显示目标设备信息（如设备名/IP等）"""
+        # 假设有一个设备信息展示区，简单实现如下：
+        # info = '\n'.join([f"设备名: {d.get('name', '')} | IP: {d.get('ip', '')}" for d in devices])
+        # self.device_info_label.setText(info)
+        pass
+
 
 if __name__ == "__main__":
     app = QtWidgets.QApplication([])

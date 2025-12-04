@@ -17,6 +17,13 @@ class TopologyView(BaseView):
 
         topo_group = QtWidgets.QGroupBox("车辆拓扑图")
         topo_layout = QtWidgets.QVBoxLayout()
+
+        btn_layout = QtWidgets.QHBoxLayout()
+        btn_layout.addStretch()
+        self.refresh_btn = ModernButton("刷新拓扑", "#0EA5E9", "🔄")
+        btn_layout.addWidget(self.refresh_btn)
+        topo_layout.addLayout(btn_layout)
+
         self.graphics = QtWidgets.QGraphicsView()
         self.scene = QtWidgets.QGraphicsScene(self.graphics)
         self.graphics.setScene(self.scene)
@@ -35,20 +42,26 @@ class TopologyView(BaseView):
 
         splitter.addWidget(topo_group)
         splitter.addWidget(network_panel)
-        splitter.setSizes([700, 400])
-        layout.addWidget(splitter)
+        splitter.setSizes([650, 350])
+        layout.addWidget(splitter, 3)
 
         # 信息块（替换原 Tab）
         self._init_info_blocks(layout)
 
-        btn_layout = QtWidgets.QHBoxLayout()
-        btn_layout.addStretch()
-        self.refresh_btn = ModernButton("刷新拓扑", "#0EA5E9", "🔄")
-        btn_layout.addWidget(self.refresh_btn)
-        layout.addLayout(btn_layout)
+        # 操作日志区与设备管理界面保持一致
+        log_group = QtWidgets.QGroupBox("操作日志")
+        log_layout = QtWidgets.QVBoxLayout()
+        self.log_view = QtWidgets.QTextEdit()
+        self.log_view.setReadOnly(True)
+        self.log_view.setMinimumHeight(130)
+        self.log_view.setPlaceholderText("这里显示拓扑相关的操作日志...")
+        log_layout.addWidget(self.log_view)
+        log_group.setLayout(log_layout)
+        layout.addWidget(log_group, 2)
 
     def _init_info_blocks(self, parent_layout: QtWidgets.QVBoxLayout):
         container = QtWidgets.QWidget()
+        container.setMaximumHeight(220)
         blocks_layout = QtWidgets.QHBoxLayout(container)
         blocks_layout.setSpacing(12)
         blocks_layout.setContentsMargins(0, 0, 0, 0)
@@ -57,67 +70,97 @@ class TopologyView(BaseView):
         self.vehicle_group = QtWidgets.QGroupBox("车辆信息")
         v_layout = QtWidgets.QFormLayout()
         self.vehicle_labels = {
-            "id": QtWidgets.QLabel("—"),
-            "model": QtWidgets.QLabel("—"),
-            "version": QtWidgets.QLabel("—")
+            "vin": QtWidgets.QLabel("—"),
+            "vehicle_mode": QtWidgets.QLabel("—"),
+            "user_mode": QtWidgets.QLabel("—"),
+            "factory_mode": QtWidgets.QLabel("—"),
+            "voltage": QtWidgets.QLabel("—")
         }
-        v_layout.addRow("车辆ID：", self.vehicle_labels["id"])
-        v_layout.addRow("车型：", self.vehicle_labels["model"])
-        v_layout.addRow("版本：", self.vehicle_labels["version"])
+        v_layout.addRow("VIN码：", self.vehicle_labels["vin"])
+        v_layout.addRow("车辆模式：", self.vehicle_labels["vehicle_mode"])
+        v_layout.addRow("用户模式：", self.vehicle_labels["user_mode"])
+        v_layout.addRow("工厂模式：", self.vehicle_labels["factory_mode"])
+        v_layout.addRow("电压值：", self.vehicle_labels["voltage"])
         self.vehicle_group.setLayout(v_layout)
+        self.vehicle_group.setMinimumHeight(120)
         blocks_layout.addWidget(self.vehicle_group)
 
-        # 状态信息
-        self.status_group = QtWidgets.QGroupBox("状态信息")
-        s_layout = QtWidgets.QVBoxLayout()
-        self.status_overall = QtWidgets.QLabel("总体状态：—")
-        self.status_uptime = QtWidgets.QLabel("在线时长：—")
-        self.status_alarm = QtWidgets.QLabel("告警数：—")
-        s_layout.addWidget(self.status_overall)
-        s_layout.addWidget(self.status_uptime)
-        s_layout.addWidget(self.status_alarm)
-        s_layout.addStretch()
+        # 服务状态信息
+        self.status_group = QtWidgets.QGroupBox("服务状态信息")
+        s_layout = QtWidgets.QFormLayout()
+        self.status_labels = {
+            "srv_id01": QtWidgets.QLabel("—"),
+            "srv_id02": QtWidgets.QLabel("—"),
+            "srv_id03": QtWidgets.QLabel("—")
+        }
+        s_layout.addRow("SrvID01：", self.status_labels["srv_id01"])
+        s_layout.addRow("SrvID02：", self.status_labels["srv_id02"])
+        s_layout.addRow("SrvID03：", self.status_labels["srv_id03"])
         self.status_group.setLayout(s_layout)
+        self.status_group.setMinimumHeight(80)
         blocks_layout.addWidget(self.status_group)
 
-        # 信息安全
-        self.security_group = QtWidgets.QGroupBox("信息安全")
-        sec_layout = QtWidgets.QVBoxLayout()
-        self.sec_level = QtWidgets.QLabel("安全等级：—")
-        self.sec_policy = QtWidgets.QLabel("最近策略更新时间：—")
-        self.sec_events = QtWidgets.QLabel("异常事件数：—")
-        sec_layout.addWidget(self.sec_level)
-        sec_layout.addWidget(self.sec_policy)
-        sec_layout.addWidget(self.sec_events)
-        sec_layout.addStretch()
+        # 证书信息
+        self.security_group = QtWidgets.QGroupBox("证书信息")
+        sec_layout = QtWidgets.QFormLayout()
+        self.sec_labels = {
+            "cert_server": QtWidgets.QLabel("—"),
+            "pki_status": QtWidgets.QLabel("—"),
+            "cert_valid_date": QtWidgets.QLabel("—"),
+            "key_slot_status": QtWidgets.QLabel("—"),
+            "secoc_key": QtWidgets.QLabel("—"),
+            "tls_switch": QtWidgets.QLabel("—"),
+            "secoc_switch": QtWidgets.QLabel("—"),
+            "cms_env": QtWidgets.QLabel("—")
+        }
+        sec_layout.addRow("证书服务器：", self.sec_labels["cert_server"])
+        sec_layout.addRow("PKI服务状态：", self.sec_labels["pki_status"])
+        sec_layout.addRow("证书有效日期：", self.sec_labels["cert_valid_date"])
+        sec_layout.addRow("密钥槽状态：", self.sec_labels["key_slot_status"])
+        sec_layout.addRow("SecOC密钥：", self.sec_labels["secoc_key"])
+        sec_layout.addRow("TLS开关状态：", self.sec_labels["tls_switch"])
+        sec_layout.addRow("SecOC开关状态：", self.sec_labels["secoc_switch"])
+        sec_layout.addRow("CMS环境：", self.sec_labels["cms_env"])
         self.security_group.setLayout(sec_layout)
+        self.security_group.setMinimumHeight(220)
         blocks_layout.addWidget(self.security_group)
 
         # 网络管理
         self.net_group = QtWidgets.QGroupBox("网络管理")
-        net_layout = QtWidgets.QVBoxLayout()
-        self.net_bw = QtWidgets.QLabel("带宽利用率：—")
-        self.net_latency = QtWidgets.QLabel("平均延迟：—")
-        self.net_loss = QtWidgets.QLabel("丢包率：—")
-        net_layout.addWidget(self.net_bw)
-        net_layout.addWidget(self.net_latency)
-        net_layout.addWidget(self.net_loss)
-        net_layout.addStretch()
+        net_layout = QtWidgets.QFormLayout()
+        self.net_labels = {
+            "power_wake_source": QtWidgets.QLabel("—"),
+            "pnc": QtWidgets.QLabel("—"),
+            "rt1_net_source": QtWidgets.QLabel("—"),
+            "rt2_net_source": QtWidgets.QLabel("—"),
+            "rt1_ext_msg": QtWidgets.QLabel("—"),
+            "rt2_ext_msg": QtWidgets.QLabel("—"),
+            "a_core_net_req": QtWidgets.QLabel("—"),
+            "obd_can_net": QtWidgets.QLabel("—")
+        }
+        net_layout.addRow("电源唤醒源：", self.net_labels["power_wake_source"])
+        net_layout.addRow("PNC：", self.net_labels["pnc"])
+        net_layout.addRow("RT1网络维持源：", self.net_labels["rt1_net_source"])
+        net_layout.addRow("RT2网络维持源：", self.net_labels["rt2_net_source"])
+        net_layout.addRow("RT1外网报文情况：", self.net_labels["rt1_ext_msg"])
+        net_layout.addRow("RT2外网报文情况：", self.net_labels["rt2_ext_msg"])
+        net_layout.addRow("A核应用网络请求：", self.net_labels["a_core_net_req"])
+        net_layout.addRow("OBD_CAN网络情况：", self.net_labels["obd_can_net"])
         self.net_group.setLayout(net_layout)
+        self.net_group.setMinimumHeight(220)
         blocks_layout.addWidget(self.net_group)
 
-        # 储存信息
-        self.storage_group = QtWidgets.QGroupBox("储存信息")
+        # 存储信息
+        self.storage_group = QtWidgets.QGroupBox("存储信息")
         st_layout = QtWidgets.QFormLayout()
-        self.storage_total = QtWidgets.QLabel("—")
-        self.storage_used = QtWidgets.QLabel("—")
-        self.storage_free = QtWidgets.QLabel("—")
-        self.storage_write = QtWidgets.QLabel("—")
-        st_layout.addRow("总容量：", self.storage_total)
-        st_layout.addRow("已用容量：", self.storage_used)
-        st_layout.addRow("剩余容量：", self.storage_free)
-        st_layout.addRow("写入速率：", self.storage_write)
+        self.storage_labels = {
+            "a_core_storage": QtWidgets.QLabel("—"),
+            "m_core_storage": QtWidgets.QLabel("—")
+        }
+        st_layout.addRow("A核存储情况：", self.storage_labels["a_core_storage"])
+        st_layout.addRow("M核存储情况：", self.storage_labels["m_core_storage"])
         self.storage_group.setLayout(st_layout)
+        self.storage_group.setMinimumHeight(50)
         blocks_layout.addWidget(self.storage_group)
 
         # 平均分布
@@ -149,9 +192,14 @@ class TopologyView(BaseView):
             self.network_grid.addWidget(card, i // 2, i % 2)
 
     def update_vehicle_info(self, info: dict):
-        self.vehicle_labels["id"].setText(info.get("id", "—"))
-        self.vehicle_labels["model"].setText(info.get("model", "—"))
-        self.vehicle_labels["version"].setText(info.get("version", "—"))
+        self.vehicle_labels["vin"].setText(info.get("vin", "—"))
+        self.vehicle_labels["vehicle_mode"].setText(info.get("vehicle_mode", "—"))
+        self.vehicle_labels["user_mode"].setText(info.get("user_mode", "—"))
+        self.vehicle_labels["factory_mode"].setText(info.get("factory_mode", "—"))
+        self.vehicle_labels["voltage"].setText(info.get("voltage", "—"))
+
+    def append_log(self, text: str):
+        self.log_view.append(text)
 
 
 if __name__ == '__main__':
