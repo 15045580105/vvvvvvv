@@ -2,8 +2,10 @@ import threading
 import time
 import sys
 import json
-from scapy.all import sniff, sendp, Ether
+from scapy.all import sniff, sendp
 from scapy.all import get_if_list, conf
+from scapy.layers.l2 import Ether
+
 from ETH_Protocol_Analysis import parse_ethernet_packet  # 导入分析模块
 from app.common.communication.DataCenter.DataCenter import DataCenter  # 新增: 数据中心用于分发解析后的报文
 
