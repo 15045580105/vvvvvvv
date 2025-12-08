@@ -2,6 +2,7 @@
 from PyQt5 import QtWidgets, QtGui, QtCore
 from app.common.ui.widgets import ModernButton
 from app.modules.device_topology.view.connection_item import ConnectionItem
+from app.modules.device_topology.view.network_status import NetworkStatusPanel
 from app.modules.device_topology.view.network_status_card import NetworkStatusCard
 from app.modules.device_topology.view.node_item import NodeItem
 from app.presentation.views.base_view import BaseView
@@ -41,7 +42,7 @@ class TopologyView(BaseView):
         network_panel.setLayout(network_layout)
 
         splitter.addWidget(topo_group)
-        splitter.addWidget(network_panel)
+        splitter.addWidget(NetworkStatusPanel())
         splitter.setSizes([650, 350])
         layout.addWidget(splitter, 3)
 
@@ -108,7 +109,6 @@ class TopologyView(BaseView):
             "pki_status": QtWidgets.QLabel("—"),
             "cert_valid_date": QtWidgets.QLabel("—"),
             "key_slot_status": QtWidgets.QLabel("—"),
-            "secoc_key": QtWidgets.QLabel("—"),
             "tls_switch": QtWidgets.QLabel("—"),
             "secoc_switch": QtWidgets.QLabel("—"),
             "cms_env": QtWidgets.QLabel("—")
@@ -117,7 +117,6 @@ class TopologyView(BaseView):
         sec_layout.addRow("PKI服务状态：", self.sec_labels["pki_status"])
         sec_layout.addRow("证书有效日期：", self.sec_labels["cert_valid_date"])
         sec_layout.addRow("密钥槽状态：", self.sec_labels["key_slot_status"])
-        sec_layout.addRow("SecOC密钥：", self.sec_labels["secoc_key"])
         sec_layout.addRow("TLS开关状态：", self.sec_labels["tls_switch"])
         sec_layout.addRow("SecOC开关状态：", self.sec_labels["secoc_switch"])
         sec_layout.addRow("CMS环境：", self.sec_labels["cms_env"])

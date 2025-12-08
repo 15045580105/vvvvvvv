@@ -15,7 +15,8 @@ class TopologyController(BaseController):
         self.model.load_mock()
 
     def on_model_changed(self):
-        self.view.populate(self.model.nodes, self.model.networks)
+        #self.view.populate(self.model.nodes, self.model.networks)
+        pass
 
     def get_view(self):
         return self.view

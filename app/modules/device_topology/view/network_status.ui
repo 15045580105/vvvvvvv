@@ -1,0 +1,173 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>Form</class>
+ <widget class="QWidget" name="Form">
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>1027</width>
+    <height>826</height>
+   </rect>
+  </property>
+  <property name="windowTitle">
+   <string>Form</string>
+  </property>
+  <widget class="QWidget" name="verticalLayoutWidget">
+   <property name="geometry">
+    <rect>
+     <x>9</x>
+     <y>39</y>
+     <width>941</width>
+     <height>471</height>
+    </rect>
+   </property>
+   <layout class="QVBoxLayout" name="verticalLayout" stretch="1,1,5">
+    <item>
+     <layout class="QHBoxLayout" name="horizontalLayout">
+      <item>
+       <widget class="QPushButton" name="pushButton_ccu_sniff">
+        <property name="text">
+         <string>CCU数据抓包</string>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <widget class="QPushButton" name="pushButton_idc_tbox_adc_fl_sniff">
+        <property name="text">
+         <string>IDC/TBOX/ADC/FL数据抓包</string>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <widget class="QPushButton" name="pushButton_ethernet_sniff">
+        <property name="text">
+         <string>整车以太网数据抓包</string>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <spacer name="horizontalSpacer_3">
+        <property name="orientation">
+         <enum>Qt::Horizontal</enum>
+        </property>
+        <property name="sizeHint" stdset="0">
+         <size>
+          <width>40</width>
+          <height>20</height>
+         </size>
+        </property>
+       </spacer>
+      </item>
+     </layout>
+    </item>
+    <item>
+     <layout class="QHBoxLayout" name="horizontalLayout_3">
+      <item>
+       <layout class="QGridLayout" name="gridLayout">
+        <item row="0" column="1">
+         <widget class="QPushButton" name="pushButton_pfe_fault">
+          <property name="text">
+           <string>PFE故障读取</string>
+          </property>
+         </widget>
+        </item>
+        <item row="0" column="4">
+         <widget class="QPushButton" name="pushButton_ping_idc">
+          <property name="text">
+           <string>ping IDC</string>
+          </property>
+         </widget>
+        </item>
+        <item row="0" column="0">
+         <widget class="QPushButton" name="pushButton_switch_fault">
+          <property name="text">
+           <string>Switch故障读取</string>
+          </property>
+         </widget>
+        </item>
+        <item row="0" column="3">
+         <widget class="QPushButton" name="pushButton_port_txrx_count">
+          <property name="text">
+           <string>端口TX与RX数据与帧计数</string>
+          </property>
+         </widget>
+        </item>
+        <item row="0" column="2">
+         <widget class="QPushButton" name="pushButton_link_status">
+          <property name="text">
+           <string>Link状态读取</string>
+          </property>
+         </widget>
+        </item>
+        <item row="1" column="0">
+         <widget class="QLineEdit" name="lineEdit_switch_fault_2"/>
+        </item>
+        <item row="0" column="6">
+         <widget class="QPushButton" name="pushButton_ping_tbox">
+          <property name="text">
+           <string>ping TBOX</string>
+          </property>
+         </widget>
+        </item>
+        <item row="0" column="5">
+         <widget class="QPushButton" name="pushButton_ping_adc">
+          <property name="text">
+           <string>ping ADC</string>
+          </property>
+         </widget>
+        </item>
+        <item row="0" column="7">
+         <widget class="QPushButton" name="pushButton_ping_fl">
+          <property name="text">
+           <string>ping FL</string>
+          </property>
+         </widget>
+        </item>
+        <item row="1" column="1">
+         <widget class="QLineEdit" name="lineEdit_pfe_fault"/>
+        </item>
+        <item row="1" column="2">
+         <widget class="QLineEdit" name="lineEdit_link_status"/>
+        </item>
+        <item row="1" column="3">
+         <widget class="QLineEdit" name="lineEdit_port_txrx_count"/>
+        </item>
+        <item row="1" column="4">
+         <widget class="QLineEdit" name="lineEdit_ping_idc"/>
+        </item>
+        <item row="1" column="5">
+         <widget class="QLineEdit" name="lineEdit_ping_adc"/>
+        </item>
+        <item row="1" column="6">
+         <widget class="QLineEdit" name="lineEdit_ping_tbox"/>
+        </item>
+        <item row="1" column="7">
+         <widget class="QLineEdit" name="lineEdit_ping_fl"/>
+        </item>
+       </layout>
+      </item>
+      <item>
+       <spacer name="horizontalSpacer">
+        <property name="orientation">
+         <enum>Qt::Horizontal</enum>
+        </property>
+        <property name="sizeHint" stdset="0">
+         <size>
+          <width>100</width>
+          <height>20</height>
+         </size>
+        </property>
+       </spacer>
+      </item>
+     </layout>
+    </item>
+    <item>
+     <widget class="QWidget" name="widget" native="true"/>
+    </item>
+   </layout>
+  </widget>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>
