@@ -17,6 +17,17 @@ class MainView(QtWidgets.QMainWindow):
         self.search_edit.setPlaceholderText("🔍 搜索功能...")
         self.search_edit.setMaximumWidth(280)
         self.toolbar.addWidget(self.search_edit)
+        # 添加弹性空间，使“软件设置”按钮居右
+        spacer = QtWidgets.QWidget()
+        spacer.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Preferred)
+        self.toolbar.addWidget(spacer)
+        self.settings_btn = QtWidgets.QToolButton()
+        self.settings_btn.setText("软件设置")
+        self.settings_btn.setToolTip("打开软件设置页面")
+        self.settings_btn.setAutoRaise(True)
+        self.settings_btn.setCursor(QtCore.Qt.PointingHandCursor)
+        self.toolbar.addWidget(self.settings_btn)
+        self.settings_btn.clicked.connect(self.show_settings_dialog)
         # 搜索结果下拉列表
         self.search_result_list = QtWidgets.QListWidget()
         self.search_result_list.setWindowFlags(QtCore.Qt.Popup)
@@ -32,9 +43,11 @@ class MainView(QtWidgets.QMainWindow):
         self.nav_tree.setHeaderHidden(True)
         self.nav_tree.setRootIsDecorated(True)
         self.nav_dock.setWidget(self.nav_tree)
-        self.addDockWidget(Qt.LeftDockWidgetArea, self.nav_dock)
+        self.addDockWidget(QtCore.Qt.LeftDockWidgetArea, self.nav_dock)
         self.workspace = QtWidgets.QTabWidget()
         self.workspace.setTabsClosable(True)
+        self.workspace.setUsesScrollButtons(True)
+        self.workspace.tabBar().setElideMode(QtCore.Qt.ElideNone)
         self.setCentralWidget(self.workspace)
         self.status_bar = QtWidgets.QStatusBar()
         self.status_bar.addPermanentWidget(QtWidgets.QLabel("DoIP: ✅ 在线"))
@@ -88,3 +101,6 @@ class MainView(QtWidgets.QMainWindow):
         else:
             device_txt = "--设备在线"
         self.performance_label.setText(f"💻 CPU: {cpu_txt} | 内存: {mem_txt} | 📡 {device_txt}")
+
+    def show_settings_dialog(self):
+        QtWidgets.QMessageBox.information(self, "软件设置", "设置页面暂未实现。")

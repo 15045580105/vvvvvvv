@@ -13,14 +13,12 @@ import ctypes
 from ctypes import wintypes
 import time
 
-# Initialize kernel32 once (Windows only) to avoid attribute resolution issues
 _kernel32 = None
 if sys.platform.startswith("win"):
     try:
         _kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
     except Exception:
         _kernel32 = None
-
 
 DeviceCountProvider = Callable[[], Tuple[Optional[int], Optional[int]]]
 
