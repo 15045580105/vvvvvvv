@@ -1,10 +1,9 @@
 # python
 from PyQt5 import QtWidgets, QtGui, QtCore
+
 from app.common.ui.widgets import ModernButton
-from app.modules.device_topology.view.connection_item import ConnectionItem
 from app.modules.device_topology.view.network_status import NetworkStatusPanel
-from app.modules.device_topology.view.network_status_card import NetworkStatusCard
-from app.modules.device_topology.view.node_item import NodeItem
+from app.modules.device_topology.view.topology_widget import SimpleTopologyWindow
 from app.presentation.views.base_view import BaseView
 
 
@@ -25,12 +24,7 @@ class TopologyView(BaseView):
         btn_layout.addWidget(self.refresh_btn)
         topo_layout.addLayout(btn_layout)
 
-        self.graphics = QtWidgets.QGraphicsView()
-        self.scene = QtWidgets.QGraphicsScene(self.graphics)
-        self.graphics.setScene(self.scene)
-        self.graphics.setRenderHint(QtGui.QPainter.Antialiasing)
-        self.graphics.setRenderHint(QtGui.QPainter.SmoothPixmapTransform)
-        self.graphics.setStyleSheet("background-color: #F9FAFB; border: 1px solid #E5E7EB; border-radius: 8px;")
+        self.graphics = SimpleTopologyWindow()
         topo_layout.addWidget(self.graphics)
         topo_group.setLayout(topo_layout)
 
@@ -42,7 +36,14 @@ class TopologyView(BaseView):
         network_panel.setLayout(network_layout)
 
         splitter.addWidget(topo_group)
-        splitter.addWidget(NetworkStatusPanel())
+        # 新增以太网网络诊断分组
+        eth_diag_group = QtWidgets.QGroupBox("以太网网络诊断")
+        eth_diag_layout = QtWidgets.QVBoxLayout()
+        eth_diag_layout.setContentsMargins(8, 8, 8, 8)
+        eth_diag_layout.setSpacing(8)
+        eth_diag_layout.addWidget(NetworkStatusPanel())
+        eth_diag_group.setLayout(eth_diag_layout)
+        splitter.addWidget(eth_diag_group)
         splitter.setSizes([650, 350])
         layout.addWidget(splitter, 3)
 
@@ -167,28 +168,6 @@ class TopologyView(BaseView):
             blocks_layout.setStretch(i, 1)
 
         parent_layout.addWidget(container)
-
-    def populate(self, nodes, networks):
-        self.scene.clear()
-        node_items = []
-        for name, icon, status, x, y in nodes:
-            n = NodeItem(name, icon, status, x, y)
-            self.scene.addItem(n)
-            node_items.append((n, status))
-        for node, status in node_items:
-            line = ConnectionItem(QtCore.QPointF(0, 0), node.pos(), status)
-            self.scene.addItem(line)
-        self.scene.setSceneRect(-400, -250, 800, 500)
-        self.graphics.fitInView(self.scene.sceneRect(), QtCore.Qt.KeepAspectRatio)
-
-        while self.network_grid.count():
-            item = self.network_grid.takeAt(0)
-            w = item.widget()
-            if w:
-                w.deleteLater()
-        for i, (name, status, traffic) in enumerate(networks):
-            card = NetworkStatusCard(name, status, traffic)
-            self.network_grid.addWidget(card, i // 2, i % 2)
 
     def update_vehicle_info(self, info: dict):
         self.vehicle_labels["vin"].setText(info.get("vin", "—"))
