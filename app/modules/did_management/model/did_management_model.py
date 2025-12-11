@@ -31,7 +31,17 @@ class DIDTableRow:
 
 class DIDModel(BaseModel):
     def __init__(self, parent=None):
-        """初始化 DID 模型，准备响应树、原始显示文本及当前 ECU 状态。"""
+        """初始化 DID 模型：准备响应树、原始文本、ECU 列表等状态。
+
+        属性：
+        - response_tree: DPT 解析后的位域行列表
+        - raw_data: 用于展示的 TX/RX 原始文本
+        - raw_log: 原始行日志缓存
+        - current_ecu: 当前选择的 ECU 标识（可选）
+        - ecu_items: ECU 下拉项缓存
+        - did_rows: 表格中显示的 DID 行列表
+        - data_format_options/session_options/security_options: 下拉选项
+        """
         super().__init__(parent)
         self.response_tree: List[DIDBitRow] = []
         self.raw_data: str = ""
@@ -58,7 +68,7 @@ class DIDModel(BaseModel):
         self.raw_data = ""
 
     def _append_raw_line(self, prefix: str, payload: Optional[str]) -> None:
-        """在原始数据日志中追加一行。"""
+        """向原始日志追加一行并更新 raw_data。"""
         text = payload.strip() if isinstance(payload, str) else payload
         self.raw_log.append(f"{prefix}: {text or '-'}")
         self.raw_data = "\n".join(self.raw_log)
@@ -71,7 +81,7 @@ class DIDModel(BaseModel):
         rows: Optional[List[DIDBitRow]] = None,
         dpt_path=_UNSET,
     ) -> None:
-        """批量应用控制器传入的 TX/RX/解析行/DPT 路径更新并触发界面刷新。"""
+        """批量应用由控制器传入的更新（TX/RX/解析行/DPT 路径），并通知视图刷新。"""
         if tx is not None:
             self._append_raw_line("TX", tx)
         if rx is not None:
@@ -83,19 +93,21 @@ class DIDModel(BaseModel):
         self.dataChanged.emit()
 
     def set_current_ecu(self, ecu: Optional[str]) -> None:
-        """记录当前选中的 ECU，供后续过滤/请求发送使用。"""
+        """设置当前 ECU（供过滤或请求使用）。"""
         self.current_ecu = ecu
 
     def set_ecu_items(self, items: List[str]) -> None:
-        """更新 ECU 列表缓存，并通知界面重绘。"""
+        """更新 ECU 下拉项并通知视图刷新。"""
         self.ecu_items = items
         self.dataChanged.emit()
 
     def set_did_rows(self, rows: List[DIDTableRow]) -> None:
+        """替换表格数据行并发出变更事件。"""
         self.did_rows = rows
         self.dataChanged.emit()
 
     def update_row(self, index: int, **updates) -> None:
+        """按索引更新单行属性并通知视图。"""
         if index < 0 or index >= len(self.did_rows):
             return
         row = self.did_rows[index]

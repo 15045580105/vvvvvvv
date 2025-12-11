@@ -26,6 +26,7 @@ if __name__ == "__main__":
             sys.exit(0)
 
     controller = MainController()
+
     main_view = controller.get_view()
     main_view.showMaximized()
 
