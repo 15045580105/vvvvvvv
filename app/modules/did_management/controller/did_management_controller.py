@@ -4,6 +4,7 @@ from PyQt5 import QtWidgets, QtCore, QtGui
 from PyQt5.QtCore import Qt
 
 from app.common.communication.DataCenter.DataCenter import DataCenter
+from app.common.communication.clients.Doip_Client import DoIPClientHandler
 from app.core.base_controller import BaseController
 from app.modules.did_management.model.did_management_model import (
     DIDModel,
@@ -34,10 +35,12 @@ class DIDController(BaseController):
         self._data_center = DataCenter.get_instance()
         self._is_registered = False
         self._value_detail_dialog: Optional["ValueDetailDialog"] = None
+        # DoIP 客户端，延迟创建
+        self._doip_handler: Optional[DoIPClientHandler] = None
 
         # 应用默认列比例（用于初始布局）：
         # [勾选, Description, DID, STR/HEX, DiagnosticSession, SecurityAccess, Value]
-        # 第一列窄，Description 宽，Value 最宽��填充剩余空间。
+        # 第一列窄，Description 宽，Value 最宽以填充剩余空间。
         try:
             self.view.set_column_weights([1, 8, 3, 2, 4, 4, 10])
         except Exception:
@@ -81,6 +84,11 @@ class DIDController(BaseController):
         self.view.destroyed.connect(self._on_view_destroyed)
         self.view.dpt_import_requested.connect(self._handle_dpt_import)
         self.view.ecu_map_import_requested.connect(self._handle_ecu_map_import)
+        # 处理来自 ECU 地址配置对话框的结果 (physical, functional)
+        try:
+            self.view.ecu_address_configured.connect(self._on_ecu_address_configured)
+        except Exception:
+            pass
         self.view.value_detail_requested.connect(self._on_value_detail_requested)
         self.view.read_requested.connect(self._on_read_clicked)
         self.view.write_requested.connect(self._on_write_clicked)
@@ -115,8 +123,107 @@ class DIDController(BaseController):
 
     # -------------------- 顶部按钮行为 --------------------
 
+    def _ensure_doip_connected(self) -> bool:
+        """确保 DoIP 已连接：若未连接则自动选择网卡并按当前 ECU 地址建立连接。"""
+        if self._doip_handler is None:
+            self._doip_handler = DoIPClientHandler()
+
+        # 已连接直接返回
+        try:
+            if self._doip_handler.is_connected():
+                return True
+        except Exception:
+            # 如果检查连接状态异常，则尝试重新创建
+            self._doip_handler = DoIPClientHandler()
+
+        # 从模型获取 ECU 地址（这里将 physical 地址作为 ECU IP 使用）
+        ecu_ip = (self.model.current_ecu or "").strip()
+        if not ecu_ip:
+            QtWidgets.QMessageBox.warning(
+                self.view,
+                "提示",
+                "请先通过“ecu地址配置”设置 ECU IP 地址",
+            )
+            return False
+
+        # 自动选择本地网卡（优先以太网4/10.1.0.99）
+        try:
+            if not self._doip_handler.select_network_interface():
+                QtWidgets.QMessageBox.critical(
+                    self.view,
+                    "DoIP 错误",
+                    "未找到可用的本地网络接口，请检查网卡配置",
+                )
+                return False
+        except Exception as exc:
+            QtWidgets.QMessageBox.critical(
+                self.view,
+                "DoIP 错误",
+                f"选择网络接口失败：{exc}",
+            )
+            return False
+
+        # 建立 DoIP 连接（使用默认逻辑地址 0x0E80）
+        try:
+            if not self._doip_handler.connect(ecu_ip):
+                QtWidgets.QMessageBox.critical(
+                    self.view,
+                    "DoIP 错误",
+                    "DoIP 连接 ECU 失败，请检查 ECU IP、网络连通性和防火墙设置",
+                )
+                return False
+        except Exception as exc:
+            QtWidgets.QMessageBox.critical(
+                self.view,
+                "DoIP 错误",
+                f"DoIP 连接过程中发生异常：{exc}",
+            )
+            return False
+
+        return True
+
+    def _send_doip_and_update_ui(self, row_index: int, tx_bytes: bytes) -> None:
+        """通过 DoIP 发送一帧诊断报文并更新原始区和指定行的 value/颜色。
+
+        - 先将 TX 记录到 raw_log
+        - 通过 DoIPClientHandler 发送
+        - 将 RX 或错误记录到 raw_log
+        - 对于响应，按 UDS 约定提取 62 DID_HI DID_LO 后面的数据填入该行 value
+        """
+        tx_text = " ".join(f"{b:02X}" for b in tx_bytes)
+        self.model.apply_update(tx=tx_text)
+
+        rx_bytes = None
+        try:
+            if self._doip_handler is None:
+                # 理论上在调用前应已 ensure，但这里再兜底一次
+                self._doip_handler = DoIPClientHandler()
+            rx_bytes = self._doip_handler.send_doip_message(tx_bytes)
+        except Exception as exc:
+            self.model.apply_update(rx=f"ERROR: {exc}")
+
+        if not rx_bytes:
+            # 无响应或发送失败
+            self.model.apply_update(rx=None)
+            self.model.update_row(row_index, value="", value_color="#EF4444")
+            return
+
+        # 记录 RX 原始数据
+        rx_text = " ".join(f"{b:02X}" for b in rx_bytes)
+        self.model.apply_update(rx=rx_text)
+
+        # 提取 UDS 正常响应的数据区：62 DID_HI DID_LO DATA...
+        value_str = ""
+        if len(rx_bytes) >= 3:
+            value_bytes = rx_bytes[3:]
+            if value_bytes:
+                value_str = " ".join(f"{b:02X}" for b in value_bytes)
+
+        # 更新表格当前行 value，成功则用默认颜色
+        self.model.update_row(row_index, value=value_str, value_color=None)
+
     def _on_read_clicked(self) -> None:
-        """点击“读取”：根据勾选行批量构造并发送读 DID 请求（占位骨架）。"""
+        """点击“读取”：若 DoIP 未连接则自动连接，然后按勾选顺序发送 0x22 读 DID 请求，并显示原始数据。"""
         selected_rows = [
             (idx, row)
             for idx, row in enumerate(self.model.did_rows)
@@ -126,21 +233,27 @@ class DIDController(BaseController):
             QtWidgets.QMessageBox.information(self.view, "提示", "请先勾选需要读取的 DID")
             return
 
-        # TODO: 将下面的 TX 构造和发送替换为真实的诊断服务调用
-        for _, row in selected_rows:
+        # 确保 DoIP 连接可用
+        if not self._ensure_doip_connected():
+            return
+
+        # 依次按照勾选顺序发送请求
+        for row_index, row in selected_rows:
             did = row.did.strip().replace(" ", "")
             try:
                 did_val = int(did, 16)
             except ValueError:
+                # DID 格式非法，跳过该行
                 continue
+
             hi = (did_val >> 8) & 0xFF
             lo = did_val & 0xFF
             tx_bytes = bytes([0x22, hi, lo])
-            tx_text = " ".join(f"{b:02X}" for b in tx_bytes)
-            self.model.apply_update(tx=tx_text)
+
+            self._send_doip_and_update_ui(row_index, tx_bytes)
 
     def _on_write_clicked(self) -> None:
-        """点击“写入”：根据勾选行的 Value 批量构造并发送写 DID 请求（占位骨架）。"""
+        """点击“写入”：通过 DoIP 将勾选行的 Value 写入 DID，并显示写入响应。"""
         selected_rows = [
             (idx, row)
             for idx, row in enumerate(self.model.did_rows)
@@ -150,22 +263,28 @@ class DIDController(BaseController):
             QtWidgets.QMessageBox.information(self.view, "提示", "请先勾选需要写入的 DID")
             return
 
-        # TODO: 将下面的 TX 构造和发送替换为真实的诊断服务调用
-        for _, row in selected_rows:
+        # 写入也需要确保 DoIP 连接可用
+        if not self._ensure_doip_connected():
+            return
+
+        for row_index, row in selected_rows:
             did = row.did.strip().replace(" ", "")
             value_str = row.value.strip().replace(" ", "")
             if not value_str:
+                # 没有要写入的值，跳过
                 continue
             try:
                 did_val = int(did, 16)
                 payload = bytes.fromhex(value_str)
             except ValueError:
+                # DID 或 Value 不是合法十六进制，跳过该行
                 continue
+
             hi = (did_val >> 8) & 0xFF
             lo = did_val & 0xFF
             tx_bytes = bytes([0x2E, hi, lo]) + payload
-            tx_text = " ".join(f"{b:02X}" for b in tx_bytes)
-            self.model.apply_update(tx=tx_text)
+
+            self._send_doip_and_update_ui(row_index, tx_bytes)
 
     # -------------------- DataCenter 回调 --------------------
 
@@ -176,10 +295,16 @@ class DIDController(BaseController):
             self._is_registered = True
 
     def _on_view_destroyed(self) -> None:
-        """视图销毁时取消注册以避免悬挂引用。"""
+        """视图销毁时取消注册以避免悬挂引用，并断开 DoIP 连接。"""
         if self._is_registered:
             self._data_center.unregister_listener(self)
             self._is_registered = False
+        # 关闭 DoIP
+        try:
+            if self._doip_handler is not None:
+                self._doip_handler.disconnect()
+        except Exception:
+            pass
 
     def on_eth_message(self, raw_bytes: bytes, parsed):
         """DataCenter 回调入口：收到以太网报文后进行 DID 相关处理。"""
@@ -226,6 +351,21 @@ class DIDController(BaseController):
     def _handle_ecu_map_import(self) -> None:
         """处理 ECU 目的地址表导入（占位实现，后续替换为真实逻辑）。"""
         QtWidgets.QMessageBox.information(self.view, "提示", "ECU 目的地址表导入逻辑��实现")
+
+    def _on_ecu_address_configured(self, physical: str, functional: str) -> None:
+        """当用户在对话框中确认 ECU 地址后调用：
+        - 把物理地址写入 model.current_ecu（可由后续逻辑使用）
+        - 弹出提示以便用户确认输入
+        """
+        try:
+            phy = (physical or "").strip()
+            func = (functional or "").strip()
+            if phy:
+                # 记录当前 ECU（控制器/其他逻辑可以使用 model.current_ecu）
+                self.model.set_current_ecu(phy)
+            QtWidgets.QMessageBox.information(self.view, "ECU 已配置", f"Physical: {phy or '-'}\nFunctional: {func or '-'}")
+        except Exception:
+            pass
 
     def on_model_changed(self):
         """模型更新时刷表格与原始数据显示。"""
@@ -446,9 +586,10 @@ class DIDController(BaseController):
             return
 
         dialog_parent = self.view
-        if self._value_detail_dialog is not None:
+        # 关闭旧对话框（运行时 _value_detail_dialog 为 QDialog 或 None，这里仅做 None 判断）
+        if self._value_detail_dialog:
             try:
-                self._value_detail_dialog.close()
+                self._value_detail_dialog.close()  # type: ignore[call-arg]
             except Exception:
                 pass
         self._value_detail_dialog = ValueDetailDialog(dialog_parent, result, self.model.did_rows[row])
@@ -494,9 +635,10 @@ class ValueDetailDialog(QtWidgets.QDialog):
     def __init__(self, parent, result, row_info):
         super().__init__(parent)
         self.setWindowTitle(f"{row_info.description or row_info.did} 的 DPT 解析")
-        self.setWindowFlag(Qt.Tool, True)
-        self.setWindowFlag(Qt.WindowStaysOnTopHint, True)
-        self.setAttribute(Qt.WA_DeleteOnClose, True)
+        # 这些 Qt 常量在运行时是有效的，若 IDE 静态检查报未解析，可忽略
+        self.setWindowFlag(Qt.Tool, True)  # type: ignore[arg-type]
+        self.setWindowFlag(Qt.WindowStaysOnTopHint, True)  # type: ignore[arg-type]
+        self.setAttribute(Qt.WA_DeleteOnClose, True)  # type: ignore[arg-type]
         self.setModal(False)
         self.resize(520, 360)
         layout = QtWidgets.QVBoxLayout(self)
@@ -524,4 +666,4 @@ class ValueDetailDialog(QtWidgets.QDialog):
 
         close_btn = QtWidgets.QPushButton("关闭", self)
         close_btn.clicked.connect(self.close)
-        layout.addWidget(close_btn, alignment=Qt.AlignRight)
+        layout.addWidget(close_btn, alignment=Qt.AlignRight)  # type: ignore[arg-type]
