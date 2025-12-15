@@ -37,20 +37,34 @@ class SomeIPClient:
     SD_MULTICAST_IP = "239.255.0.1"
     SD_MULTICAST_PORT = 30490
 
-    def __init__(self, local_ip: str, local_port: int = 30500, interface: str = None,
+    def __init__(self, local_ip: str, local_port: int = 0, interface: str = None,
                  multicast_ip: str = SD_MULTICAST_IP, multicast_port: int = SD_MULTICAST_PORT):
+        """
+        初始化 SOME/IP 客户端。
+
+        :param local_ip: 本地绑定的 IP 地址
+        :param local_port: 本地绑定的端口 (默认为 0，表示由操作系统自动分配随机端口)
+        :param interface: 网络接口名称 (可选)
+        :param multicast_ip: SD 组播 IP
+        :param multicast_port: SD 组播端口
+        """
         self.local_ip = local_ip
         self.local_port = local_port
         self.interface = interface
         self.multicast_ip = multicast_ip
         self.multicast_port = multicast_port
 
+        # 自动管理的 Socket
+        self.udp_socket = None # 用于 SD 和 UDP 通信
+        self.tcp_socket = None # 用于 TCP 通信 (按需建立)
+        self.use_tcp = False   # 标记是否使用 TCP
+
         self.client_id = 0x1234
         self.session_id = 1
 
-        self.socket = None
         self.running = False
         self.recv_thread = None
+        self.tcp_recv_thread = None
 
         # 回调函数字典
         # Key: (service_id, method_id) -> Value: callback_function(packet)
@@ -60,19 +74,29 @@ class SomeIPClient:
     def start(self):
         """初始化 Socket 并启动接收线程。"""
         try:
-            self.socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            self.socket.bind((self.local_ip, self.local_port))
+            # 默认始终创建 UDP Socket，因为服务发现 (SD) 依赖 UDP
+            self.udp_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            self.udp_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            self.udp_socket.bind((self.local_ip, self.local_port))
+
+            # 如果指定了本地 IP，设置组播出口接口，确保 SD 报文从正确网口发出
+            if self.local_ip and self.local_ip != "0.0.0.0":
+                try:
+                    self.udp_socket.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_IF, socket.inet_aton(self.local_ip))
+                    logger.info(f"已设置组播出口接口为: {self.local_ip}")
+                except Exception as e:
+                    logger.warning(f"设置组播出口接口失败 (可能不影响单播): {e}")
 
             # 如果端口为 0，获取实际分配的端口
             if self.local_port == 0:
-                self.local_port = self.socket.getsockname()[1]
+                self.local_port = self.udp_socket.getsockname()[1]
 
             self.running = True
-            self.recv_thread = threading.Thread(target=self._receive_loop, daemon=True)
+            # 启动 UDP 接收线程
+            self.recv_thread = threading.Thread(target=self._receive_loop_udp, daemon=True)
             self.recv_thread.start()
 
-            logger.info(f"SomeIPClient 已启动，监听地址: {self.local_ip}:{self.local_port}")
+            logger.info(f"SomeIPClient 已启动 (UDP)，监听地址: {self.local_ip}:{self.local_port}")
             return True
         except Exception as e:
             logger.error(f"启动客户端失败: {e}")
@@ -81,18 +105,32 @@ class SomeIPClient:
     def stop(self):
         """停止客户端。"""
         self.running = False
-        if self.socket:
-            self.socket.close()
+
+        # 关闭 UDP
+        if self.udp_socket:
+            self.udp_socket.close()
+
+        # 关闭 TCP
+        if self.tcp_socket:
+            try:
+                self.tcp_socket.shutdown(socket.SHUT_RDWR)
+                self.tcp_socket.close()
+            except Exception:
+                pass
+
         if self.recv_thread and self.recv_thread.is_alive():
             self.recv_thread.join(timeout=1.0)
+        if self.tcp_recv_thread and self.tcp_recv_thread.is_alive():
+            self.tcp_recv_thread.join(timeout=1.0)
+
         logger.info("SomeIPClient 已停止")
 
-    def _receive_loop(self):
+    def _receive_loop_udp(self):
         """接收 UDP 数据包并解析的循环。"""
         while self.running:
             try:
                 # 阻塞接收
-                data, addr = self.socket.recvfrom(4096)
+                data, addr = self.udp_socket.recvfrom(4096)
                 self._process_packet(data, addr)
             except socket.timeout:
                 continue
@@ -100,7 +138,38 @@ class SomeIPClient:
                 # Socket 已关闭
                 break
             except Exception as e:
-                logger.error(f"接收循环发生错误: {e}")
+                logger.error(f"UDP 接收循环发生错误: {e}")
+
+    def _receive_loop_tcp(self):
+        """接收 TCP 数据包并解析的循环。"""
+        logger.info("TCP 接收线程已启动")
+        while self.running and self.tcp_socket:
+            try:
+                # TCP 是流式协议，这里简化处理，假设每次 recv 都能收到完整的包或者包的一部分
+                # 实际生产环境需要处理粘包/拆包，通常基于 SOME/IP 头部长度字段
+                # 这里为了演示，读取一个较大的缓冲区
+                data = self.tcp_socket.recv(4096)
+                if not data:
+                    logger.info("TCP 连接被对端关闭")
+                    self.tcp_socket.close()
+                    self.tcp_socket = None
+                    self.use_tcp = False
+                    break
+
+                # 获取对端地址用于日志
+                try:
+                    addr = self.tcp_socket.getpeername()
+                except:
+                    addr = ("TCP_Server", 0)
+
+                self._process_packet(data, addr)
+            except socket.timeout:
+                continue
+            except OSError:
+                break
+            except Exception as e:
+                logger.error(f"TCP 接收循环发生错误: {e}")
+                break
 
     def _process_packet(self, data: bytes, addr):
         """解析并路由数据包。"""
@@ -146,15 +215,50 @@ class SomeIPClient:
             # 遍历 Entry 数组
             for entry in sd_pkt.entry_array:
                 logger.debug(f"  SD Entry: {entry.show(dump=True)}")
+
+                # 自动检测协议逻辑：检查 OfferService 中的 Endpoint
+                if hasattr(entry, 'type') and entry.type == 0x01: # OfferService
+                     for opt in sd_pkt.option_array:
+                        # 检查 IPv4 Endpoint 选项
+                        if isinstance(opt, SDOption_IP4_EndPoint):
+                            # L4-Proto: 0x06 = TCP, 0x11 = UDP
+                            if opt.l4_proto == 0x06:
+                                logger.info(f"发现 TCP 服务 Endpoint: {opt.addr}:{opt.port}")
+                                self._ensure_tcp_connection(opt.addr, opt.port)
+                            elif opt.l4_proto == 0x11:
+                                logger.info(f"发现 UDP 服务 Endpoint: {opt.addr}:{opt.port}")
+                                # UDP 不需要连接，但可以标记偏好
+                                pass
+
                 for cb in self.sd_callbacks:
                     cb(entry, sd_pkt.option_array)
         except Exception as e:
             logger.error(f"解析 SD Payload 错误: {e}")
 
+    def _ensure_tcp_connection(self, ip, port):
+        """确保 TCP 连接已建立。"""
+        if self.tcp_socket:
+            return # 已经连接
+
+        try:
+            logger.info(f"正在尝试建立 TCP 连接到 {ip}:{port} ...")
+            self.tcp_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            self.tcp_socket.connect((ip, port))
+            self.use_tcp = True
+
+            # 启动 TCP 接收线程
+            self.tcp_recv_thread = threading.Thread(target=self._receive_loop_tcp, daemon=True)
+            self.tcp_recv_thread.start()
+            logger.info(f"TCP 连接建立成功")
+        except Exception as e:
+            logger.error(f"建立 TCP 连接失败: {e}")
+            self.tcp_socket = None
+            self.use_tcp = False
+
     def send_request(self, service_id, method_id, payload=b'', target_ip=None, target_port=30500):
         """发送 SOME/IP 请求。"""
-        if target_ip is None:
-            logger.error("必须指定目标 IP")
+        if target_ip is None and not self.use_tcp:
+            logger.error("必须指定目标 IP (UDP模式)")
             return
 
         pkt = SOMEIP(
@@ -168,11 +272,21 @@ class SomeIPClient:
 
         self.session_id += 1
 
-        self._send_udp(pkt, target_ip, target_port)
+        if self.use_tcp and self.tcp_socket:
+            # 使用 TCP 发送
+            try:
+                self.tcp_socket.sendall(bytes(pkt))
+                logger.info(f"已发送 TCP 请求 Service=0x{service_id:04X}")
+            except Exception as e:
+                logger.error(f"TCP 发送失败: {e}")
+                # 可以在这里添加重连逻辑或回退到 UDP
+        else:
+            # 使用 UDP 发送
+            self._send_udp(pkt, target_ip, target_port)
 
     def find_service(self, service_id=0xFFFF, instance_id=0xFFFF, multicast_ip=None, multicast_port=None):
         """
-        发送 FindService SD 消息。
+        发送 FindService SD 消消息。
 
         :param service_id: 服务 ID
         :param instance_id: 实例 ID
@@ -276,7 +390,7 @@ class SomeIPClient:
     def _send_udp(self, pkt, ip, port):
         """发送 UDP 数据包的辅助方法。"""
         try:
-            self.socket.sendto(bytes(pkt), (ip, port))
+            self.udp_socket.sendto(bytes(pkt), (ip, port))
         except Exception as e:
             logger.error(f"发送数据包到 {ip}:{port} 失败: {e}")
 
@@ -292,52 +406,108 @@ class SomeIPClient:
 class TestSomeIPClient:
     """SomeIPClient 的测试类。"""
 
+    def __init__(self):
+        self.found_event = threading.Event()
+        self.target_service = None
+        self.target_ip = None
+        self.target_port = None
+
     def run(self):
         print("开始 SomeIPClient 测试...")
 
+        # 配置测试参数
+        LOCAL_IP = "10.1.0.99"
+        # 默认目标 IP (如果服务发现未返回 IP，则使用此 IP)
+        DEFAULT_TARGET_IP = "10.1.0.79"
+
+        # 通用的读取信息的方法 ID (通常 0x0001 被用作 Get/Read)
+        GENERIC_READ_METHOD_ID = 0x0001
+
+        print(f"配置: 本地IP={LOCAL_IP}")
+
         # 1. 初始化客户端
-        # 使用回环地址进行测试
-        client = SomeIPClient(local_ip="127.0.0.1", local_port=30500)
+        # 绑定到本地特定网口 IP，端口设为 0 让系统自动分配，避免端口冲突
+        client = SomeIPClient(local_ip=LOCAL_IP, local_port=0)
         if not client.start():
+            print("客户端启动失败，请检查 IP 是否存在于本机")
             return
 
-        # 2. 注册回调
-        def my_callback(pkt):
+        # 2. 注册 SD 回调以捕获 OfferService
+        def sd_callback(entry, options):
+            # 检查是否为 OfferService (Type 0x01)
+            if hasattr(entry, 'type') and entry.type == 0x01:
+                # 只要收到 Offer 就接受 (发现任意服务)
+                if not self.found_event.is_set():
+                    print(f"\n[SD回调] 发现服务! Service=0x{entry.srv_id:04X}, Instance=0x{entry.inst_id:04X}")
+
+                    # 尝试从选项中获取 Endpoint
+                    endpoint_ip = DEFAULT_TARGET_IP
+                    endpoint_port = 30500
+
+                    for opt in options:
+                        if isinstance(opt, SDOption_IP4_EndPoint):
+                            endpoint_ip = opt.addr
+                            endpoint_port = opt.port
+                            print(f"  Endpoint: {endpoint_ip}:{endpoint_port}")
+                            break
+
+                    self.target_service = entry.srv_id
+                    self.target_ip = endpoint_ip
+                    self.target_port = endpoint_port
+                    self.found_event.set()
+
+        client.register_sd_callback(sd_callback)
+
+        # 3. 注册通用消息回调
+        def response_callback(pkt):
             payload_hex = pkt.payload.load.hex() if hasattr(pkt.payload, 'load') else 'Empty'
-            print(f"回调触发! 收到 Payload: {payload_hex}")
+            print(f"\n[回调] 收到回复! \n  Service=0x{pkt.srv_id:04X}, Method=0x{pkt.sub_id:04X}\n  Payload: {payload_hex}")
 
-        client.register_callback(service_id=0x1234, method_id=0x0001, callback=my_callback)
+        try:
+            # 4. 发送 FindService (Service=0xFFFF, Instance=0xFFFF) 寻找所有服务
+            print(f"\n[1] 发送 FindService (Service=0xFFFF)...")
+            client.find_service(service_id=0xFFFF, instance_id=0xFFFF)
 
-        # 3. 测试 Find Service
-        print("\n[测试] 发送 FindService...")
-        client.find_service(service_id=0x1234)
-        time.sleep(0.5)
+            print("等待发现服务 (10秒)...")
+            if self.found_event.wait(timeout=10):
+                print(f"\n[2] 锁定目标服务: 0x{self.target_service:04X} @ {self.target_ip}:{self.target_port}")
 
-        # 4. 测试发送请求 (发送给自己以触发回调)
-        print("\n[测试] 发送请求给自己...")
-        client.send_request(
-            service_id=0x1234,
-            method_id=0x0001,
-            payload=b'\xDE\xAD\xBE\xEF',
-            target_ip="127.0.0.1",
-            target_port=30500
-        )
-        time.sleep(0.5)
+                # 注册针对该服务的接收回调
+                client.register_callback(service_id=self.target_service, method_id=GENERIC_READ_METHOD_ID, callback=response_callback)
 
-        # 5. 测试 Subscribe EventGroup
-        print("\n[测试] 发送 SubscribeEventGroup...")
-        client.subscribe_eventgroup(
-            service_id=0x1234,
-            instance_id=0x0001,
-            eventgroup_id=0x8001,
-            target_ip="127.0.0.1"
-        )
-        time.sleep(0.5)
+                # 5. 发送读取请求
+                print(f"发送读取请求 (Method=0x{GENERIC_READ_METHOD_ID:04X})...")
+                client.send_request(
+                    service_id=self.target_service,
+                    method_id=GENERIC_READ_METHOD_ID,
+                    payload=b'', # 空负载表示通用读取
+                    target_ip=self.target_ip,
+                    target_port=self.target_port
+                )
 
-        # 停止
-        print("\n停止客户端...")
-        client.stop()
-        print("测试结束。")
+                print("等待回复 (5秒)...")
+                time.sleep(5)
+            else:
+                print("未收到 OfferService，尝试直接发送请求到默认目标 (假设 Service=0x1234)...")
+                # 如果没发现服务，尝试直接发送给 0x1234 (作为 fallback)
+                FALLBACK_SERVICE_ID = 0x1234
+                client.register_callback(service_id=FALLBACK_SERVICE_ID, method_id=GENERIC_READ_METHOD_ID, callback=response_callback)
+                client.send_request(
+                    service_id=FALLBACK_SERVICE_ID,
+                    method_id=GENERIC_READ_METHOD_ID,
+                    payload=b'',
+                    target_ip=DEFAULT_TARGET_IP,
+                    target_port=30500
+                )
+                time.sleep(5)
+
+        except KeyboardInterrupt:
+            print("测试被用户中断")
+        finally:
+            # 停止
+            print("\n停止客户端...")
+            client.stop()
+            print("测试结束。")
 
 if __name__ == "__main__":
     test = TestSomeIPClient()
