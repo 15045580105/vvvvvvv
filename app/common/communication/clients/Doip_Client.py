@@ -92,10 +92,10 @@ class DoIPClientHandler:
             logger.info(f"自动选择接口: {iface_name} ({ip_addr})")
             return True
 
-    def connect(self, ecu_ip: str, ecu_logical_address: int = 0x0E80,
+    def connect(self, ecu_ip: str, ecu_logical_address: int = 0x004F,
                 tcp_port: int = 13400, activation_type: Any = RoutingActivationRequest.ActivationType.Default,
                 protocol_version: int = 0x02,
-                client_logical_address: Optional[int] = None) -> bool:
+                client_logical_address: Optional[int] = 0x0E80) -> bool:
         """连接到DoIP服务器(ECU)
         Args:
             ecu_ip: ECU的IP地址
