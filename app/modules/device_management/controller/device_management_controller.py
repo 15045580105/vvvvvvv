@@ -18,6 +18,7 @@ class DeviceController(BaseController):
         # 业务服务
         self.device_service = DeviceService()
         self.config_service = ConfigService()
+        self._progress_dialog: QtWidgets.QProgressDialog | None = None
         self._connect_static_signals()
         self._initial_devices()
         # 首次刷新视图
@@ -28,6 +29,52 @@ class DeviceController(BaseController):
         self.device_service.log_signal.connect(self.update_log)
         # 协议状态变更信号，用于刷新三行状态和详情
         self.device_service.protocol_status_changed.connect(self._on_protocol_status_changed)
+        # 长耗时操作进度，用于显示/更新“正在连接/断开设备”的提示
+        self.device_service.operation_progress.connect(self._on_operation_progress)
+
+    def _on_operation_progress(self, message: str) -> None:
+        """处理 DeviceService 报告的长耗时操作进度。
+
+        简单策略：
+          * 当消息包含“正在连接设备”或“正在断开设备”时，弹出模态进度对话框，阻止用户重复点击；
+          * 当消息包含“操作已完成”时，关闭进度对话框；
+          * 同时将文本写入日志区域。
+        """
+        self.view.append_log(message)
+
+        # 判定是否为开始/结束消息
+        is_start = ("正在连接设备" in message) or ("正在断开设备" in message)
+        is_finish = "操作已完成" in message
+
+        if is_start:
+            # 若已有进度框，先关闭旧的
+            if self._progress_dialog is not None:
+                try:
+                    self._progress_dialog.close()
+                except Exception:
+                    pass
+                self._progress_dialog = None
+
+            dlg = QtWidgets.QProgressDialog(self.view)
+            dlg.setWindowTitle("请稍候")
+            dlg.setLabelText(message)
+            dlg.setCancelButton(None)
+            dlg.setRange(0, 0)  # 不确定进度
+            dlg.setModal(True)
+            dlg.setMinimumDuration(0)  # 立即显示对话框，避免默认4秒延迟
+            dlg.resize(360, 120)
+            # 确保标签文字可见，设置样式
+            dlg.setStyleSheet("QLabel { color: black; font-size: 12px; }")
+            self._progress_dialog = dlg
+            dlg.show()
+            return
+
+        if is_finish and self._progress_dialog is not None:
+            try:
+                self._progress_dialog.close()
+            except Exception:
+                pass
+            self._progress_dialog = None
 
     def _on_protocol_status_changed(self, device: dict):
         """当 DeviceService 报告协议状态变化时，更新模型中的对应设备并刷新界面与配置文件。
@@ -217,7 +264,6 @@ class DeviceController(BaseController):
             return
         # 交给 DeviceService.connect_device 处理三种协议的建链逻辑，并通过信号回传各协议状态
         self.device_service.connect_device(device)
-        self.view.append_log(f"已发起连接 -> {self._device_repr(index)}")
 
     def _do_disconnect(self, index):
         device = self.model.devices[index]
@@ -240,7 +286,7 @@ class DeviceController(BaseController):
         ssh_status = str(device.get("ssh_connect_status", OFFLINE))
         doip_status = str(device.get("doip_connect_status", OFFLINE))
         someip_status = str(device.get("someip_connect_status", OFFLINE))
-        # 所有协议都必须是离线或已断链才能建立连接
+        # 所有协议都必须是离线或断开才能建立连接
         allowed = (OFFLINE, DISCONNECTED)
         if ssh_status not in allowed or doip_status not in allowed or someip_status not in allowed:
             QtWidgets.QMessageBox.warning(self.view, "提示", "仅在离线/已断链状态下允许删除设备")
@@ -283,11 +329,6 @@ class DeviceController(BaseController):
         2. 更新模型中每台设备的 *_connect_status 和 *_connect_info 字段；
         3. 持久化到 JSON，确保下次启动时为离线/已断链状态；
         """
-        # 先关闭所有底层 SSH 连接
-        try:
-            self.device_service.close_all_device_connections()
-        except Exception as e:
-            self.view.append_log(f"关闭所有设备连接时发生异常: {e}")
 
         # 重置所有设备的状态和详情字段
         for dev in self.model.devices:
@@ -301,6 +342,12 @@ class DeviceController(BaseController):
         # 持久化并可选刷新视图（避免关闭前看到脏数据）
         self._persist_devices()
         self.on_model_changed()
+
+        # 先关闭所有底层 SSH 连接
+        try:
+            self.device_service.close_all_device_connections()
+        except Exception as e:
+            self.view.append_log(f"关闭所有设备连接时发生异常: {e}")
 
     # -------- 供其他模块调用的接口 --------
     def get_all_devices(self):

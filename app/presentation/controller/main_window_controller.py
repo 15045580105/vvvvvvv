@@ -10,6 +10,7 @@ from app.presentation.model.main_window_model import MainModel
 from app.presentation.views.main_window_view import MainView
 from app.services.system.performance_status_service import PerformanceStatusService
 from app.modules.device_management.models.device_model import DeviceModel
+from app.modules.device_management.controller.device_management_controller import DeviceController
 
 logger = logging.getLogger(__name__)
 
@@ -123,7 +124,41 @@ class MainController(BaseController):
 
     def _safe_instantiate(self, ctrl_cls: Type) -> Optional[object]:
         try:
+            # 尝试注入 DeviceService，如果目标 Controller 支持接收 device_service 参数
+            # 1. 先获取全局唯一的 DeviceController 实例（它持有 DeviceService）
+            device_ctrl = self.model.get(PageConfig.PAGE_DEVICE)
+            device_service = None
+            if device_ctrl and hasattr(device_ctrl, 'device_service'):
+                device_service = device_ctrl.device_service
+
+            # 2. 检查目标 Controller 构造函数是否接受 device_service
+            # 这里简单通过尝试传参来判断，或者约定特定 Controller 需要注入
+            # 为避免修改所有 Controller 的 __init__，我们只对特定的 Controller 做注入
+            # 例如 TopologyController, PerformanceController 等
+            if device_service:
+                # 约定：如果 Controller 需要 DeviceService，它应该在 __init__ 中接收 device_service 参数
+                # 或者我们可以检查 ctrl_cls 的签名，这里简化处理：
+                # 针对已知需要注入的类进行特殊实例化
+                from app.modules.device_topology.controller.device_topology_controller import TopologyController
+                # from app.modules.performance_management.controller.performance_management_controller import PerformanceController
+
+                if ctrl_cls == TopologyController:
+                    return ctrl_cls(self.view, device_service=device_service)
+                # elif ctrl_cls == PerformanceController:
+                #     return ctrl_cls(self.view, device_service=device_service)
+
+            # 默认实例化方式
             return ctrl_cls(self.view)
+        except TypeError as e:
+            # 如果因为参数不匹配导致实例化失败，回退到默认构造
+            if "unexpected keyword argument" in str(e):
+                try:
+                    return ctrl_cls(self.view)
+                except Exception as exc_inner:
+                    logger.exception(f"Instantiate controller failed (fallback): {ctrl_cls}: {exc_inner}")
+                    return None
+            logger.exception(f"Instantiate controller failed: {ctrl_cls}: {e}")
+            return None
         except Exception as exc:
             logger.exception(f"Instantiate controller failed: {ctrl_cls}: {exc}")
             return None

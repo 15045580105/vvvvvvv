@@ -1,4 +1,5 @@
 from app.core.base_model import BaseModel
+from app.services.device_manage.topology_service import TopologyService, TopologySnapshot
 
 
 class TopologyModel(BaseModel):
@@ -6,26 +7,32 @@ class TopologyModel(BaseModel):
         super().__init__(parent)
         self.networks = []
         self.nodes = []
-        self.load_mock()
+        self.vehicle_info = {}
+        self.service_status = {}
+        self.security_info = {}
+        self.network_mgmt = {}
+        self.storage_info = {}
+        self._service = TopologyService()
+        self._snapshot: TopologySnapshot | None = None
+        self.refresh()
 
-    def load_mock(self):
-        self.networks = [
-            ("电源管理网络", "正常", "2.1 KB/s"),
-            ("PNC网络", "正常", "5.8 KB/s"),
-            ("RT1外网报文", "正常", "1.2 KB/s"),
-            ("RT2外网报文", "正常", "0.8 KB/s"),
-            ("A核应用网络", "正常", "12.5 KB/s"),
-            ("OBD-CAN网络", "正常", "0.3 KB/s"),
-        ]
-        self.nodes = [
-            ("CCU主控制器", "🖥️", "正常", 0, 0),
-            ("CCU A-M核(RT1)", "⚡", "正常", -250, -150),
-            ("CCU A-M核(RT2)", "⚡", "离线", 250, -150),
-            ("IDC SoC", "🧠", "正常", -250, 150),
-            ("TBOX", "📡", "正常", 250, 150),
-            ("ADC SoC", "🎛️", "正常", -350, 0),
-            ("ADC MCU", "🔌", "正常", 350, 0),
-            ("激光雷达", "📡", "正常", 0, -200),
-        ]
+    def refresh(self):
+        snapshot: TopologySnapshot = self._service.fetch_snapshot()
+        self._snapshot = snapshot
+        self.nodes = snapshot.nodes
+        self.networks = snapshot.networks
+        self.vehicle_info = snapshot.vehicle_info
+        self.service_status = snapshot.service_status
+        self.security_info = snapshot.security_info
+        self.network_mgmt = snapshot.network_management
+        self.storage_info = snapshot.storage_info
         self.dataChanged.emit()
 
+    def info_blocks_payload(self) -> dict:
+        return {
+            "vehicle_info": self.vehicle_info,
+            "service_status": self.service_status,
+            "security_info": self.security_info,
+            "network_mgmt": self.network_mgmt,
+            "storage_info": self.storage_info,
+        }
