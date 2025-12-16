@@ -1,7 +1,7 @@
-from PyQt5 import QtWidgets, QtGui
+from PyQt5 import QtWidgets, QtGui, QtCore
 from PyQt5.QtCore import Qt as _Qt
 
-__all__ = ["ModernButton", "create_icon", "TableButton"]
+__all__ = ["ModernButton", "create_icon", "TableButton", "LoadingSpinner"]
 
 # Qt compatibility constants for linters/type checkers
 QT_TRANSPARENT = getattr(_Qt, "transparent", 0)
@@ -99,7 +99,7 @@ class TableButton(QtWidgets.QPushButton):
                 background-color: {base};
                 color: white;
                 border: none;
-                padding: 4px 10px;
+                padding: 4px 8px;
                 border-radius: 4px;
                 font-weight: 500;
                 min-width: 0;
@@ -111,8 +111,38 @@ class TableButton(QtWidgets.QPushButton):
             QPushButton:pressed {{
                 background-color: {pressed};
             }}
-            QPushButton:disabled {{
-                background-color: #E5E7EB;
-                color: #9CA3AF;
-            }}
         """)
+
+
+class LoadingSpinner(QtWidgets.QWidget):
+    def __init__(self, parent=None, size=16, color="#3B82F6"):
+        super().__init__(parent)
+        self.setFixedSize(size, size)
+        self._color = QtGui.QColor(color)
+        self._angle = 0
+        self._timer =  QtCore.QTimer(self)
+        self._timer.timeout.connect(self._rotate)
+        self._timer.start(50)  # 20 FPS
+
+    def _rotate(self):
+        self._angle = (self._angle + 30) % 360
+        self.update()
+
+    def paintEvent(self, event):
+        painter = QtGui.QPainter(self)
+        painter.setRenderHint(QtGui.QPainter.Antialiasing)
+
+        rect = self.rect().adjusted(2, 2, -2, -2)
+        pen = QtGui.QPen(self._color)
+        pen.setWidth(2)
+        painter.setPen(pen)
+
+        # Draw a spinning arc (approx 270 degrees)
+        start_angle = -self._angle * 16
+        span_angle = 270 * 16
+        painter.drawArc(rect, start_angle, span_angle)
+        painter.end()
+
+    def set_color(self, color):
+        self._color = QtGui.QColor(color)
+        self.update()

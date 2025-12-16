@@ -1,10 +1,20 @@
 from PyQt5 import QtWidgets
-from PyQt5.QtCore import pyqtSignal
+from PyQt5.QtCore import pyqtSignal, QThread
 from app.core.base_controller import BaseController
-from app.modules.device_management.models.device_model import DeviceModel, OFFLINE, ONLINE, DISCONNECTED
+from app.modules.device_management.models.device_model import DeviceModel, OFFLINE, DISCONNECTED
 from app.modules.device_management.views.device_management_view import DeviceView
 from app.services.device_manage.device_service import DeviceService
 from app.services.system.config_service import ConfigService
+
+
+class ConnectWorker(QThread):
+    def __init__(self, service, device):
+        super().__init__()
+        self.service = service
+        self.device = device
+
+    def run(self):
+        self.service.connect_device(self.device)
 
 
 class DeviceController(BaseController):
@@ -19,6 +29,7 @@ class DeviceController(BaseController):
         self.device_service = DeviceService()
         self.config_service = ConfigService()
         self._progress_dialog: QtWidgets.QProgressDialog | None = None
+        self._workers = []  # Keep references to running threads
         self._connect_static_signals()
         self._initial_devices()
         # 首次刷新视图
@@ -29,52 +40,7 @@ class DeviceController(BaseController):
         self.device_service.log_signal.connect(self.update_log)
         # 协议状态变更信号，用于刷新三行状态和详情
         self.device_service.protocol_status_changed.connect(self._on_protocol_status_changed)
-        # 长耗时操作进度，用于显示/更新“正在连接/断开设备”的提示
-        self.device_service.operation_progress.connect(self._on_operation_progress)
 
-    def _on_operation_progress(self, message: str) -> None:
-        """处理 DeviceService 报告的长耗时操作进度。
-
-        简单策略：
-          * 当消息包含“正在连接设备”或“正在断开设备”时，弹出模态进度对话框，阻止用户重复点击；
-          * 当消息包含“操作已完成”时，关闭进度对话框；
-          * 同时将文本写入日志区域。
-        """
-        self.view.append_log(message)
-
-        # 判定是否为开始/结束消息
-        is_start = ("正在连接设备" in message) or ("正在断开设备" in message)
-        is_finish = "操作已完成" in message
-
-        if is_start:
-            # 若已有进度框，先关闭旧的
-            if self._progress_dialog is not None:
-                try:
-                    self._progress_dialog.close()
-                except Exception:
-                    pass
-                self._progress_dialog = None
-
-            dlg = QtWidgets.QProgressDialog(self.view)
-            dlg.setWindowTitle("请稍候")
-            dlg.setLabelText(message)
-            dlg.setCancelButton(None)
-            dlg.setRange(0, 0)  # 不确定进度
-            dlg.setModal(True)
-            dlg.setMinimumDuration(0)  # 立即显示对话框，避免默认4秒延迟
-            dlg.resize(360, 120)
-            # 确保标签文字可见，设置样式
-            dlg.setStyleSheet("QLabel { color: black; font-size: 12px; }")
-            self._progress_dialog = dlg
-            dlg.show()
-            return
-
-        if is_finish and self._progress_dialog is not None:
-            try:
-                self._progress_dialog.close()
-            except Exception:
-                pass
-            self._progress_dialog = None
 
     def _on_protocol_status_changed(self, device: dict):
         """当 DeviceService 报告协议状态变化时，更新模型中的对应设备并刷新界面与配置文件。
@@ -254,7 +220,7 @@ class DeviceController(BaseController):
         doip_status = str(device.get("doip_connect_status", OFFLINE))
         someip_status = str(device.get("someip_connect_status", OFFLINE))
         # 所有协议都必须是离线或已断链才能建立连接
-        allowed = (OFFLINE, DISCONNECTED)
+        allowed = (OFFLINE, DISCONNECTED, "连接失败")
         if ssh_status not in allowed or doip_status not in allowed or someip_status not in allowed:
             QtWidgets.QMessageBox.warning(
                 self.view,
@@ -262,8 +228,26 @@ class DeviceController(BaseController):
                 "仅在所有协议均为离线/已断链状态下可建立连接"
             )
             return
-        # 交给 DeviceService.connect_device 处理三种协议的建链逻辑，并通过信号回传各协议状态
-        self.device_service.connect_device(device)
+
+        # 立即更新状态为 connecting，确保 UI 响应
+        device["ssh_connect_status"] = "connecting"
+        device["doip_connect_status"] = "connecting"
+        device["someip_connect_status"] = "connecting"
+        self.on_model_changed()
+
+        # 使用副本进行连接，避免多线程直接修改模型数据（虽然 Service 会发信号回来更新）
+        device_copy = device.copy()
+
+        # 启动后台线程进行连接，避免阻塞 UI 导致 Loading 动画卡顿
+        worker = ConnectWorker(self.device_service, device_copy)
+        worker.finished.connect(lambda: self._cleanup_worker(worker))
+        self._workers.append(worker)
+        worker.start()
+
+    def _cleanup_worker(self, worker):
+        if worker in self._workers:
+            self._workers.remove(worker)
+        worker.deleteLater()
 
     def _do_disconnect(self, index):
         device = self.model.devices[index]
