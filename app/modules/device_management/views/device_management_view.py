@@ -2,7 +2,7 @@ from PyQt5 import QtWidgets
 from PyQt5.QtWidgets import QHeaderView
 from PyQt5.QtCore import Qt as _Qt
 
-from app.common.ui.widgets import ModernButton, TableButton
+from app.common.ui.widgets import ModernButton, TableButton, LoadingSpinner
 from app.presentation.views.base_view import BaseView
 
 # Use Qt.AlignmentFlag (not raw int) so QLabel.setAlignment avoids TypeError in some PyQt builds.
@@ -112,9 +112,36 @@ class DeviceView(BaseView):
         """
         self.table.setRowCount(len(devices))
 
-        def _icon_for(status: str) -> str:
-            # 简单规则：包含“在线”则为在线，否则离线
-            return ONLINE_ICON if status and ("建链成功" in str(status)) else OFFLINE_ICON
+        def _create_status_row(protocol_name, status):
+            """Helper to create a row widget with icon/spinner and text."""
+            row_widget = QtWidgets.QWidget()
+            row_layout = QtWidgets.QHBoxLayout(row_widget)
+            row_layout.setContentsMargins(0, 0, 0, 0)
+            row_layout.setSpacing(4)
+
+            # Determine icon/spinner
+            if status == "connecting":
+                spinner = LoadingSpinner(size=14, color="#3B82F6")
+                row_layout.addWidget(spinner)
+            else:
+                icon_char = ONLINE_ICON if status and ("建链成功" in str(status)) else OFFLINE_ICON
+                # If failed, use red circle (OFFLINE_ICON is red circle usually)
+                # If success, use green circle (ONLINE_ICON is green circle usually)
+                # If disconnected/offline, use red circle
+
+                # Special handling for "连接失败" to ensure it's red
+                if "连接失败" in str(status):
+                    icon_char = OFFLINE_ICON
+
+                lbl_icon = QtWidgets.QLabel(icon_char)
+                lbl_icon.setFixedWidth(16)
+                row_layout.addWidget(lbl_icon)
+
+            lbl_text = QtWidgets.QLabel(f"{protocol_name}: {status if status != 'connecting' else '连接中...'}")
+            lbl_text.setAlignment(ALIGN_LEFT_LABEL)
+            row_layout.addWidget(lbl_text)
+            row_layout.addStretch()
+            return row_widget
 
         for row, dev in enumerate(devices):
             name = dev.get("name", "")
@@ -152,18 +179,15 @@ class DeviceView(BaseView):
             port_item.setTextAlignment(ALIGN_CENTER_ITEM)
             self.table.setItem(row, 4, port_item)
 
-            # 连接状态列：3 行文字 + 在线/离线图标
+            # 连接状态列：3 行文字 + 在线/离线图标/LoadingSpinner
             status_widget = QtWidgets.QWidget()
             status_layout = QtWidgets.QVBoxLayout(status_widget)
             status_layout.setContentsMargins(4, 2, 4, 2)
             status_layout.setSpacing(0)
 
-            ssh_label = QtWidgets.QLabel(f"{_icon_for(ssh_status)} SSH: {ssh_status}")
-            doip_label = QtWidgets.QLabel(f"{_icon_for(doip_status)} DoIP: {doip_status}")
-            someip_label = QtWidgets.QLabel(f"{_icon_for(someip_status)} SomeIP: {someip_status}")
-            for lbl in (ssh_label, doip_label, someip_label):
-                lbl.setAlignment(ALIGN_LEFT_LABEL)
-                status_layout.addWidget(lbl)
+            status_layout.addWidget(_create_status_row("SSH", ssh_status))
+            status_layout.addWidget(_create_status_row("DoIP", doip_status))
+            status_layout.addWidget(_create_status_row("SomeIP", someip_status))
 
             self.table.setCellWidget(row, 5, status_widget)
 
@@ -198,6 +222,16 @@ class DeviceView(BaseView):
             delete_btn = TableButton("删除设备", "#EF4444")
             upgrade_btn = TableButton("软件升级", "#6366F1")
             query_btn = TableButton("状态查询", "#0EA5E9")
+
+            # 如果正在连接中，禁用连接按钮
+            is_connecting = "connecting" in (ssh_status, doip_status, someip_status)
+            if is_connecting:
+                connect_btn.setEnabled(False)
+                disconnect_btn.setEnabled(False)
+                edit_btn.setEnabled(False)
+                delete_btn.setEnabled(False)
+                upgrade_btn.setEnabled(False)
+                query_btn.setEnabled(False)
 
             for b in [connect_btn, disconnect_btn, edit_btn, delete_btn, upgrade_btn, query_btn]:
                 b.setMinimumWidth(78)

@@ -39,7 +39,6 @@ class TopologyService:
 
     def __init__(self, device_service: Optional[DeviceService] = None, *, use_dummy: bool = True) -> None:
         self._use_dummy = use_dummy
-        # DeviceService 由上层注入，以便复用已有的 DoIP/SomeIP 连接
         self._device_service = device_service
 
     def fetch_snapshot(self, device_info: Dict[str, Any] = None) -> TopologySnapshot:
@@ -48,7 +47,6 @@ class TopologyService:
             return self._build_dummy_snapshot()
         return self._fetch_doip_snapshot(device_info)
 
-    # -------------------- 真实 DoIP 采集路径 --------------------
     def _fetch_doip_snapshot(self, device_info: Dict[str, Any] = None) -> TopologySnapshot:
         """通过已建立的 DoIP 连接向 ECU 请求拓扑信息，并转换为 TopologySnapshot。"""
         if self._device_service is None:
@@ -60,17 +58,12 @@ class TopologyService:
         user_mode = self._get_user_mode()
         factory_mode = self._get_factory_mode()
         voltage = self._get_voltage()
-
-        # 7. 版本信息 (SSH)
-        version_info = self._get_version_info(device_info)
-
         vehicle_info = {
             "vin": vin,
             "vehicle_mode": vehicle_mode,
             "user_mode": user_mode,
             "factory_mode": factory_mode,
-            "voltage": voltage,
-            "version": version_info
+            "voltage": voltage
         }
 
         # 2. 服务状态 (SomeIP)
@@ -87,14 +80,25 @@ class TopologyService:
             "cms_env": cms_env
         }
 
+        # 4. 以太网 link 状态（新增）：通过 22 BE1A 获取当前各节点 link up/down 信息
+        link_status = self._get_eth_link_status()
+
         # 5. PNC 网络管理 (SomeIP)
-        network_mgmt = self._get_pnc_status()
+        pnc_mgmt = self._get_pnc_status()
+        # 将 link 状态合并进 network_management，便于统一在信息块里展示
+        network_mgmt: Dict[str, str] = {}
+        network_mgmt.update(pnc_mgmt)
+        network_mgmt.update(link_status)
 
-        # 6. 存储信息 (SSH)
+        # 6. 存储/版本信息 (SSH)
         storage_info_str = self._get_storage_info(device_info)
-        storage_info = {"storage_summary": storage_info_str}
+        version_info = self._get_version_info(device_info)
+        storage_info = {
+            "a_core_storage": storage_info_str,
+            "m_core_storage": version_info,
+        }
 
-        # 4. 网络状态 (暂无具体实现，使用 dummy 占位)
+        # 拓扑节点和网络结构目前仍使用 dummy
         dummy = self._build_dummy_snapshot()
 
         return TopologySnapshot(
@@ -104,7 +108,7 @@ class TopologyService:
             service_status=service_status,
             security_info=security_info,
             network_management=network_mgmt,
-            storage_info=storage_info
+            storage_info=storage_info,
         )
 
     # --- DoIP Helpers ---
@@ -114,6 +118,38 @@ class TopologyService:
         if rx and len(rx) >= 3 and rx[0] == 0x62 and rx[1] == did_high and rx[2] == did_low:
             return rx[3:]
         return None
+
+    def _get_eth_link_status(self) -> Dict[str, str]:
+        """读取以太网各节点 link 状态（UDS 22 BE1A）。
+
+        返回一个 dict，用于填充 network_management，例如：
+        {
+            "eth_link_idc": "UP",
+            "eth_link_adc": "DOWN",
+            ...
+        }
+
+        具体 bit/字节解析需参考 DPT 表，这里提供一个占位解析：
+        - 若成功返回数据，则将��始 hex 串挂到 eth_link_raw 上，方便后续调试；
+        - 一旦协议细节明确，可在此根据位定义拆分到各节点。
+        """
+        result: Dict[str, str] = {}
+        # 使用 UDS 22 BE1A
+        payload = bytes([0x22, 0xBE, 0x1A])
+        try:
+            rx = self._device_service.send_doip_payload(payload, timeout=1.0)
+        except Exception as e:
+            result["eth_link_raw"] = f"读取失败: {e}"
+            return result
+
+        if not rx or len(rx) < 3 or rx[0] != 0x62 or rx[1] != 0xBE or rx[2] != 0x1A:
+            result["eth_link_raw"] = "无有效响应"
+            return result
+
+        data = rx[3:]
+        # 暂不清楚各节点对应 bit/byte 的精确含义，这里先挂原始 hex，方便 UI 或日志查看
+        result["eth_link_raw"] = data.hex().upper()
+        return result
 
     def _get_vin(self) -> str:
         data = self._send_uds_read(0xF1, 0x90)

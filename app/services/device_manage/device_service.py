@@ -1,4 +1,5 @@
 from typing import List, Dict, Any, Tuple
+import time
 
 from PyQt5.QtCore import QObject, pyqtSignal
 from paramiko.ssh_exception import AuthenticationException, SSHException
@@ -45,16 +46,32 @@ class DeviceService(QObject):
         # 通知上层：开始连接（可用于显示等待对话框）
         self.operation_progress.emit(f"正在连接设备 {ip}:{port} ，请稍候...")
 
+        # 设置初始状态为 connecting
+        # 注意：Controller 层可能已经设置过一次，但这里再次确认状态并通知
+        device["ssh_connect_status"] = "connecting"
+        device["doip_connect_status"] = "connecting"
+        device["someip_connect_status"] = "connecting"
+        self._change_status(device)
+
+        # 强制等待，确保UI有时间渲染所有协议的转圈状态
+        time.sleep(0.5)
+
         # 1. DoIP 连接
         self.log_signal.emit(f"正在通过DoIP连接设备 {ip}:{port}...")
+        # 模拟连接过程，避免瞬间完成导致看不到转圈
+        time.sleep(1.0)
         self._connect_doip(device)
+        self._change_status(device)
 
         # 2. SomeIP 客户端准备
         self.log_signal.emit(f"正在通过SomeIP连接设备 {ip}:{port}...")
+        time.sleep(1.0)
         self._connect_someip(device)
+        self._change_status(device)
 
         # 3. SSH 连接：通过执行 ipconfig 验证链路
         self.log_signal.emit(f"正在通过SSH连接设备 {ip}:{port}...")
+        time.sleep(0.5)
         out, err, code = self.execute_ssh_command_on_device(device, "ipconfig")
         if code == 0:
             self.log_signal.emit("SSH 连接成功")
@@ -236,10 +253,9 @@ class DeviceService(QObject):
         注意：SOME/IP 多数场景是无连接 UDP，这里仅表示“本地客户端已就绪”。
         """
         # 可以按需从 device 中取本地网卡 IP 或接口信息，目前简单使用回环地址
-        local_ip = device.get("someip_local_ip")  # 可选字段
+        local_ip = device.get("ip")  # 可选字段
 
         client = self._ensure_someip_client(local_ip)
-
         if client is None:
             device["someip_connect_status"] = "连接失败"
             device["someip_connect_info"] = "SomeIP 客户端启动失败"
@@ -375,6 +391,5 @@ class DeviceService(QObject):
             return None
 
     def get_someip_client(self) -> SomeIPClient | None:
-        """返回当前 SomeIP 客户端实例（可能为 None）。"""
+        """返回当前 SomeIP 客客户端实例（可能为 None）。"""
         return self._someip_client
-

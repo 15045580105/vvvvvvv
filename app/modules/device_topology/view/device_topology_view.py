@@ -41,7 +41,9 @@ class TopologyView(BaseView):
         eth_diag_layout = QtWidgets.QVBoxLayout()
         eth_diag_layout.setContentsMargins(8, 8, 8, 8)
         eth_diag_layout.setSpacing(8)
-        eth_diag_layout.addWidget(NetworkStatusPanel())
+        # 挂成成员，便于 controller 访问
+        self.network_status_panel = NetworkStatusPanel()
+        eth_diag_layout.addWidget(self.network_status_panel)
         eth_diag_group.setLayout(eth_diag_layout)
         splitter.addWidget(eth_diag_group)
         splitter.setSizes([650, 350])
@@ -166,7 +168,6 @@ class TopologyView(BaseView):
         # 平均分布
         for i in range(blocks_layout.count()):
             blocks_layout.setStretch(i, 1)
-
         parent_layout.addWidget(container)
 
     def update_vehicle_info(self, info: dict):
@@ -175,6 +176,35 @@ class TopologyView(BaseView):
         self.vehicle_labels["user_mode"].setText(info.get("user_mode", "—"))
         self.vehicle_labels["factory_mode"].setText(info.get("factory_mode", "—"))
         self.vehicle_labels["voltage"].setText(info.get("voltage", "—"))
+
+    def update_service_status_info(self, info: dict):
+        self.status_labels["srv_id01"].setText(info.get("srv_id01", "—"))
+        self.status_labels["srv_id02"].setText(info.get("srv_id02", "—"))
+        self.status_labels["srv_id03"].setText(info.get("srv_id03", "—"))
+
+    def update_security_info(self, info: dict):
+        self.sec_labels["cert_server"].setText(info.get("cert_server", "—"))
+        self.sec_labels["pki_status"].setText(info.get("pki_status", "—"))
+        self.sec_labels["cert_valid_date"].setText(info.get("cert_valid_date", "—"))
+        self.sec_labels["key_slot_status"].setText(info.get("key_slot_status", "—"))
+        self.sec_labels["tls_switch"].setText(info.get("tls_switch", "—"))
+        self.sec_labels["secoc_switch"].setText(info.get("secoc_switch", "—"))
+        self.sec_labels["cms_env"].setText(info.get("cms_env", "—"))
+
+    def update_network_mgmt(self, info: dict):
+        self.net_labels["power_wake_source"].setText(info.get("power_wake_source", "—"))
+        self.net_labels["pnc"].setText(info.get("pnc", "—"))
+        self.net_labels["rt1_net_source"].setText(info.get("rt1_net_source", "—"))
+        self.net_labels["rt2_net_source"].setText(info.get("rt2_net_source", "—"))
+        self.net_labels["rt1_ext_msg"].setText(info.get("rt1_ext_msg", "—"))
+        self.net_labels["rt2_ext_msg"].setText(info.get("rt2_ext_msg", "—"))
+        self.net_labels["a_core_net_req"].setText(info.get("a_core_net_req", "—"))
+        self.net_labels["obd_can_net"].setText(info.get("obd_can_net", "—"))
+
+    def update_storage_info(self, info: dict):
+        self.storage_labels["a_core_storage"].setText(info.get("a_core_storage", "—"))
+        self.storage_labels["m_core_storage"].setText(info.get("m_core_storage", "—"))
+
 
     def append_log(self, text: str):
         self.log_view.append(text)
