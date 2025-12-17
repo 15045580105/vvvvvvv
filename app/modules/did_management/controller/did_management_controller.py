@@ -1,11 +1,15 @@
 from typing import Optional, Tuple
+import time
+import ctypes
+import os
 
 from PyQt5 import QtWidgets, QtCore, QtGui
 from PyQt5.QtCore import Qt
 
-from app.common.communication.DataCenter.DataCenter import DataCenter
 from app.common.communication.clients.Doip_Client import DoIPClientHandler
 from app.core.base_controller import BaseController
+from app.core.dependency_injection import di_container
+from app.services.device_manage.device_service import DeviceService
 from app.modules.did_management.model.did_management_model import (
     DIDModel,
     DIDBitRow,
@@ -20,6 +24,22 @@ from app.modules.did_management.view.did_management_view import (
 from app.services.diagnostic.dpt_service import DPTService
 
 
+class DPTLoaderThread(QtCore.QThread):
+    finished_signal = QtCore.pyqtSignal(bool, str)
+
+    def __init__(self, dpt_service):
+        super().__init__()
+        self.dpt_service = dpt_service
+
+    def run(self):
+        try:
+            if self.dpt_service.current_path:
+                self.dpt_service.load_from_file(self.dpt_service.current_path, persist=False)
+            self.finished_signal.emit(True, "")
+        except Exception as e:
+            self.finished_signal.emit(False, str(e))
+
+
 class DIDController(BaseController):
     """DID 控制器：负责界面交互、消息监听与 DPT 解析的协调逻辑。"""
 
@@ -32,8 +52,7 @@ class DIDController(BaseController):
 
         # services and helpers
         self._dpt_service = dpt_service or DPTService()
-        self._data_center = DataCenter.get_instance()
-        self._is_registered = False
+        self._dpt_loader_thread: Optional[DPTLoaderThread] = None
         self._value_detail_dialog: Optional["ValueDetailDialog"] = None
         # DoIP 客户端，延迟创建
         self._doip_handler: Optional[DoIPClientHandler] = None
@@ -83,12 +102,6 @@ class DIDController(BaseController):
         # 绑定视图信号
         self.view.destroyed.connect(self._on_view_destroyed)
         self.view.dpt_import_requested.connect(self._handle_dpt_import)
-        self.view.ecu_map_import_requested.connect(self._handle_ecu_map_import)
-        # 处理来自 ECU 地址配置对话框的结果 (physical, functional)
-        try:
-            self.view.ecu_address_configured.connect(self._on_ecu_address_configured)
-        except Exception:
-            pass
         self.view.value_detail_requested.connect(self._on_value_detail_requested)
         self.view.read_requested.connect(self._on_read_clicked)
         self.view.write_requested.connect(self._on_write_clicked)
@@ -107,8 +120,6 @@ class DIDController(BaseController):
         ]
         self.model.set_did_rows(demo_rows)
 
-        # 打开 DID 页面时注册消息监听器
-        self._register_listener()
 
     # ---------- delegate 选项提供 ----------
 
@@ -123,107 +134,238 @@ class DIDController(BaseController):
 
     # -------------------- 顶部按钮行为 --------------------
 
-    def _ensure_doip_connected(self) -> bool:
-        """确保 DoIP 已连接：若未连接则自动选择网卡并按当前 ECU 地址建立连接。"""
-        if self._doip_handler is None:
-            self._doip_handler = DoIPClientHandler()
+    def _get_doip_client(self) -> Optional[DoIPClientHandler]:
+        """获取已连接设备的 DoIP 客户端。"""
+        device_service = di_container.resolve(DeviceService)
+        if not device_service:
+            return None
+        return device_service.get_doip_client()
 
-        # 已连接直接返回
-        try:
-            if self._doip_handler.is_connected():
-                return True
-        except Exception:
-            # 如果检查连接状态异常，则尝试重新创建
-            self._doip_handler = DoIPClientHandler()
+    def _process_did_row(self, row_index: int, row, is_write: bool = False) -> None:
+        """处理单行 DID 的读/写操作。
 
-        # 从模型获取 ECU 地址（这里将 physical 地址作为 ECU IP 使用）
-        ecu_ip = (self.model.current_ecu or "").strip()
-        if not ecu_ip:
-            QtWidgets.QMessageBox.warning(
-                self.view,
-                "提示",
-                "请先通过“ecu地址配置”设置 ECU IP 地址",
-            )
-            return False
-
-        # 自动选择本地网卡（优先以太网4/10.1.0.99）
-        try:
-            if not self._doip_handler.select_network_interface():
-                QtWidgets.QMessageBox.critical(
-                    self.view,
-                    "DoIP 错误",
-                    "未找到可用的本地网络接口，请检查网卡配置",
-                )
-                return False
-        except Exception as exc:
-            QtWidgets.QMessageBox.critical(
-                self.view,
-                "DoIP 错误",
-                f"选择网络接口失败：{exc}",
-            )
-            return False
-
-        # 建立 DoIP 连接（使用默认逻辑地址 0x0E80）
-        try:
-            if not self._doip_handler.connect(ecu_ip):
-                QtWidgets.QMessageBox.critical(
-                    self.view,
-                    "DoIP 错误",
-                    "DoIP 连接 ECU 失败，请检查 ECU IP、网络连通性和防火墙设置",
-                )
-                return False
-        except Exception as exc:
-            QtWidgets.QMessageBox.critical(
-                self.view,
-                "DoIP 错误",
-                f"DoIP 连接过程中发生异常：{exc}",
-            )
-            return False
-
-        return True
-
-    def _send_doip_and_update_ui(self, row_index: int, tx_bytes: bytes) -> None:
-        """通过 DoIP 发送一帧诊断报文并更新原始区和指定行的 value/颜色。
-
-        - 先将 TX 记录到 raw_log
-        - 通过 DoIPClientHandler 发送
-        - 将 RX 或错误记录到 raw_log
-        - 对于响应，按 UDS 约定提取 62 DID_HI DID_LO 后面的数据填入该行 value
+        流程：
+        1. 获取 DoIP 客户端
+        2. 切换 Diagnostic Session (0x10)
+        3. 执行 Security Access (0x27)
+        4. 执行 Read (0x22) 或 Write (0x2E)
+        5. 更新 UI
         """
-        tx_text = " ".join(f"{b:02X}" for b in tx_bytes)
-        self.model.apply_update(tx=tx_text)
-
-        rx_bytes = None
-        try:
-            if self._doip_handler is None:
-                # 理论上在调用前应已 ensure，但这里再兜底一次
-                self._doip_handler = DoIPClientHandler()
-            rx_bytes = self._doip_handler.send_doip_message(tx_bytes)
-        except Exception as exc:
-            self.model.apply_update(rx=f"ERROR: {exc}")
-
-        if not rx_bytes:
-            # 无响应或发送失败
-            self.model.apply_update(rx=None)
-            self.model.update_row(row_index, value="", value_color="#EF4444")
+        client = self._get_doip_client()
+        if not client:
+            self.model.apply_update(rx="错误: 未连接 DoIP 设备")
+            self.model.update_row(row_index, value_color="#EF4444")
             return
 
-        # 记录 RX 原始数据
-        rx_text = " ".join(f"{b:02X}" for b in rx_bytes)
-        self.model.apply_update(rx=rx_text)
+        # 1. 诊断会话控制 (0x10)
+        session_map = {
+            "Default Session": 0x01,
+            "Programming Session": 0x02,
+            "Extended Session": 0x03
+        }
+        # 尝试从配置中获取会话ID，如果配置是名称则映射，如果是数字则直接使用
+        target_session = 0x01
+        sess_str = row.diagnostic_session
+        if sess_str in session_map:
+            target_session = session_map[sess_str]
+        else:
+            try:
+                if sess_str.startswith("0x"):
+                    target_session = int(sess_str, 16)
+                else:
+                    target_session = int(sess_str)
+            except:
+                pass
 
-        # 提取 UDS 正常响应的数据区：62 DID_HI DID_LO DATA...
-        value_str = ""
-        if len(rx_bytes) >= 3:
-            value_bytes = rx_bytes[3:]
-            if value_bytes:
-                value_str = " ".join(f"{b:02X}" for b in value_bytes)
+        tx_session = bytes([0x10, target_session])
+        self.model.apply_update(tx=f"会话控制: {tx_session.hex(' ').upper()}")
+        rx_session = client.send_doip_message(tx_session)
 
-        # 更新表格当前行 value，成功则用默认颜色
-        self.model.update_row(row_index, value=value_str, value_color=None)
+        if not rx_session or rx_session[0] != 0x50:
+             self.model.apply_update(rx=f"会话控制失败: {rx_session.hex(' ').upper() if rx_session else '无响应'}")
+             self.model.update_row(row_index, value_color="#EF4444")
+             return
+        self.model.apply_update(rx=f"会话控制成功: {rx_session.hex(' ').upper()}")
+
+        # 2. 安全访问 (0x27)
+        sec_level = 0
+        try:
+            if "Level" in row.security_access:
+                sec_level = int(row.security_access.split(" ")[-1])
+            elif row.security_access.startswith("0x"):
+                sec_level = int(row.security_access, 16)
+            elif row.security_access.isdigit():
+                sec_level = int(row.security_access)
+        except:
+            pass
+
+        if sec_level > 0:
+            # 请求种子: 27 Level (奇数)
+            req_seed_level = sec_level
+            if req_seed_level % 2 == 0:
+                req_seed_level -= 1
+
+            tx_seed = bytes([0x27, req_seed_level])
+            self.model.apply_update(tx=f"请求种子: {tx_seed.hex(' ').upper()}")
+            rx_seed = client.send_doip_message(tx_seed)
+
+            if not rx_seed or rx_seed[0] != 0x67:
+                self.model.apply_update(rx=f"请求种子失败: {rx_seed.hex(' ').upper() if rx_seed else '无响应'}")
+                self.model.update_row(row_index, value_color="#EF4444")
+                return
+
+            # 计算密钥
+            seed = rx_seed[2:]
+            key = self._calculate_key(sec_level, seed)
+
+            if key:
+                # 发送密钥: 27 Level+1 Key
+                tx_key = bytes([0x27, req_seed_level + 1]) + key
+                self.model.apply_update(tx=f"发送密钥: {tx_key.hex(' ').upper()}")
+                rx_key = client.send_doip_message(tx_key)
+
+                if not rx_key or rx_key[0] != 0x67:
+                    self.model.apply_update(rx=f"安全访问失败: {rx_key.hex(' ').upper() if rx_key else '无响应'}")
+                    self.model.update_row(row_index, value_color="#EF4444")
+                    return
+                self.model.apply_update(rx=f"安全访问成功: {rx_key.hex(' ').upper()}")
+            else:
+                self.model.apply_update(rx="密钥计算失败")
+                self.model.update_row(row_index, value_color="#EF4444")
+                return
+
+        # 3. 读/写 DID
+        did_str = row.did.strip().replace(" ", "")
+        try:
+            did_val = int(did_str, 16)
+        except ValueError:
+            self.model.apply_update(rx=f"无效 DID: {did_str}")
+            return
+
+        hi = (did_val >> 8) & 0xFF
+        lo = did_val & 0xFF
+
+        if is_write:
+            # 写入 (0x2E)
+            value_str = row.value.strip()
+            payload = b""
+
+            # 处理 STR/HEX 格式
+            fmt = (row.data_format or "STR").upper()
+            try:
+                if fmt == "HEX":
+                    filtered = "".join(ch for ch in value_str if ch not in {" ", "-"})
+                    if len(filtered) % 2:
+                        filtered = "0" + filtered
+                    payload = bytes.fromhex(filtered)
+                else: # STR
+                    payload = value_str.encode("utf-8")
+            except ValueError:
+                self.model.apply_update(rx=f"写入值无效: {value_str}")
+                return
+
+            tx_bytes = bytes([0x2E, hi, lo]) + payload
+            self.model.apply_update(tx=f"写入 DID: {tx_bytes.hex(' ').upper()}")
+            rx_bytes = client.send_doip_message(tx_bytes)
+
+            if not rx_bytes:
+                self.model.apply_update(rx="写入失败: 无响应")
+                self.model.update_row(row_index, value_color="#EF4444")
+                return
+
+            self.model.apply_update(rx=f"写入响应: {rx_bytes.hex(' ').upper()}")
+
+            if rx_bytes[0] == 0x6E: # 肯定响应
+                 self.model.update_row(row_index, value_color=None)
+            else:
+                 self.model.update_row(row_index, value_color="#EF4444")
+
+        else:
+            # 读取 (0x22)
+            tx_bytes = bytes([0x22, hi, lo])
+            self.model.apply_update(tx=f"读取 DID: {tx_bytes.hex(' ').upper()}")
+            rx_bytes = client.send_doip_message(tx_bytes)
+
+            if not rx_bytes:
+                self.model.apply_update(rx="读取失败: 无响应")
+                self.model.update_row(row_index, value="", value_color="#EF4444")
+                return
+
+            self.model.apply_update(rx=f"读取响应: {rx_bytes.hex(' ').upper()}")
+
+            # 解析响应: 62 DID_HI DID_LO DATA...
+            if rx_bytes[0] == 0x62 and len(rx_bytes) >= 3:
+                data_bytes = rx_bytes[3:]
+
+                # 如果有 DPT 服务则解析
+                rows = None
+                if self._dpt_service.is_ready():
+                    result = self._dpt_service.parse_bytes(rx_bytes, did=did_str)
+                    if result:
+                        rows = [
+                            DIDBitRow(
+                                bit=cols[0],
+                                function=cols[1],
+                                binary_value=cols[2],
+                                status=cols[3],
+                            )
+                            for cols in result.to_table_rows()
+                        ]
+                self.model.apply_update(rows=rows)
+
+                # 根据 STR/HEX 设置格式化值
+                fmt = (row.data_format or "STR").upper()
+                display_val = ""
+                if fmt == "HEX":
+                    display_val = data_bytes.hex(' ').upper()
+                else:
+                    try:
+                        display_val = data_bytes.decode("utf-8")
+                    except:
+                        display_val = data_bytes.hex(' ').upper() # 解码失败回退到 HEX
+
+                self.model.update_row(row_index, value=display_val, value_color=None)
+            else:
+                self.model.update_row(row_index, value="", value_color="#EF4444")
+
+    def _calculate_key(self, level: int, seed: bytes) -> Optional[bytes]:
+        """
+        使用 DLL 从种子计算安全密钥。
+        """
+        # 假设 DLL 名称为 SecurityAccess.dll，位于当前目录或系统路径
+        # 实际项目中可能需要配置 DLL 路径
+        dll_name = "SecurityAccess.dll"
+
+        try:
+            # 尝试加载 DLL
+            # 注意：这里假设 DLL 遵循标准的安全访问算法接口
+            # GenerateKeyEx(const unsigned char* ipSeedArray, unsigned int iSeedArraySize,
+            #               const unsigned int iSecurityLevel, const char* ipVariant,
+            #               unsigned char* iopKeyArray, unsigned int iMaxKeyArraySize,
+            #               unsigned int* oActualKeyArraySize)
+
+            # 为了演示，这里仅做一个简单的模拟，如果找不到 DLL 则返回模拟 Key
+            if not os.path.exists(dll_name):
+                 # 模拟：Key = Seed (仅用于测试)
+                 return seed
+
+            lib = ctypes.CDLL(dll_name)
+
+            # 定义参数类型
+            # 这里需要根据实际 DLL 的导出函数签名进行调整
+            # 假设有一个简单的 GenerateKey(seed, level) -> key
+
+            # 这是一个占位符，因为不知道具体的 DLL 签名
+            # 如果有具体的 DLL 接口文档，请在此处实现
+
+            return seed # 暂时返回 seed 作为 key
+
+        except Exception as e:
+            print(f"Error loading DLL or calculating key: {e}")
+            return None
 
     def _on_read_clicked(self) -> None:
-        """点击“读取”：若 DoIP 未连接则自动连接，然后按勾选顺序发送 0x22 读 DID 请求，并显示原始数据。"""
+        """点击“读取”：按勾选顺序处理每一行。"""
         selected_rows = [
             (idx, row)
             for idx, row in enumerate(self.model.did_rows)
@@ -233,27 +375,15 @@ class DIDController(BaseController):
             QtWidgets.QMessageBox.information(self.view, "提示", "请先勾选需要读取的 DID")
             return
 
-        # 确保 DoIP 连接可用
-        if not self._ensure_doip_connected():
-            return
+        if not self._get_doip_client():
+             QtWidgets.QMessageBox.warning(self.view, "提示", "请先连接设备 (DoIP)")
+             return
 
-        # 依次按照勾选顺序发送请求
         for row_index, row in selected_rows:
-            did = row.did.strip().replace(" ", "")
-            try:
-                did_val = int(did, 16)
-            except ValueError:
-                # DID 格式非法，跳过该行
-                continue
-
-            hi = (did_val >> 8) & 0xFF
-            lo = did_val & 0xFF
-            tx_bytes = bytes([0x22, hi, lo])
-
-            self._send_doip_and_update_ui(row_index, tx_bytes)
+            self._process_did_row(row_index, row, is_write=False)
 
     def _on_write_clicked(self) -> None:
-        """点击“写入”：通过 DoIP 将勾选行的 Value 写入 DID，并显示写入响应。"""
+        """点击“写入”：按勾选顺序处理每一行。"""
         selected_rows = [
             (idx, row)
             for idx, row in enumerate(self.model.did_rows)
@@ -263,42 +393,16 @@ class DIDController(BaseController):
             QtWidgets.QMessageBox.information(self.view, "提示", "请先勾选需要写入的 DID")
             return
 
-        # 写入也需要确保 DoIP 连接可用
-        if not self._ensure_doip_connected():
-            return
+        if not self._get_doip_client():
+             QtWidgets.QMessageBox.warning(self.view, "提示", "请先连接设备 (DoIP)")
+             return
 
         for row_index, row in selected_rows:
-            did = row.did.strip().replace(" ", "")
-            value_str = row.value.strip().replace(" ", "")
-            if not value_str:
-                # 没有要写入的值，跳过
-                continue
-            try:
-                did_val = int(did, 16)
-                payload = bytes.fromhex(value_str)
-            except ValueError:
-                # DID 或 Value 不是合法十六进制，跳过该行
-                continue
+            self._process_did_row(row_index, row, is_write=True)
 
-            hi = (did_val >> 8) & 0xFF
-            lo = did_val & 0xFF
-            tx_bytes = bytes([0x2E, hi, lo]) + payload
-
-            self._send_doip_and_update_ui(row_index, tx_bytes)
-
-    # -------------------- DataCenter 回调 --------------------
-
-    def _register_listener(self) -> None:
-        """注册为 DataCenter ��监听者，确保仅注册一次。"""
-        if not self._is_registered:
-            self._data_center.register_listener(self)
-            self._is_registered = True
 
     def _on_view_destroyed(self) -> None:
-        """视图销毁时取消注册以避免悬挂引用，并断开 DoIP 连接。"""
-        if self._is_registered:
-            self._data_center.unregister_listener(self)
-            self._is_registered = False
+        """视图销毁时断开 DoIP 连接。"""
         # 关闭 DoIP
         try:
             if self._doip_handler is not None:
@@ -306,28 +410,6 @@ class DIDController(BaseController):
         except Exception:
             pass
 
-    def on_eth_message(self, raw_bytes: bytes, parsed):
-        """DataCenter 回调入口：收到以太网报文后进行 DID 相关处理。"""
-        if raw_bytes:
-            self.on_response(raw_bytes)
-
-    def on_response(self, payload: bytes):
-        """处理收到的响应：刷新原始 RX 文本并尝试用 DPT 解析。"""
-        rows = None
-        if self._dpt_service.is_ready():
-            result = self._dpt_service.parse_bytes(payload)
-            if result:
-                rows = [
-                    DIDBitRow(
-                        bit=cols[0],
-                        function=cols[1],
-                        binary_value=cols[2],
-                        status=cols[3],
-                    )
-                    for cols in result.to_table_rows()
-                ]
-        formatted_rx = " ".join(f"{b:02X}" for b in payload)
-        self.model.apply_update(rx=formatted_rx, rows=rows)
 
     def on_dpt_selected(self, file_path: str) -> None:
         """选择 DPT 文件后委托 DPTService 加载并保存路径。"""
@@ -339,33 +421,30 @@ class DIDController(BaseController):
 
     def _handle_dpt_import(self) -> None:
         """处理视图发起的 DPT 导入：弹出文件对话框并调用加载接口。"""
+        current_path = self._dpt_service.current_path
+        start_dir = ""
+
+        if current_path:
+            reply = QtWidgets.QMessageBox.question(
+                self.view,
+                "当前 DPT 路径",
+                f"当前已设定 DPT 文件路径：\n{current_path}\n\n是否重新选择？",
+                QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
+                QtWidgets.QMessageBox.Yes
+            )
+            if reply == QtWidgets.QMessageBox.No:
+                return
+            start_dir = current_path
+
         file_path, _ = QtWidgets.QFileDialog.getOpenFileName(
             self.view,
             "选择 DPT 文件",
-            "",
-            "DPT Files (*.DPT *.dpt);;All Files (*.*)",
+            start_dir,
+            "DPT Files (*.xlsx *.xls);;All Files (*.*)",
         )
         if file_path:
             self.on_dpt_selected(file_path)
 
-    def _handle_ecu_map_import(self) -> None:
-        """处理 ECU 目的地址表导入（占位实现，后续替换为真实逻辑）。"""
-        QtWidgets.QMessageBox.information(self.view, "提示", "ECU 目的地址表导入逻辑��实现")
-
-    def _on_ecu_address_configured(self, physical: str, functional: str) -> None:
-        """当用户在对话框中确认 ECU 地址后调用：
-        - 把物理地址写入 model.current_ecu（可由后续逻辑使用）
-        - 弹出提示以便用户确认输入
-        """
-        try:
-            phy = (physical or "").strip()
-            func = (functional or "").strip()
-            if phy:
-                # 记录当前 ECU（控制器/其他逻辑可以使用 model.current_ecu）
-                self.model.set_current_ecu(phy)
-            QtWidgets.QMessageBox.information(self.view, "ECU 已配置", f"Physical: {phy or '-'}\nFunctional: {func or '-'}")
-        except Exception:
-            pass
 
     def on_model_changed(self):
         """模型更新时刷表格与原始数据显示。"""
@@ -577,9 +656,54 @@ class DIDController(BaseController):
         if not payload:
             QtWidgets.QMessageBox.information(self.view, "提示", "当前行无可解析数据")
             return
-        if not self._dpt_service.is_ready():
+
+        if not self._dpt_service.current_path:
             QtWidgets.QMessageBox.information(self.view, "提示", "请先导入 DPT 文件")
             return
+
+        if not self._dpt_service.is_ready():
+            self._load_dpt_and_show_detail(row)
+        else:
+            self._show_value_detail_dialog(row, payload)
+
+    def _load_dpt_and_show_detail(self, row: int):
+        progress = QtWidgets.QProgressDialog("正在解析 DPT 文件...", "取消", 0, 0, self.view)
+        progress.setWindowModality(Qt.WindowModal)
+        progress.setMinimumDuration(0)
+        progress.setWindowTitle("请稍候")
+        # Set cancel button
+        progress.setCancelButtonText("取消")
+
+        self._dpt_loader_thread = DPTLoaderThread(self._dpt_service)
+
+        def on_finished(success, message):
+            progress.close()
+            if success:
+                payload, error = self._get_row_bytes(row)
+                if not error and payload:
+                    self._show_value_detail_dialog(row, payload)
+            else:
+                # If it was not a manual cancellation (which we can't easily distinguish here without flag,
+                # but if thread was terminated, this signal might not emit or emit with error)
+                # Actually if we terminate, this slot won't be called.
+                if message:
+                    QtWidgets.QMessageBox.critical(self.view, "解析失败", message)
+
+        self._dpt_loader_thread.finished_signal.connect(on_finished)
+
+        def on_canceled():
+            if self._dpt_loader_thread and self._dpt_loader_thread.isRunning():
+                self._dpt_loader_thread.terminate()
+                self._dpt_loader_thread.wait()
+
+        progress.canceled.connect(on_canceled)
+        progress.show()
+        self._dpt_loader_thread.start()
+
+    def _show_value_detail_dialog(self, row: int, payload: bytes):
+        # 获取当前行的 DID
+        did_str = self.model.did_rows[row].did
+
         result = self._dpt_service.parse_bytes(payload)
         if not result:
             QtWidgets.QMessageBox.information(self.view, "提示", "解析失败或无结果")
@@ -634,7 +758,8 @@ class DIDController(BaseController):
 class ValueDetailDialog(QtWidgets.QDialog):
     def __init__(self, parent, result, row_info):
         super().__init__(parent)
-        self.setWindowTitle(f"{row_info.description or row_info.did} 的 DPT 解析")
+        title = row_info.description or row_info.did
+        self.setWindowTitle(f"{title} 的 DPT 解析")
         # 这些 Qt 常量在运行时是有效的，若 IDE 静态检查报未解析，可忽略
         self.setWindowFlag(Qt.Tool, True)  # type: ignore[arg-type]
         self.setWindowFlag(Qt.WindowStaysOnTopHint, True)  # type: ignore[arg-type]

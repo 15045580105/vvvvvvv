@@ -218,7 +218,6 @@ class ValueCellWidget(QtWidgets.QWidget):
 
 
 class DIDView(BaseView):
-    ecu_map_import_requested = QtCore.pyqtSignal()
     dpt_import_requested = QtCore.pyqtSignal()
     value_detail_requested = QtCore.pyqtSignal(int)
     read_requested = QtCore.pyqtSignal()
@@ -229,8 +228,6 @@ class DIDView(BaseView):
     move_down_requested = QtCore.pyqtSignal()
     cell_clicked = QtCore.pyqtSignal(int, int)
     cell_double_clicked = QtCore.pyqtSignal(int, int)
-    # 新增信号：当用户在对话框中配置好并确认时发出（地址, 说明）
-    ecu_address_configured = QtCore.pyqtSignal(str, str)
 
     def setup_ui(self):
         # 存储待应用的像素宽度（在首次布局完成后应用）
@@ -240,14 +237,11 @@ class DIDView(BaseView):
         main_layout.setSpacing(6)
         main_layout.setContentsMargins(6, 6, 6, 6)
 
-        # 顶部控制条：ECU 地址表导入 + DPT 导入 + 表格操作 + 读取/响应（全部放在同一行）
+        # 顶部控制条：DPT 导入 + 表格操作 + 读取/响应（全部放在同一行）
         ctl = QtWidgets.QHBoxLayout()
         ctl.setSpacing(6)
 
-        # 将原来的导入按钮改为 "ecu地址配置"，点击打开对话框
-        self.ecu_map_btn = ModernButton("ecu地址配置", "#6366F1", "📥")
         self.dpt_import_btn = ModernButton("导入DPT文件", "#22C55E", "📂")
-        ctl.addWidget(self.ecu_map_btn)
         ctl.addWidget(self.dpt_import_btn)
 
         # 将表格工具按钮合并到顶栏，保持在导入按钮之后
@@ -351,8 +345,6 @@ class DIDView(BaseView):
         main_layout.addWidget(raw_group, 1)
 
         # 信号转发（仅界面层）
-        # 点击 ECU 配置按钮打开对话框并在用户确认后发出 ecu_address_configured
-        self.ecu_map_btn.clicked.connect(self._on_ecu_config_clicked)
         self.dpt_import_btn.clicked.connect(self.dpt_import_requested.emit)
         self.read_btn.clicked.connect(self.read_requested.emit)
         self.write_btn.clicked.connect(self.write_requested.emit)
@@ -633,18 +625,6 @@ class DIDView(BaseView):
             pass
         return super().eventFilter(obj, event)
 
-    def _on_ecu_config_clicked(self):
-        try:
-            dlg = ECUAddressConfigDialog(self)
-            if dlg.exec_() == QtWidgets.QDialog.Accepted:
-                addr, info = dlg.get_values()
-                # 通过信号将配置的值传递出去，控制器可以连接这个信号
-                try:
-                    self.ecu_address_configured.emit(addr, info)
-                except Exception:
-                    pass
-        except Exception:
-            pass
 
 
 class ValueButtonDelegate(FullCellDelegate):
@@ -764,89 +744,3 @@ class ValueButtonDelegate(FullCellDelegate):
 
         return super().editorEvent(event, model, option, index)
 
-
-# 新增：ECU 地址配置对话框
-class ECUAddressConfigDialog(QtWidgets.QDialog):
-    """一个简单的对话框，包含两个输入框和四个预设按钮（CCU/TBOX/ADC/IDC）。
-
-    规则：点击预设按钮会把物理地址字段填写为对应的 0x.... 值；功能地址默认为 0x07DF（可编辑）。
-    确认后通过 get_values() 读取两个输入框的字符串（physical, functional）。
-    """
-
-    PRESETS = {
-        "CCU": "0x004F",
-        "TBOX": "0x002D",
-        "ADC": "0x000E",
-        "IDC": "0x002B",
-    }
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setWindowTitle("ECU 地址配置")
-        self.setModal(True)
-        self.setMinimumWidth(420)
-
-        layout = QtWidgets.QVBoxLayout(self)
-        layout.setContentsMargins(12, 12, 12, 12)
-        layout.setSpacing(8)
-
-        # 预设按钮行
-        presets_layout = QtWidgets.QHBoxLayout()
-        presets_layout.setSpacing(8)
-        for name in ("CCU", "TBOX", "ADC", "IDC"):
-            btn = QtWidgets.QPushButton(name, self)
-            btn.setCursor(QtGui.QCursor(Qt.PointingHandCursor))
-            btn.clicked.connect(lambda _checked=False, n=name: self.apply_preset(n))
-            # 视觉上让按钮看起来像链接（蓝色背景透明）
-            btn.setStyleSheet("QPushButton{ color: #1E40AF; background: transparent; border: none; padding:4px 8px; }")
-            presets_layout.addWidget(btn)
-        presets_layout.addStretch()
-        layout.addLayout(presets_layout)
-
-        # 两个输入框（带标签）——按图片要求改为物理地址与功能地址
-        form_layout = QtWidgets.QFormLayout()
-        form_layout.setLabelAlignment(Qt.AlignLeft)
-
-        self.physical_addr = QtWidgets.QLineEdit(self)
-        self.physical_addr.setPlaceholderText("例如 0x004F")
-        # 物理地址默认值为 0x004F
-        self.physical_addr.setText("0x004F")
-        try:
-            rx = QtCore.QRegExp(r"^(0x[0-9A-Fa-f]+)?$")
-            validator = QtGui.QRegExpValidator(rx, self.physical_addr)
-            self.physical_addr.setValidator(validator)
-        except Exception:
-            pass
-
-        self.functional_addr = QtWidgets.QLineEdit(self)
-        self.functional_addr.setPlaceholderText("例如 0x07DF")
-        # 功能地址默认值为 0x07DF
-        self.functional_addr.setText("0x07DF")
-        try:
-            rx2 = QtCore.QRegExp(r"^(0x[0-9A-Fa-f]+)?$")
-            validator2 = QtGui.QRegExpValidator(rx2, self.functional_addr)
-            self.functional_addr.setValidator(validator2)
-        except Exception:
-            pass
-
-        form_layout.addRow("Logical address(physical):", self.physical_addr)
-        form_layout.addRow("Logical address(functional):", self.functional_addr)
-        layout.addLayout(form_layout)
-
-        # 按钮框（确定/取消）
-        btn_box = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel, parent=self)
-        btn_box.accepted.connect(self.accept)
-        btn_box.rejected.connect(self.reject)
-        layout.addWidget(btn_box)
-
-    def apply_preset(self, name: str):
-        value = self.PRESETS.get(name, "")
-        try:
-            # 仅更新物理地址（与图片行为一致），不要覆盖功能地址
-            self.physical_addr.setText(value)
-        except Exception:
-            pass
-
-    def get_values(self):
-        # 返回 (physical, functional)
-        return (self.physical_addr.text().strip(), self.functional_addr.text().strip())
