@@ -6,6 +6,7 @@ from paramiko.ssh_exception import AuthenticationException, SSHException
 
 from app.common.communication.clients.Doip_Client import DoIPClientHandler
 from app.common.communication.clients.Someip_Client import SomeIPClient
+from app.modules.device_management.models.device_model import CONNECTING, DISCONNECTED, CONNECT_FAILED, ONLINE
 from app.services.communication.ssh_service import SSHService
 import warnings
 
@@ -19,15 +20,12 @@ warnings.filterwarnings(
     category=DeprecationWarning,
 )
 
-
 class DeviceService(QObject):
     # 文本日志信号
     log_signal = pyqtSignal(str)
     # 协议状态变更信号：payload 为包含 ip/port 及各协议状态字段的 device dict
-    protocol_status_changed = pyqtSignal(dict)
-    # 长耗时操作进度信号：例如“正在连接设备 ...”、“正在断开设备 ...”、“连接完成”等
-    operation_progress = pyqtSignal(str)
-
+    protocol_status_changed_signal = pyqtSignal(dict)
+    # 设备操作进度信号：payload 为文本描述
     """设备管理领域的 Service 层封装。"""
 
     def __init__(self) -> None:
@@ -40,161 +38,102 @@ class DeviceService(QObject):
     def connect_device(self, device: Dict[str, Any]) -> None:
         """连接单个设备：按 SSH/DoIP/SomeIP 三种协议尝试建链，并统一发出状态信号。
         """
-        ip = device.get("ip")
-        port = int(device.get("port", 22))
-
-        # 通知上层：开始连接（可用于显示等待对话框）
-        self.operation_progress.emit(f"正在连接设备 {ip}:{port} ，请稍候...")
-
-        # 设置初始状态为 connecting
-        # 注意：Controller 层可能已经设置过一次，但这里再次确认状态并通知
-        device["ssh_connect_status"] = "connecting"
-        device["doip_connect_status"] = "connecting"
-        device["someip_connect_status"] = "connecting"
+        # 设置初始状态为 CONNECTING
+        device["ssh_connect_status"] = CONNECTING
+        device["doip_connect_status"] = CONNECTING
+        device["someip_connect_status"] = CONNECTING
         self._change_status(device)
 
         # 强制等待，确保UI有时间渲染所有协议的转圈状态
         time.sleep(0.5)
 
         # 1. DoIP 连接
-        self.log_signal.emit(f"正在通过DoIP连接设备 {ip}:{port}...")
         # 模拟连接过程，避免瞬间完成导致看不到转圈
         time.sleep(1.0)
         self._connect_doip(device)
         self._change_status(device)
 
         # 2. SomeIP 客户端准备
-        self.log_signal.emit(f"正在通过SomeIP连接设备 {ip}:{port}...")
         time.sleep(1.0)
         self._connect_someip(device)
         self._change_status(device)
 
         # 3. SSH 连接：通过执行 ipconfig 验证链路
-        self.log_signal.emit(f"正在通过SSH连接设备 {ip}:{port}...")
         time.sleep(0.5)
-        out, err, code = self.execute_ssh_command_on_device(device, "ipconfig")
-        if code == 0:
-            self.log_signal.emit("SSH 连接成功")
-            device["ssh_connect_status"] = "建链成功"
-            device["ssh_connect_info"] = "建链成功"
-        else:
-            self.log_signal.emit(f"SSH 连接失败: {err}")
-            device["ssh_connect_status"] = "连接失败"
-            device["ssh_connect_info"] = err or "SSH 连接失败"
+        self._connect_ssh(device)
+        self._change_status(device)
 
-        # 统一发出协议状态变化信号，让 Controller 更新三行状态和详情
-        payload = {
-            "ip": ip,
-            "port": port,
-            "ssh_connect_status": device.get("ssh_connect_status"),
-            "ssh_connect_info": device.get("ssh_connect_info"),
-            "doip_connect_status": device.get("doip_connect_status"),
-            "doip_connect_info": device.get("doip_connect_info"),
-            "someip_connect_status": device.get("someip_connect_status"),
-            "someip_connect_info": device.get("someip_connect_info"),
-        }
-        self.protocol_status_changed.emit(payload)
-
-        # 通知上层：连接结束，可关闭等待提示
-        self.operation_progress.emit(f"设备 {ip}:{port} 连接操作已完成。")
 
     def disconnect_device(self, device: Dict[str, Any]) -> None:
         """断开设备三种协议连接，并发出状态信号。"""
+        # 1. 主动关闭 DoIP 连接
+        self._disconnect_doip(device)
+
+        # 2.停止 SOME/IP 客户端
+        self._disconnect_someip(device)
+
+        # 3.断开ssh连接
+        self._disconnect_ssh(device)
+        self._change_status(device)
+
+
+    def _disconnect_ssh(self, device):
+        self.log_signal.emit("正在通过SSH断开设备...")
         ip = device.get("ip")
         port = int(device.get("port", 22))
-
-        # 通知上层：开始断开
-        self.operation_progress.emit(f"正在断开设备 {ip}:{port} ，请稍候...")
-
-        self.log_signal.emit(f"开始断开设备 {ip}:{port}...")
-
-        # 1. DoIP / SomeIP 断开
-        # 主动关闭 DoIP 连接
-        if self._doip_handler is not None:
-            try:
-                self._doip_handler.disconnect()
-            except Exception:
-                pass
-        device["doip_connect_status"] = "已断链"
-        device["doip_connect_info"] = "已断链"
-
-        # 停止 SOME/IP 客户端
-        if self._someip_client is not None:
-            try:
-                self._someip_client.stop()
-            except Exception:
-                pass
-        device["someip_connect_status"] = "已断链"
-        device["someip_connect_info"] = "已断链"
-
-        # 2. SSH 断开
-        self.log_signal.emit("正在通过SSH断开设备...")
         try:
             self._ssh_service.close_host(ip, port)
-            device["ssh_connect_status"] = "已断链"
-            device["ssh_connect_info"] = "已断链"
+            device["ssh_connect_status"] = DISCONNECTED
+            device["ssh_connect_info"] = "SSH已断链成功"
         except Exception as e:
             msg = f"SSH 断开异常: {e}"
             self.log_signal.emit(msg)
-            device["ssh_connect_status"] = "连接失败"
+            device["ssh_connect_status"] = CONNECT_FAILED
             device["ssh_connect_info"] = msg
 
-        payload = {
-            "ip": ip,
-            "port": port,
-            "ssh_connect_status": device.get("ssh_connect_status"),
-            "ssh_connect_info": device.get("ssh_connect_info"),
-            "doip_connect_status": device.get("doip_connect_status"),
-            "doip_connect_info": device.get("doip_connect_info"),
-            "someip_connect_status": device.get("someip_connect_status"),
-            "someip_connect_info": device.get("someip_connect_info"),
-        }
-        self.protocol_status_changed.emit(payload)
+    def _disconnect_someip(self, device):
+        if self._someip_client is not None:
+            try:
+                self._someip_client.stop()
+                device["someip_connect_status"] = DISCONNECTED
+                device["someip_connect_info"] = "SomeIP已断链成功"
+            except Exception as e:
+                msg = f"SomeIP 断开异常: {e}"
+                self.log_signal.emit(msg)
+                device["someip_connect_status"] = CONNECT_FAILED
+                device["someip_connect_info"] = msg
 
-        # 通知上层：断开结束
-        self.operation_progress.emit(f"设备 {ip}:{port} 断开操作已完成。")
 
-    # ---- 设备与 SSH 连接管理 ----
-    def _parse_ssh_params(self, device: Dict[str, Any]) -> Tuple[str, int, str, str | None, str | None]:
-        """从设备字典中提取 SSH 连接所需参数。
+    def _disconnect_doip(self, device):
+        if self._doip_handler is not None:
+            try:
+                self._doip_handler.disconnect()
+                device["doip_connect_status"] = DISCONNECTED
+                device["doip_connect_info"] = "DoIP已断链成功"
+            except Exception as e:
+                msg = f"SomeIP 断开异常: {e}"
+                self.log_signal.emit(msg)
+                device["doip_connect_status"] = CONNECT_FAILED
+                device["doip_connect_info"] = msg
 
-        仅负责解析结构，不做任何网络操作或状态更新。
-        """
-        host = device.get("ip")
+
+    def _connect_ssh(self, device):
+        ip = device.get("ip")
         port = int(device.get("port", 22))
-        username = device.get("user") or device.get("username") or "root"
-        password = device.get("password")
-        key_file = device.get("key_file")
-        return host, port, username, password, key_file
+        self.log_signal.emit(f"正在通过SSH连接设备 {ip}:{port}...")
+        out, err, code = self.execute_ssh_command_on_device(device, "get_ccu_all_version")
+        if code == 0:
+            self.log_signal.emit("SSH 连接成功")
+            device["ssh_connect_status"] = "建链成功"
+            device["ssh_connect_info"] = f"已成功连接到SSH服务 {ip}:{port}"
+        else:
+            self.log_signal.emit(f" SSH 连接失败: {err}")
+            device["ssh_connect_status"] = "连接失败"
+            device["ssh_connect_info"] = err or f"SSH 连接{ip}:{port}失败"
 
-    def register_devices(self, devices: List[Dict[str, Any]]) -> None:
-        """批量注册设备到 SSHService。
-
-        devices: 列表元素示例：
-            {
-                "name": "设备A",
-                "ip": "10.132.8.227",
-                "port": 22,
-                "user": "uidq9000",
-                "password": "xxx"  # 可选
-            }
-        """
-        for d in devices:
-            host, port, username, password, key_file = self._parse_ssh_params(d)
-            if not host:
-                continue
-            self._ssh_service.register_host(
-                host=host,
-                port=port,
-                username=username,
-                password=password,
-                key_file=key_file,
-                eager_connect=False,
-            )
 
     def _connect_doip(self, device: Dict[str, Any]) -> None:
         """内部辅助：为当前设备建立 DoIP 连接，并在 device 上写入状态字段。
-
         约定使用字段：
           - doip_connect_status: 建链成功 / 连接失败 / 离线
           - doip_connect_info: 失败原因或成功提示
@@ -254,7 +193,6 @@ class DeviceService(QObject):
         """
         # 可以按需从 device 中取本地网卡 IP 或接口信息，目前简单使用回环地址
         local_ip = device.get("ip")  # 可选字段
-
         client = self._ensure_someip_client(local_ip)
         if client is None:
             device["someip_connect_status"] = "连接失败"
@@ -275,7 +213,7 @@ class DeviceService(QObject):
             "someip_connect_status": device.get("someip_connect_status"),
             "someip_connect_info": device.get("someip_connect_info"),
         }
-        self.protocol_status_changed.emit(payload)
+        self.protocol_status_changed_signal.emit(payload)
 
     def execute_ssh_command_on_device(
         self,
@@ -287,8 +225,11 @@ class DeviceService(QObject):
         本方法内部也会更新 device["ssh_connect_status"] 和 device["ssh_connect_info"]，
         以便上层在需要时将最新状态透传给 Controller/Model。
         """
-        host, port, username, password, key_file = self._parse_ssh_params(device)
-        self.log_signal.emit(f"正在通过SSH连接设备 {host}:{port}...")
+        host = device.get("ip")
+        port = int(device.get("port", 22))
+        username = device.get("user") or device.get("username") or "root"
+        password = device.get("password")
+        key_file = device.get("key_file")
         try:
             # register_host 幂等，重复调用安全
             self._ssh_service.register_host(host, port, username, password, key_file, eager_connect=False)
@@ -321,43 +262,11 @@ class DeviceService(QObject):
             device["ssh_connect_info"] = msg
         return out, err, code
 
-    def execute_command_on_multiple_devices(
-        self,
-        devices: List[Dict[str, Any]],
-        command: str,
-        timeout: int = 30,
-    ) -> Dict[Tuple[str, int], Dict[str, Any]]:
-        """对一组设备执行相同命令，返回按 (ip, port) 聚合的结果。"""
-        self.register_devices(devices)
-        commands: Dict[Tuple[str, int], str] = {}
-        for d in devices:
-            host = d.get("ip")
-            if not host:
-                continue
-            port = int(d.get("port", 22))
-            commands[(host, port)] = command
-        return self._ssh_service.execute_many(commands, timeout=timeout)
 
+    def close_device_all_connections(self, device: Dict[str, Any]) -> None:
+        self.disconnect_device(device)
 
-
-    def close_single_device_connections(self, device: Dict[str, Any]) -> None:
-        """关闭单个设备的底层 SSH 连接。"""
-        host, port, *_ = self._parse_ssh_params(device)
-        if not host:
-            return
-        try:
-            self._ssh_service.close_host(host, port)
-        except Exception:
-            # 底层关闭失败不应影响上层逻辑，这里静默忽略
-            pass
-
-    def close_all_device_connections(self) -> None:
-        """关闭所有底层 SSH 连接。"""
-        self._ssh_service.close_all()
-        self._doip_handler.disconnect()
-        self._someip_client.stop()
-
-    # ---- 提供给其他 Service 复用的 DoIP / SomeIP 能力 ----
+    # ---- 提供给其他 Service 复用的 已连接成功的 DoIP / SomeIP /ssh 能力 ----
     def get_doip_client(self) -> DoIPClientHandler | None:
         """返回当前 DoIP 客户端实例（若尚未连接则为 None）。"""
         if self._doip_handler is not None and getattr(self._doip_handler, "is_connected", lambda: False)():
@@ -393,3 +302,51 @@ class DeviceService(QObject):
     def get_someip_client(self) -> SomeIPClient | None:
         """返回当前 SomeIP 客客户端实例（可能为 None）。"""
         return self._someip_client
+
+    def get_ssh_service(self) -> SSHService:
+        """返回当前 SSH 服务实例。"""
+        return self._ssh_service
+
+    def close_device_connections(self):
+        self._ssh_service.close_all()
+        self._someip_client.stop()
+        self._doip_handler.disconnect()
+
+
+def main():
+    # 测试入口
+    # 注意：请根据实际环境修改 IP、用户名和密码
+    test_device = {
+        "ip": "10.1.0.79",
+        "port": 22,
+        "username": "root",
+        "password": "$ww0328_G"
+    }
+
+    print(f"Starting SSH test for device: {test_device['ip']}")
+    service = DeviceService()
+
+    # 监听日志信号
+    service.log_signal.connect(lambda msg: print(f"[Service Log] {msg}"))
+
+    # 1. 测试 get_ccu_all_version
+    cmd1 = "get_ccu_all_version"
+    print(f"\n>>> Executing: {cmd1}")
+    out1, err1, code1 = service.execute_ssh_command_on_device(test_device, cmd1)
+    print(f"Res Code: {code1}")
+    print(f"Output:\n{out1}")
+    if err1:
+        print(f"Error:\n{err1}")
+
+    # 2. 测试 df -h
+    cmd2 = "df -h"
+    print(f"\n>>> Executing: {cmd2}")
+    out2, err2, code2 = service.execute_ssh_command_on_device(test_device, cmd2)
+    print(f"Code: {code2}")
+    print(f"Output:\n{out2}")
+    if err2:
+        print(f"Error:\n{err2}")
+
+
+if __name__ == "__main__":
+    main()

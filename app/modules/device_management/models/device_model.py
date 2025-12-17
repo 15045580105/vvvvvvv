@@ -3,9 +3,10 @@ from app.core.base_model import BaseModel
 
 
 OFFLINE = "离线"
+CONNECTING = "正在建链"
 ONLINE = "建链成功"
 DISCONNECTED = "已断链"
-CONNECT_FAILED = "连接失败"
+CONNECT_FAILED = "建链失败"
 
 
 class DeviceModel(BaseModel):

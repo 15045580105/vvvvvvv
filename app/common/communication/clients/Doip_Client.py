@@ -551,52 +551,62 @@ def test_connection():
 
             # 发送 ReadDataByIdentifier 0xF180
             did = 0xF180
-            read_did_msg = bytes([0x22, 0xF1, 0x80])
-            print(f"\n发送读取DID F180请求: {read_did_msg.hex()}")
+            active_ssh_msg_1 = bytes([0x10, 0x03])
+            active_ssh_msg_2 = bytes([0x27, 0x21])
+            active_ssh_msg_3 = bytes([0x27, 0x22, 0x5E, 0xCC, 0x37, 0x1F])
+            active_ssh_msg_4 = bytes([0x31, 0x01, 0xBE, 0xE9])
 
-            response = client_handler.send_doip_message(read_did_msg, timeout=3.0)
-            if response:
-                print(f"原始响应: {response.hex()}")
-            else:
-                print("未收到响应或超时")
+            client_handler.send_doip_message(active_ssh_msg_1)
+            client_handler.send_doip_message(active_ssh_msg_2)
+            client_handler.send_doip_message(active_ssh_msg_3)
+            client_handler.send_doip_message(active_ssh_msg_4)
 
-            # 解析响应
-            parsed = parse_read_did_response(response, did)
-            if parsed["ok"]:
-                data = parsed["data"]
-                print("✓ 读取DID F180成功")
-                print(f"  数据长度: {len(data)} 字节")
-                print(f"  数据(HEX): {data.hex()}")
-                # 尝试按ASCII打印一份，方便查看是否为可读字符串
-                try:
-                    ascii_str = data.decode("ascii")
-                    # 只在大部分为可见字符时输出
-                    if any(32 <= ord(c) <= 126 for c in ascii_str):
-                        print(f"  数据(ASCII): {ascii_str}")
-                except Exception:
-                    pass
-            else:
-                print("✗ 读取DID F180失败")
-                print(f"  原因: {parsed['reason']}")
-                if parsed["raw"] is not None:
-                    try:
-                        print(f"  原始数据: {parsed['raw'].hex()}")
-                    except Exception:
-                        print("  原始数据无法以HEX显示")
-        else:
-            print("✗ 连接测试失败")
-
-    except Exception as e:
-        print(f"测试过程中发生错误: {str(e)}")
-        print("请检查:")
-        print("  1. ECU IP地址是否正确")
-        print("  2. 网络连接是否正常")
-        print("  3. ECU是否支持DoIP协议和DID F180")
-        print("  4. 防火墙设置是否允许连接")
-
+    #         read_did_msg = bytes([0x22, 0xF1, 0x80])
+    #         print(f"\n发送读取DID F180请求: {read_did_msg.hex()}")
+    #
+    #         response = client_handler.send_doip_message(read_did_msg, timeout=3.0)
+    #         if response:
+    #             print(f"原始响应: {response.hex()}")
+    #         else:
+    #             print("未收到响应或超时")
+    #
+    #         # 解析响应
+    #         parsed = parse_read_did_response(response, did)
+    #         if parsed["ok"]:
+    #             data = parsed["data"]
+    #             print("✓ 读取DID F180成功")
+    #             print(f"  数据长度: {len(data)} 字节")
+    #             print(f"  数据(HEX): {data.hex()}")
+    #             # 尝试按ASCII打印一份，方便查看是否为可读字符串
+    #             try:
+    #                 ascii_str = data.decode("ascii")
+    #                 # 只在大部分为可见字符时输出
+    #                 if any(32 <= ord(c) <= 126 for c in ascii_str):
+    #                     print(f"  数据(ASCII): {ascii_str}")
+    #             except Exception:
+    #                 pass
+    #         else:
+    #             print("✗ 读取DID F180失败")
+    #             print(f"  原因: {parsed['reason']}")
+    #             if parsed["raw"] is not None:
+    #                 try:
+    #                     print(f"  原始数据: {parsed['raw'].hex()}")
+    #                 except Exception:
+    #                     print("  原始数据无法以HEX显示")
+    #     else:
+    #         print("✗ 连接测试失败")
+    #
+    # except Exception as e:
+    #     print(f"测试过程中发生错误: {str(e)}")
+    #     print("请检查:")
+    #     print("  1. ECU IP地址是否正确")
+    #     print("  2. 网络连接是否正常")
+    #     print("  3. ECU是否支持DoIP协议和DID F180")
+    #     print("  4. 防火墙设置是否允许连接")
+    #
     finally:
         # 断开连接
-        client_handler.disconnect()
+        # client_handler.disconnect()
         print("\n测试完成")
 
 

@@ -27,6 +27,9 @@ if __name__ == "__main__":
 
     controller = MainController()
 
+    # 注册应用退出时的清理回调
+    app.aboutToQuit.connect(controller.on_close)
+
     main_view = controller.get_view()
     main_view.showMaximized()
 

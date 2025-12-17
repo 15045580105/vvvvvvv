@@ -293,6 +293,23 @@ class MainController(BaseController):
     def get_view(self) -> MainView:
         return self.view
 
+    def on_close(self) -> None:
+        """应用关闭时的清理操作。"""
+        # 停止性能监控定时器
+        if self._performance_timer:
+            self._performance_timer.stop()
+
+        # 通知所有已注册的 Controller 执行清理
+        for key, controller in self.model.registry.items():
+            if hasattr(controller, 'on_close'):
+                try:
+                    controller.on_close()
+                except Exception:
+                    logger.exception(f"Controller on_close failed: {key}")
+
+        # 等待所有后台任务结束（可选）
+        QtCore.QThreadPool.globalInstance().waitForDone(1000)
+
 
 class _PerformanceWorkerSignals(QtCore.QObject):
     result = QtCore.pyqtSignal(dict)

@@ -3,6 +3,7 @@ from PyQt5.QtWidgets import QHeaderView
 from PyQt5.QtCore import Qt as _Qt
 
 from app.common.ui.widgets import ModernButton, TableButton, LoadingSpinner
+from app.modules.device_management.models.device_model import CONNECTING
 from app.presentation.views.base_view import BaseView
 
 # Use Qt.AlignmentFlag (not raw int) so QLabel.setAlignment avoids TypeError in some PyQt builds.
@@ -102,10 +103,9 @@ class DeviceView(BaseView):
         """devices: list of dict
 
         约定每个设备 dict 中可以包含（与 DeviceModel 对齐）：
-        - ssh_connect_status / doip_connect_status / someip_connect_status:
-            每种协议当前状态字符串，包含“在线”则视为在线
-        - ssh_connect_info / doip_connect_info / someip_connect_info:
-            每种协议最近一次连接/断开/失败的详情信息
+        - ssh_connect_status / doip_connect_status / someip_connect_status
+
+        - ssh_connect_info / doip_connect_info / someip_connect_info
 
         Service / Controller 在连接或断开时负责填充上述字段，
         此处仅负责展示。
@@ -120,23 +120,17 @@ class DeviceView(BaseView):
             row_layout.setSpacing(4)
 
             # Determine icon/spinner
-            if status == "connecting":
+            if status == CONNECTING:
                 spinner = LoadingSpinner(size=14, color="#3B82F6")
                 row_layout.addWidget(spinner)
             else:
                 icon_char = ONLINE_ICON if status and ("建链成功" in str(status)) else OFFLINE_ICON
-                # If failed, use red circle (OFFLINE_ICON is red circle usually)
-                # If success, use green circle (ONLINE_ICON is green circle usually)
-                # If disconnected/offline, use red circle
-
-                # Special handling for "连接失败" to ensure it's red
                 if "连接失败" in str(status):
                     icon_char = OFFLINE_ICON
 
                 lbl_icon = QtWidgets.QLabel(icon_char)
                 lbl_icon.setFixedWidth(16)
                 row_layout.addWidget(lbl_icon)
-
             lbl_text = QtWidgets.QLabel(f"{protocol_name}: {status if status != 'connecting' else '连接中...'}")
             lbl_text.setAlignment(ALIGN_LEFT_LABEL)
             row_layout.addWidget(lbl_text)
@@ -224,7 +218,7 @@ class DeviceView(BaseView):
             query_btn = TableButton("状态查询", "#0EA5E9")
 
             # 如果正在连接中，禁用连接按钮
-            is_connecting = "connecting" in (ssh_status, doip_status, someip_status)
+            is_connecting = CONNECTING in (ssh_status, doip_status, someip_status)
             if is_connecting:
                 connect_btn.setEnabled(False)
                 disconnect_btn.setEnabled(False)

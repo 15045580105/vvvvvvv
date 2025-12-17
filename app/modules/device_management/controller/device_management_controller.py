@@ -39,7 +39,7 @@ class DeviceController(BaseController):
         self.view.add_btn.clicked.connect(self._on_add_clicked)
         self.device_service.log_signal.connect(self.update_log)
         # 协议状态变更信号，用于刷新三行状态和详情
-        self.device_service.protocol_status_changed.connect(self._on_protocol_status_changed)
+        self.device_service.protocol_status_changed_signal.connect(self._on_protocol_status_changed)
 
 
     def _on_protocol_status_changed(self, device: dict):
@@ -213,8 +213,9 @@ class DeviceController(BaseController):
         d = self.model.devices[index]
         return f"{d.get('name')} {d.get('ip')}:{d.get('port')}"
 
-    # -------------------- 连接/断开/删除等操作 --------------------
+    # -------------------------------------连接/断开/删除等操作 -------------------------------------------------------------
     def _do_connect(self, index):
+        self.view.append_log(f"开始连接 -> {self._device_repr(index)}")
         device = self.model.devices[index]
         ssh_status = str(device.get("ssh_connect_status", OFFLINE))
         doip_status = str(device.get("doip_connect_status", OFFLINE))
@@ -228,13 +229,6 @@ class DeviceController(BaseController):
                 "仅在所有协议均为离线/已断链状态下可建立连接"
             )
             return
-
-        # 立即更新状态为 connecting，确保 UI 响应
-        device["ssh_connect_status"] = "connecting"
-        device["doip_connect_status"] = "connecting"
-        device["someip_connect_status"] = "connecting"
-        self.on_model_changed()
-
         # 使用副本进行连接，避免多线程直接修改模型数据（虽然 Service 会发信号回来更新）
         device_copy = device.copy()
 
@@ -296,7 +290,6 @@ class DeviceController(BaseController):
 
     def _do_query(self, index):
         """状态查询：跳转到拓扑监控界面入口。
-
         这里调用占位方法 `open_topology_monitor`，由主窗口或路由逻辑实现真实跳转。
         """
         from app.common.ui.constants import PageConfig  # 延迟导入，避免循环
@@ -313,7 +306,6 @@ class DeviceController(BaseController):
         2. 更新模型中每台设备的 *_connect_status 和 *_connect_info 字段；
         3. 持久化到 JSON，确保下次启动时为离线/已断链状态；
         """
-
         # 重置所有设备的状态和详情字段
         for dev in self.model.devices:
             dev["ssh_connect_status"] = DISCONNECTED
@@ -322,18 +314,15 @@ class DeviceController(BaseController):
             dev["ssh_connect_info"] = "已断开"
             dev["doip_connect_info"] = "已断开"
             dev["someip_connect_info"] = "已断开"
-
         # 持久化并可选刷新视图（避免关闭前看到脏数据）
         self._persist_devices()
         self.on_model_changed()
-
-        # 先关闭所有底层 SSH 连接
         try:
-            self.device_service.close_all_device_connections()
+            self.device_service.close_device_connections()
         except Exception as e:
-            self.view.append_log(f"关闭所有设备连接时发生异常: {e}")
+            self.view.append_log(f"关闭设备连接时发生异常: {e}")
 
-    # -------- 供其他模块调用的接口 --------
+    # -------- 供其他模块调用的接口 --------------------------------
     def get_all_devices(self):
         """获取当前设备列表（原始 dict 列表）。"""
         return self.model.to_list()
