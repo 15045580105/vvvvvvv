@@ -344,7 +344,7 @@ class DeviceService(QObject):
     # ---- 提供给其他 Service 复用的 DoIP / SomeIP 能力 ----
     def get_doip_client(self) -> DoIPClientHandler | None:
         """返回当前 DoIP 客户端实例（若尚未连接则为 None）。"""
-        if self._doip_handler is not None and getattr(self._doip_handler, "is_connected", lambda: False)():
+        if self._doip_handler is not None and self._doip_handler.is_connected():
             return self._doip_handler
         return None
 

@@ -1,6 +1,7 @@
 from PyQt5 import QtWidgets
 from PyQt5.QtCore import pyqtSignal
 from app.core.base_controller import BaseController
+from app.core.dependency_injection import di_container
 from app.modules.device_management.models.device_model import DeviceModel, OFFLINE, ONLINE, DISCONNECTED
 from app.modules.device_management.views.device_management_view import DeviceView
 from app.services.device_manage.device_service import DeviceService
@@ -16,7 +17,12 @@ class DeviceController(BaseController):
         self.view = DeviceView(parent)
         super().__init__(self.model, self.view, parent)
         # 业务服务
-        self.device_service = DeviceService()
+        # 尝试从容器获取，如果不存在则创建并注册
+        self.device_service = di_container.resolve(DeviceService)
+        if not self.device_service:
+            self.device_service = DeviceService()
+            di_container.register_singleton(DeviceService, self.device_service)
+
         self.config_service = ConfigService()
         self._progress_dialog: QtWidgets.QProgressDialog | None = None
         self._connect_static_signals()
