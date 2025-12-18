@@ -47,9 +47,9 @@ class SomeIPClient:
 
     def __init__(self,
                  local_ip: str,
-                 local_port: int = 0,
+                 local_port: int = 30813,
                  # 将 client_id 默认值固定为 30813，避免运行时自动生成
-                 client_id: int = 30813,
+                 client_id: int = 0x1234,
                  multicast_ip: str = DEFAULT_SD_MULTICAST_IP,
                  multicast_port: int = DEFAULT_SD_MULTICAST_PORT):
 
