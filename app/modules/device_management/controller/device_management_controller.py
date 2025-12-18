@@ -1,5 +1,5 @@
 from PyQt5 import QtWidgets
-from PyQt5.QtCore import pyqtSignal, QThread
+from PyQt5.QtCore import QThread, pyqtSignal,QThread
 from app.core.base_controller import BaseController
 from app.core.dependency_injection import di_container
 from app.modules.device_management.models.device_model import DeviceModel, OFFLINE, ONLINE, DISCONNECTED
