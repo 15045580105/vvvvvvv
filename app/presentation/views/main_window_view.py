@@ -1,9 +1,12 @@
 from PyQt5 import QtWidgets, QtCore
 from PyQt5.QtCore import Qt
 
+from app.modules.app_config.controller.app_config_controller import AppConfigController
+
 class MainView(QtWidgets.QMainWindow):
     def __init__(self, parent=None):
         super().__init__(parent)
+        self.settings_controller = None
         self.setup_ui()
 
     def setup_ui(self):
@@ -103,4 +106,9 @@ class MainView(QtWidgets.QMainWindow):
         self.performance_label.setText(f"💻 CPU: {cpu_txt} | 内存: {mem_txt} | 📡 {device_txt}")
 
     def show_settings_dialog(self):
-        QtWidgets.QMessageBox.information(self, "软件设置", "设置页面暂未实现。")
+        if self.settings_controller is None:
+            self.settings_controller = AppConfigController(self)
+
+        self.settings_controller.view.show()
+        self.settings_controller.view.raise_()
+        self.settings_controller.view.activateWindow()

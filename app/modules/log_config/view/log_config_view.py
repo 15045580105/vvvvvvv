@@ -127,55 +127,6 @@ class LogConfigView(BaseView):
         app_group.setLayout(app_layout)
         layout.addWidget(app_group)
 
-        # Export APP settings group (more compact)
-        export_group = QtWidgets.QGroupBox("导出APP设置")
-        export_layout = QtWidgets.QGridLayout()
-        export_layout.setHorizontalSpacing(8)
-        export_layout.setVerticalSpacing(6)
-
-        row = 0
-        # Row 0: export path selector
-        export_layout.addWidget(QtWidgets.QLabel("导出路径"), row, 0)
-        self.export_path_edit = QtWidgets.QLineEdit()
-        self.export_path_edit.setPlaceholderText("请选择导出路径文件夹")
-        self.export_path_edit.setReadOnly(True)
-        export_layout.addWidget(self.export_path_edit, row, 1)
-        self.export_path_btn = ModernButton("浏览", "#3B82F6", "📁")
-        export_layout.addWidget(self.export_path_btn, row, 2)
-
-        row += 1
-        # Row 1: module/page dropdown selector instead of multi-select list
-        export_layout.addWidget(QtWidgets.QLabel("导出页面模块"), row, 0)
-        self.export_module_combo = QtWidgets.QComboBox()
-        self.export_module_combo.setMinimumWidth(200)
-        self.export_module_combo.setEditable(False)
-        export_layout.addWidget(self.export_module_combo, row, 1, 1, 2)
-
-        row += 1
-        # Row 2: start/end datetime + export button in one row
-        export_layout.addWidget(QtWidgets.QLabel("开始时间"), row, 0)
-
-        datetime_row_layout = QtWidgets.QHBoxLayout()
-        self.export_start_datetime = QtWidgets.QDateTimeEdit(QtCore.QDateTime.currentDateTime())
-        self.export_start_datetime.setDisplayFormat("yyyy-MM-dd HH:mm:ss")
-        self.export_start_datetime.setCalendarPopup(True)
-        datetime_row_layout.addWidget(self.export_start_datetime)
-
-        datetime_row_layout.addWidget(QtWidgets.QLabel("结束时间"))
-        self.export_end_datetime = QtWidgets.QDateTimeEdit(QtCore.QDateTime.currentDateTime())
-        self.export_end_datetime.setDisplayFormat("yyyy-MM-dd HH:mm:ss")
-        self.export_end_datetime.setCalendarPopup(True)
-        datetime_row_layout.addWidget(self.export_end_datetime)
-
-        datetime_row_layout.addStretch()
-
-        self.export_start_btn = ModernButton("导出", "#3B82F6", "⬇")
-        datetime_row_layout.addWidget(self.export_start_btn)
-
-        export_layout.addLayout(datetime_row_layout, row, 1, 1, 2)
-
-        export_group.setLayout(export_layout)
-        layout.addWidget(export_group)
 
         # Keep restore group as-is for now
         restore_group = QtWidgets.QGroupBox("恢复默认配置")
