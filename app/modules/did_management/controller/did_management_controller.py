@@ -1,7 +1,5 @@
 from typing import Optional, Tuple
-import os
-import subprocess
-import winreg
+import re
 
 from PyQt5 import QtWidgets, QtCore, QtGui
 from PyQt5.QtCore import Qt
@@ -22,6 +20,7 @@ from app.modules.did_management.view.did_management_view import (
     ValueButtonDelegate,
 )
 from app.services.diagnostic.dpt_service import DPTService
+from app.common.utils.security_access_helper import SecurityAccessHelper
 
 
 class DPTLoaderThread(QtCore.QThread):
@@ -158,24 +157,26 @@ class DIDController(BaseController):
             return
 
         # 1. 诊断会话控制 (0x10)
-        session_map = {
-            "Default Session": 0x01,
-            "Programming Session": 0x02,
-            "Extended Session": 0x03
-        }
-        # 尝试从配置中获取会话ID，如果配置是名称则映射，如果是数字则直接使用
         target_session = 0x01
         sess_str = row.diagnostic_session
-        if sess_str in session_map:
-            target_session = session_map[sess_str]
+
+        # 1. 尝试解析 "0xXX" 格式 (支持括号、方括号或直接写)
+        match = re.search(r"0x([0-9A-Fa-f]+)", sess_str)
+        if match:
+            target_session = int(match.group(1), 16)
         else:
-            try:
-                if sess_str.startswith("0x"):
-                    target_session = int(sess_str, 16)
-                else:
+            # 兼容旧逻辑或纯文本
+            if "Programming" in sess_str:
+                target_session = 0x02
+            elif "Extended" in sess_str:
+                target_session = 0x03
+            elif "Default" in sess_str:
+                target_session = 0x01
+            else:
+                try:
                     target_session = int(sess_str)
-            except:
-                pass
+                except:
+                    pass
 
         tx_session = bytes([0x10, target_session])
         self.model.apply_update(tx=f"会话控制: {tx_session.hex(' ').upper()}")
@@ -189,15 +190,27 @@ class DIDController(BaseController):
 
         # 2. 安全访问 (0x27)
         sec_level = 0
-        try:
-            if "Level" in row.security_access:
-                sec_level = int(row.security_access.split(" ")[-1])
-            elif row.security_access.startswith("0x"):
-                sec_level = int(row.security_access, 16)
-            elif row.security_access.isdigit():
-                sec_level = int(row.security_access)
-        except:
-            pass
+        sec_str = row.security_access
+
+        # 如果是 Locked 或 None，则不进行安全访问
+        if "Locked" in sec_str or "None" in sec_str:
+            sec_level = 0
+        else:
+            # 尝试解析 "LevelX [0xXX]" 或 "0xXX" 格式
+            match = re.search(r"0x([0-9A-Fa-f]+)", sec_str)
+            if match:
+                sec_level = int(match.group(1), 16)
+            else:
+                try:
+                    if sec_str.isdigit():
+                        sec_level = int(sec_str)
+                    else:
+                        # 尝试提取数字
+                        nums = re.findall(r'\d+', sec_str)
+                        if nums:
+                            sec_level = int(nums[-1])
+                except:
+                    pass
 
         if sec_level > 0:
             # 请求种子: 27 Level (奇数)
@@ -208,15 +221,20 @@ class DIDController(BaseController):
             tx_seed = bytes([0x27, req_seed_level])
             self.model.apply_update(tx=f"请求种子: {tx_seed.hex(' ').upper()}")
             rx_seed = client.send_doip_message(tx_seed)
-
+            self.model.apply_update(rx=f"收到种子: {rx_seed.hex(' ').upper()}")
             if not rx_seed or rx_seed[0] != 0x67:
                 self.model.apply_update(rx=f"请求种子失败: {rx_seed.hex(' ').upper() if rx_seed else '无响应'}")
                 self.model.update_row(row_index, value_color="#EF4444")
                 return
 
             # 计算密钥
+            if len(rx_seed) < 3:
+                 self.model.apply_update(rx=f"种子响应长度不足")
+                 self.model.update_row(row_index, value_color="#EF4444")
+                 return
+
             seed = rx_seed[2:]
-            key = self._calculate_key(sec_level, seed)
+            key, error_msg = SecurityAccessHelper.calculate_key(sec_level, seed)
 
             if key:
                 # 发送密钥: 27 Level+1 Key
@@ -230,7 +248,7 @@ class DIDController(BaseController):
                     return
                 self.model.apply_update(rx=f"安全访问成功: {rx_key.hex(' ').upper()}")
             else:
-                self.model.apply_update(rx="密钥计算失败")
+                self.model.apply_update(rx=error_msg or "密钥计算失败")
                 self.model.update_row(row_index, value_color="#EF4444")
                 return
 
@@ -328,139 +346,6 @@ class DIDController(BaseController):
             else:
                 self.model.update_row(row_index, value="", value_color="#EF4444")
 
-    def _calculate_key(self, level: int, seed: bytes) -> Optional[bytes]:
-        """
-        使用 32 位 Python 子进程调用 DLL 计算安全密钥。
-        """
-        dll_path = r"D:\GAC客户提供\GAC_CCU_SA.dll"
-        shim_script = os.path.join(os.path.dirname(__file__), "security_access_shim.py")
-
-        # 尝试寻找 32 位 Python
-        python_32bit = self._find_32bit_python()
-        if not python_32bit:
-            self.model.apply_update(rx="错误: 未找到 32 位 Python 环境，无法加载 32 位 DLL")
-            return None
-
-        if not os.path.exists(dll_path):
-            self.model.apply_update(rx=f"错误: DLL 文件不存在: {dll_path}")
-            # 仅用于测试：如果 DLL 不存在，返回模拟 Key
-            # return seed
-            return None
-
-        import subprocess
-        try:
-            # 调用子进程
-            cmd = [
-                python_32bit,
-                shim_script,
-                "--dll", dll_path,
-                "--level", str(level),
-                "--seed", seed.hex(),
-                "--variant", "" # 可根据需要传递 variant
-            ]
-
-            # 隐藏控制台窗口 (Windows)
-            startupinfo = subprocess.STARTUPINFO()
-            startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-
-            process = subprocess.Popen(
-                cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                startupinfo=startupinfo,
-                text=True
-            )
-            stdout, stderr = process.communicate()
-
-            if process.returncode != 0:
-                self.model.apply_update(rx=f"密钥计算失败: {stderr.strip() or stdout.strip()}")
-                return None
-
-            key_hex = stdout.strip()
-            try:
-                return bytes.fromhex(key_hex)
-            except ValueError:
-                self.model.apply_update(rx=f"密钥格式错误: {key_hex}")
-                return None
-
-        except Exception as e:
-            self.model.apply_update(rx=f"调用安全算法异常: {e}")
-            return None
-
-    def _find_32bit_python(self) -> Optional[str]:
-        """尝试查找系统中安装的 32 位 Python 解释器路径。"""
-
-        # 1. 尝试通过 py launcher 查找 (py -0 --list)
-        try:
-            # 运行 py -0 --list 获取所有安装版本
-            # 输出示例:
-            #  -V:3.11 *        Python 3.11 (64-bit)
-            #  -V:3.10-32       Python 3.10 (32-bit)
-            result = subprocess.run(["py", "-0", "--list"], capture_output=True, text=True)
-            if result.returncode == 0:
-                for line in result.stdout.splitlines():
-                    if "32-bit" in line:
-                        # 提取版本号，例如 "-V:3.10-32"
-                        parts = line.strip().split()
-                        if parts:
-                            ver_tag = parts[0] # e.g. -V:3.10-32
-                            # 获取该版本的具体路径: py -0 -V:3.10-32 -c "import sys; print(sys.executable)"
-                            path_res = subprocess.run(
-                                ["py", ver_tag, "-c", "import sys; print(sys.executable)"],
-                                capture_output=True, text=True
-                            )
-                            if path_res.returncode == 0:
-                                exe_path = path_res.stdout.strip()
-                                if os.path.exists(exe_path):
-                                    return exe_path
-        except Exception:
-            pass
-
-        # 2. 尝试通过注册表查找 (HKLM/HKCU SOFTWARE\Python\PythonCore\x.x-32\InstallPath)
-        try:
-            for hive in [winreg.HKEY_CURRENT_USER, winreg.HKEY_LOCAL_MACHINE]:
-                try:
-                    with winreg.OpenKey(hive, r"SOFTWARE\Python\PythonCore") as key:
-                        i = 0
-                        while True:
-                            try:
-                                ver = winreg.EnumKey(key, i)
-                                if ver.endswith("-32"):
-                                    with winreg.OpenKey(key, f"{ver}\\InstallPath") as path_key:
-                                        install_path, _ = winreg.QueryValueEx(path_key, "")
-                                        exe_path = os.path.join(install_path, "python.exe")
-                                        if os.path.exists(exe_path):
-                                            return exe_path
-                                i += 1
-                            except OSError:
-                                break
-                except OSError:
-                    pass
-        except Exception:
-            pass
-
-        # 3. 尝试常见的安装路径
-        common_paths = [
-            r"C:\Python37-32\python.exe",
-            r"C:\Python38-32\python.exe",
-            r"C:\Python39-32\python.exe",
-            r"C:\Python310-32\python.exe",
-            r"C:\Python311-32\python.exe",
-            os.path.expandvars(r"%LOCALAPPDATA%\Programs\Python\Python37-32\python.exe"),
-            os.path.expandvars(r"%LOCALAPPDATA%\Programs\Python\Python38-32\python.exe"),
-            os.path.expandvars(r"%LOCALAPPDATA%\Programs\Python\Python39-32\python.exe"),
-            os.path.expandvars(r"%LOCALAPPDATA%\Programs\Python\Python310-32\python.exe"),
-        ]
-        for path in common_paths:
-            if os.path.exists(path):
-                return path
-
-        # 4. 如果用户在环境变量中配置了 PYTHON_32BIT
-        env_path = os.environ.get("PYTHON_32BIT")
-        if env_path and os.path.exists(env_path):
-            return env_path
-
-        return None
 
     def _on_read_clicked(self) -> None:
         """点击“读取”：按勾选顺序处理每一行。"""
@@ -851,42 +736,3 @@ class DIDController(BaseController):
             return data, None
         except ValueError:
             return None, "Value 字段不是合法的十六进制字符串"
-
-
-class ValueDetailDialog(QtWidgets.QDialog):
-    def __init__(self, parent, result, row_info):
-        super().__init__(parent)
-        title = row_info.description or row_info.did
-        self.setWindowTitle(f"{title} 的 DPT 解析")
-        # 这些 Qt 常量在运行时是有效的，若 IDE 静态检查报未解析，可忽略
-        self.setWindowFlag(Qt.Tool, True)  # type: ignore[arg-type]
-        self.setWindowFlag(Qt.WindowStaysOnTopHint, True)  # type: ignore[arg-type]
-        self.setAttribute(Qt.WA_DeleteOnClose, True)  # type: ignore[arg-type]
-        self.setModal(False)
-        self.resize(520, 360)
-        layout = QtWidgets.QVBoxLayout(self)
-
-        bytes_label = QtWidgets.QLabel(f"原始数据: {result.bytes_hex}")
-        layout.addWidget(bytes_label)
-
-        table = QtWidgets.QTableWidget(self)
-        table.setColumnCount(4)
-        table.setHorizontalHeaderLabels(["Bit", "Signal", "Binary", "Status"])
-        table.horizontalHeader().setSectionResizeMode(QtWidgets.QHeaderView.Stretch)
-        table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
-        table.setSelectionMode(QtWidgets.QAbstractItemView.NoSelection)
-        table.verticalHeader().setVisible(False)
-        table.setRowCount(len(result.fields))
-        for idx, field in enumerate(result.fields):
-            table.setItem(idx, 0, QtWidgets.QTableWidgetItem(field.bit_range))
-            table.setItem(idx, 1, QtWidgets.QTableWidgetItem(field.name))
-            table.setItem(idx, 2, QtWidgets.QTableWidgetItem(field.raw_bits))
-            status_parts = [str(field.physical_value)]
-            if field.description:
-                status_parts.append(f"({field.description})")
-            table.setItem(idx, 3, QtWidgets.QTableWidgetItem(" ".join(status_parts)))
-        layout.addWidget(table)
-
-        close_btn = QtWidgets.QPushButton("关闭", self)
-        close_btn.clicked.connect(self.close)
-        layout.addWidget(close_btn, alignment=Qt.AlignRight)  # type: ignore[arg-type]

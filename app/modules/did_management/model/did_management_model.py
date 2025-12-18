@@ -53,7 +53,7 @@ class DIDModel(BaseModel):
         self.max_selection: int = 1
         self.did_rows: List[DIDTableRow] = []
         self.data_format_options = ["STR", "HEX"]
-        self.session_options = ["Default", "Programming", "Extended"]
+        self.session_options = ["Default (0x01)", "Programming (0x02)", "Extended (0x03)"]
         self.security_options = [
             "Locked",
             "Level1 [0x01]",
