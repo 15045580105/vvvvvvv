@@ -1,5 +1,5 @@
-from PyQt5 import QtWidgets
-from PyQt5.QtCore import Qt, pyqtSignal, QTimer
+from PyQt5 import QtWidgets, QtCore
+from PyQt5.QtCore import Qt, pyqtSignal
 from PyQt5.QtGui import QStandardItemModel, QStandardItem
 
 from app.common.ui.widgets import ModernButton
@@ -62,13 +62,62 @@ NAME_CN = {
 }
 
 
+class CenteredCheckBoxDelegate(QtWidgets.QStyledItemDelegate):
+    def paint(self, painter, option, index):
+        # Draw standard background (selection, etc.)
+        self.initStyleOption(option, index)
+        style = option.widget.style() if option.widget else QtWidgets.QApplication.style()
+        style.drawPrimitive(QtWidgets.QStyle.PE_PanelItemViewItem, option, painter, option.widget)
+
+        # Get check state
+        state = index.data(Qt.CheckStateRole)
+        if state is None:
+            return
+
+        # Draw checkbox centered
+        opt = QtWidgets.QStyleOptionButton()
+        opt.state |= QtWidgets.QStyle.State_Enabled
+        if state == Qt.Checked:
+            opt.state |= QtWidgets.QStyle.State_On
+        else:
+            opt.state |= QtWidgets.QStyle.State_Off
+
+        # Center logic
+        indicator_width = style.pixelMetric(QtWidgets.QStyle.PM_IndicatorWidth)
+        indicator_height = style.pixelMetric(QtWidgets.QStyle.PM_IndicatorHeight)
+        rect = option.rect
+        x = rect.x() + (rect.width() - indicator_width) // 2
+        y = rect.y() + (rect.height() - indicator_height) // 2
+        opt.rect = QtCore.QRect(x, y, indicator_width, indicator_height)
+
+        style.drawPrimitive(QtWidgets.QStyle.PE_IndicatorCheckBox, opt, painter, option.widget)
+
+    def editorEvent(self, event, model, option, index):
+        # Handle click to toggle
+        if event.type() == QtCore.QEvent.MouseButtonRelease:
+            # Toggle
+            state = index.data(Qt.CheckStateRole)
+            new_state = Qt.Unchecked if state == Qt.Checked else Qt.Checked
+            model.setData(index, new_state, Qt.CheckStateRole)
+            return True
+        return super().editorEvent(event, model, option, index)
+
+
 class UDSSequenceView(QtWidgets.QWidget):
     send_requested = pyqtSignal(str)
     insert_requested = pyqtSignal(str)
     table_operation_requested = pyqtSignal(str)
     delay_insert_requested = pyqtSignal(str)
     send_batch_requested = pyqtSignal(int)
-    command_selected = pyqtSignal(str)  # emit code like '10' or '10.01'
+    run_sequence_requested = pyqtSignal(int)  # New signal for running the sequence
+    config_save_requested = pyqtSignal(str)
+    config_load_requested = pyqtSignal(str)
+    config_delete_requested = pyqtSignal(str)
+    config_import_requested = pyqtSignal()
+    config_export_requested = pyqtSignal()
+    add_command_requested = pyqtSignal(str)
+    insert_command_requested = pyqtSignal(str)
+    command_selected = pyqtSignal(str)
 
     def __init__(self, model, parent=None):
         super().__init__(parent)
@@ -81,96 +130,113 @@ class UDSSequenceView(QtWidgets.QWidget):
     def setup_ui(self):
         layout = QtWidgets.QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        # ensure whole view background is white to match the table area
+
+        # Global style optimization
+        self.setStyleSheet('''
+            QWidget#uds_root { background: #FFFFFF; }
+            QGroupBox { 
+                background: #FFFFFF; 
+                font-weight: bold;
+                border: 1px solid #D1D5DB;
+                border-radius: 6px;
+                margin-top: 6px;
+                padding-top: 10px;
+            }
+            QGroupBox::title {
+                subcontrol-origin: margin;
+                left: 10px;
+                padding: 0 3px 0 3px;
+            }
+            QSplitter::handle { 
+                background-color: #E5E7EB; 
+                border: 1px solid #D1D5DB;
+            }
+            QSplitter::handle:horizontal {
+                width: 4px;
+            }
+            QSplitter::handle:vertical {
+                height: 4px;
+            }
+            QTreeView { 
+                background: #FFFFFF; 
+                border: 1px solid #9CA3AF; 
+                border-radius: 4px;
+            }
+            QHeaderView::section { 
+                background-color: #F3F4F6; 
+                border: 1px solid #D1D5DB; 
+                padding: 4px; 
+                font-weight: bold; 
+                color: #374151; 
+            }
+            QTableCornerButton::section { 
+                background-color: #F3F4F6; 
+                border: 1px solid #D1D5DB; 
+            }
+            /* Ensure the first column header looks the same */
+            QHeaderView::section:first {
+                background-color: #F3F4F6;
+            }
+        ''')
         try:
-            # set a more global style for this widget so splitter handles, groupbox and tree view
-            # use white backgrounds (fixes the left gray strip seen in the screenshot)
-            self.setStyleSheet('''
-                QWidget#uds_root { background: #FFFFFF; }
-                QGroupBox { background: #FFFFFF; }
-                QSplitter::handle { background: #FFFFFF; }
-                QTreeView { background: #FFFFFF; }
-                QHeaderView::section { background-color: #FFFFFF; }
-                QTableCornerButton::section { background-color: #FFFFFF; }
-            ''')
-            # set objectName so the selector can target this instance if supported
-            try:
-                self.setObjectName('uds_root')
-            except Exception:
-                pass
+            self.setObjectName('uds_root')
         except Exception:
             pass
 
-        # also force autoFillBackground so parent background applies in some styles
-        try:
-            self.setAutoFillBackground(True)
-        except Exception:
-            pass
+        # ... (rest of setup_ui logic remains similar but simplified for brevity in edit)
 
         main_splitter = QtWidgets.QSplitter()
         main_splitter.setOrientation(Qt.Vertical)
+        main_splitter.setHandleWidth(4)
 
         cmd_group = QtWidgets.QGroupBox("UDS服务序列")
-        try:
-            cmd_group.setStyleSheet('QGroupBox { background: #FFFFFF; border: none; }')
-        except Exception:
-            pass
         cmd_layout = QtWidgets.QHBoxLayout(cmd_group)
         cmd_layout.setSpacing(0)
-        cmd_layout.setContentsMargins(0, 0, 0, 0)
+        cmd_layout.setContentsMargins(4, 12, 4, 4)
 
         cmd_splitter = QtWidgets.QSplitter()
         cmd_splitter.setOrientation(Qt.Horizontal)
-        try:
-            cmd_splitter.setStyleSheet('background: #FFFFFF;')
-        except Exception:
-            pass
-        # make splitter handle white so the long left strip isn't gray
-        try:
-            cmd_splitter.setStyleSheet(cmd_splitter.styleSheet() + ' QSplitter::handle { background: #FFFFFF; }')
-        except Exception:
-            pass
+        cmd_splitter.setHandleWidth(4)
 
-        # left side: tree view built from model.tree_data
+        # left side: tree view
         self.cmd_tree = QtWidgets.QTreeView()
-        try:
-            self.cmd_tree.setStyleSheet('background: #FFFFFF; border: none;')
-        except Exception:
-            pass
         self._build_tree_model()
         self.cmd_tree.clicked.connect(self._on_tree_item_clicked)
+        self.cmd_tree.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.cmd_tree.customContextMenuRequested.connect(self._on_tree_context_menu)
         cmd_splitter.addWidget(self.cmd_tree)
 
         self.editor_widget = self.create_editor_widget()
         cmd_splitter.addWidget(self.editor_widget)
 
         cmd_splitter.setStretchFactor(0, 1)
-        cmd_splitter.setStretchFactor(1, 2)
-        cmd_splitter.setSizes([300, 600])
+        cmd_splitter.setStretchFactor(1, 3)
+        cmd_splitter.setSizes([250, 650])
 
         cmd_layout.addWidget(cmd_splitter)
         main_splitter.addWidget(cmd_group)
 
         log_group = QtWidgets.QGroupBox("执行日志")
         log_layout = QtWidgets.QVBoxLayout(log_group)
-        log_layout.setContentsMargins(0, 0, 0, 0)
+        log_layout.setContentsMargins(4, 12, 4, 4)
 
         self.exec_log = QtWidgets.QTextEdit()
         self.exec_log.setReadOnly(True)
         self.exec_log.setPlaceholderText("UDS指令执行日志将在这里显示...\n包含发送数据、响应数据、时间戳")
+        self.exec_log.setStyleSheet("border: 1px solid #E5E7EB; border-radius: 4px;")
         log_layout.addWidget(self.exec_log)
 
         main_splitter.addWidget(log_group)
 
         main_splitter.setStretchFactor(0, 3)
         main_splitter.setStretchFactor(1, 1)
-        main_splitter.setSizes([525, 175])
 
         layout.addWidget(main_splitter)
 
         self.clear_editor()
 
     def _build_tree_model(self):
+        # ...existing code...
         tree = QStandardItemModel()
         root_item = QStandardItem("CustomRequest")
         root_item.setEditable(False)
@@ -212,17 +278,103 @@ class UDSSequenceView(QtWidgets.QWidget):
         if code:
             self.command_selected.emit(code)
 
+    def _on_tree_context_menu(self, pos):
+        index = self.cmd_tree.indexAt(pos)
+        if not index.isValid():
+            return
+
+        code = index.data(Qt.UserRole)
+        if not code:
+            return
+
+        menu = QtWidgets.QMenu(self)
+
+        action_add = menu.addAction("添加到末尾")
+        action_add.triggered.connect(lambda: self.add_command_requested.emit(code))
+
+        action_insert = menu.addAction("插入到选中位置")
+        action_insert.triggered.connect(lambda: self.insert_command_requested.emit(code))
+
+        menu.exec_(self.cmd_tree.viewport().mapToGlobal(pos))
+
+    def _on_table_context_menu(self, pos):
+        item = self.data_table.itemAt(pos)
+        # Show menu even if no item is clicked (for "Check All" etc.)
+
+        menu = QtWidgets.QMenu(self)
+
+        act_check_all = menu.addAction("勾选全部")
+        act_check_all.triggered.connect(lambda _: self._set_all_check_state(Qt.Checked))
+
+        act_uncheck_all = menu.addAction("取消勾选全部")
+        act_uncheck_all.triggered.connect(lambda _: self._set_all_check_state(Qt.Unchecked))
+
+        menu.addSeparator()
+
+        act_check_sel = menu.addAction("勾选选择")
+        act_check_sel.triggered.connect(lambda _: self._set_selected_check_state(Qt.Checked))
+
+        act_uncheck_sel = menu.addAction("取消勾选选择")
+        act_uncheck_sel.triggered.connect(lambda _: self._set_selected_check_state(Qt.Unchecked))
+
+        menu.addSeparator()
+
+        act_del_sel = menu.addAction("删除选中")
+        act_del_sel.triggered.connect(lambda _: self.delete_selected_rows())
+
+        act_del_all = menu.addAction("删除所有")
+        act_del_all.triggered.connect(self.reset_table)
+
+        menu.exec_(self.data_table.viewport().mapToGlobal(pos))
+
+    def _set_all_check_state(self, state):
+        for row in range(self.data_table.rowCount()):
+            item = self.data_table.item(row, 0)
+            if item:
+                item.setData(Qt.CheckStateRole, state)
+
+    def _set_selected_check_state(self, state):
+        selected_rows = set()
+        for item in self.data_table.selectedItems():
+            selected_rows.add(item.row())
+
+        for row in selected_rows:
+            item = self.data_table.item(row, 0)
+            if item:
+                item.setData(Qt.CheckStateRole, state)
+
+    def delete_selected_rows(self):
+        """Delete selected rows safely."""
+        try:
+            selected = self.data_table.selectedItems()
+            rows = set()
+            if selected:
+                rows = set(item.row() for item in selected)
+
+            # If no selection (or empty), try current row
+            if not rows:
+                current = self.data_table.currentRow()
+                if current >= 0:
+                    rows.add(current)
+
+            # Sort reverse to delete from bottom up
+            for row in sorted(list(rows), reverse=True):
+                self.data_table.removeRow(row)
+
+        except Exception as e:
+            print(f"Error deleting rows: {e}")
+
     def create_editor_widget(self):
         editor = QtWidgets.QWidget()
-        # make editor background white so left strip area matches table background
         try:
             editor.setStyleSheet('background: #FFFFFF;')
         except Exception:
             pass
         layout = QtWidgets.QVBoxLayout(editor)
         layout.setSpacing(8)
-        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setContentsMargins(8, 0, 0, 0)
 
+        # Request Row
         req_row_layout = QtWidgets.QHBoxLayout()
         req_label = QtWidgets.QLabel("Request:")
         req_label.setStyleSheet("font-weight: 600; color: #374151;")
@@ -230,16 +382,19 @@ class UDSSequenceView(QtWidgets.QWidget):
 
         self.request_edit = QtWidgets.QTextEdit()
         self.request_edit.setPlaceholderText("输入请求数据，如: 10 03")
-        self.request_edit.setMaximumHeight(60)
+        self.request_edit.setMaximumHeight(50)
+        self.request_edit.setStyleSheet("border: 1px solid #D1D5DB; border-radius: 4px;")
 
         self.send_btn = ModernButton("发送", "#059669")
         self.send_btn.clicked.connect(self._on_send_clicked_internal)
         self.send_btn.setFixedWidth(80)
+        self.send_btn.setFixedHeight(50)
 
         req_row_layout.addWidget(req_label)
         req_row_layout.addWidget(self.request_edit)
         req_row_layout.addWidget(self.send_btn)
 
+        # Response Row
         resp_row_layout = QtWidgets.QHBoxLayout()
         resp_label = QtWidgets.QLabel("Response:")
         resp_label.setStyleSheet("font-weight: 600; color: #374151;")
@@ -247,22 +402,65 @@ class UDSSequenceView(QtWidgets.QWidget):
 
         self.response_edit = QtWidgets.QTextEdit()
         self.response_edit.setPlaceholderText("预期响应数据，如: 50 03")
-        self.response_edit.setMaximumHeight(60)
+        self.response_edit.setMaximumHeight(50)
+        self.response_edit.setStyleSheet("border: 1px solid #D1D5DB; border-radius: 4px;")
 
         self.insert_btn = ModernButton("插入", "#3B82F6")
         self.insert_btn.clicked.connect(self._on_insert_clicked_internal)
         self.insert_btn.setFixedWidth(80)
+        self.insert_btn.setFixedHeight(50)
 
         resp_row_layout.addWidget(resp_label)
         resp_row_layout.addWidget(self.response_edit)
         resp_row_layout.addWidget(self.insert_btn)
 
+        # Toolbar Row (Config + Operations + Run)
         btn_row_layout = QtWidgets.QHBoxLayout()
         btn_row_layout.setSpacing(6)
-        # give symmetric small margins so the icon buttons sit centered vertically in the toolbar
-        btn_row_layout.setContentsMargins(6, 6, 6, 6)
+        btn_row_layout.setContentsMargins(0, 6, 0, 6)
         btn_row_layout.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
 
+        # --- Config Section ---
+        self.config_combo = QtWidgets.QComboBox()
+        self.config_combo.setEditable(False)
+        self.config_combo.setMinimumWidth(120)
+        self.config_combo.setFixedHeight(32)
+        self.config_combo.currentTextChanged.connect(lambda text: self.config_load_requested.emit(text) if text else None)
+
+        self.save_config_btn = ModernButton("保存", "#3B82F6")
+        self.save_config_btn.setFixedWidth(60)
+        self.save_config_btn.setFixedHeight(32)
+        self.save_config_btn.clicked.connect(self._on_save_config_clicked)
+
+        self.del_config_btn = ModernButton("删除", "#EF4444")
+        self.del_config_btn.setFixedWidth(60)
+        self.del_config_btn.setFixedHeight(32)
+        self.del_config_btn.clicked.connect(self._on_del_config_clicked)
+
+        self.import_config_btn = ModernButton("导入", "#10B981")
+        self.import_config_btn.setFixedWidth(60)
+        self.import_config_btn.setFixedHeight(32)
+        self.import_config_btn.clicked.connect(self.config_import_requested.emit)
+
+        self.export_config_btn = ModernButton("导出", "#8B5CF6")
+        self.export_config_btn.setFixedWidth(60)
+        self.export_config_btn.setFixedHeight(32)
+        self.export_config_btn.clicked.connect(self.config_export_requested.emit)
+
+        btn_row_layout.addWidget(self.config_combo)
+        btn_row_layout.addWidget(self.save_config_btn)
+        btn_row_layout.addWidget(self.del_config_btn)
+        btn_row_layout.addWidget(self.import_config_btn)
+        btn_row_layout.addWidget(self.export_config_btn)
+
+        # Separator
+        line = QtWidgets.QFrame()
+        line.setFrameShape(QtWidgets.QFrame.VLine)
+        line.setFrameShadow(QtWidgets.QFrame.Sunken)
+        line.setStyleSheet("color: #E5E7EB;")
+        btn_row_layout.addWidget(line)
+
+        # --- Operation Buttons ---
         self.icon_btn_add = self.create_icon_button("➕", "添加参数", "#10B981", "添加")
         self.icon_btn_delete = self.create_icon_button("➖", "删除选中参数", "#EF4444", "删除")
         self.icon_btn_up = self.create_icon_button("↑", "上移", "#0EA5E9", "上移")
@@ -294,51 +492,66 @@ class UDSSequenceView(QtWidgets.QWidget):
             btn.setFixedSize(32, 32)
             return btn
 
-        delay_color = "#10B981"
+        delay_color = "#F59E0B"
         self.delay_icon_btn = create_styled_button("⏱", "插入延迟指令 (默认 1000 ms)", delay_color)
-        # clicking the styled button emits the default delay (1000 ms)
         self.delay_icon_btn.clicked.connect(lambda: self.delay_insert_requested.emit('1000'))
 
-        # ensure all icon buttons have the same fixed size and are vertically centered
         for b in (self.icon_btn_add, self.icon_btn_delete, self.delay_icon_btn, self.icon_btn_up, self.icon_btn_down):
-            try:
-                b.setFixedSize(32, 32)
-            except Exception:
-                pass
             btn_row_layout.addWidget(b, 0, Qt.AlignVCenter)
+
+        # Separator 2
+        line2 = QtWidgets.QFrame()
+        line2.setFrameShape(QtWidgets.QFrame.VLine)
+        line2.setFrameShadow(QtWidgets.QFrame.Sunken)
+        line2.setStyleSheet("color: #E5E7EB;")
+        btn_row_layout.addWidget(line2)
+
+        # 3E Toggle
+        self.btn_3e = QtWidgets.QPushButton("💓")
+        self.btn_3e.setCheckable(True)
+        self.btn_3e.setToolTip("Tester Present: 3E 80 (点击切换 3E 00)")
+        self.btn_3e.setFixedSize(32, 32)
+        self._apply_toggle_style(self.btn_3e, "#6366F1") # Indigo
+        btn_row_layout.addWidget(self.btn_3e)
+
+        # Stop on Fail Toggle
+        self.btn_stop_fail = QtWidgets.QPushButton("🛑")
+        self.btn_stop_fail.setCheckable(True)
+        self.btn_stop_fail.setToolTip("遇错停止: 选中后遇到错误将停止执行")
+        self.btn_stop_fail.setFixedSize(32, 32)
+        self.btn_stop_fail.setChecked(True)
+        self._apply_toggle_style(self.btn_stop_fail, "#EF4444") # Red
+        btn_row_layout.addWidget(self.btn_stop_fail)
 
         btn_row_layout.addStretch()
 
-        # send-count and batch-send button on the far right of toolbar
+        # --- Run Section ---
         self.send_times_label = QtWidgets.QLabel("次数:")
         self.send_times_label.setStyleSheet("color: #374151; font-weight: 600;")
-        self.send_times_label.setFixedWidth(36)
 
         self.send_times_spin = QtWidgets.QSpinBox()
         self.send_times_spin.setRange(1, 9999)
         self.send_times_spin.setValue(1)
-        self.send_times_spin.setFixedWidth(70)
-        self.send_times_spin.setFixedHeight(28)
+        self.send_times_spin.setFixedWidth(60)
+        self.send_times_spin.setFixedHeight(32)
 
-        self.batch_send_btn = ModernButton("列表发送", "#3B82F6")
-        self.batch_send_btn.setFixedHeight(32)
-        self.batch_send_btn.setFixedWidth(90)
-        # emit the configured number of sends (ms) when clicked
-        self.batch_send_btn.clicked.connect(lambda: self.send_batch_requested.emit(self.send_times_spin.value()))
+        self.run_sequence_btn = ModernButton("执行序列", "#8B5CF6")
+        self.run_sequence_btn.setFixedHeight(32)
+        self.run_sequence_btn.setFixedWidth(90)
+        self.run_sequence_btn.clicked.connect(lambda: self.run_sequence_requested.emit(self.send_times_spin.value()))
 
         btn_row_layout.addWidget(self.send_times_label)
         btn_row_layout.addWidget(self.send_times_spin)
-        btn_row_layout.addWidget(self.batch_send_btn)
+        btn_row_layout.addWidget(self.run_sequence_btn)
 
-        # Wrap the button row into a fixed-height toolbar widget so icons stay vertically aligned
+        # Wrap the button row into a fixed-height toolbar widget
         toolbar_widget = QtWidgets.QWidget()
         toolbar_widget.setLayout(btn_row_layout)
-        # slightly less than 44 gives tighter vertical centering for 32px buttons
-        toolbar_widget.setFixedHeight(40)
+        toolbar_widget.setFixedHeight(44)
 
         self.data_table = QtWidgets.QTableWidget()
         self.setup_table()
-        self.data_table.setMinimumHeight(200)
+        # self.data_table.setMinimumHeight(200)
 
         layout.addLayout(req_row_layout)
         layout.addLayout(resp_row_layout)
@@ -384,29 +597,34 @@ class UDSSequenceView(QtWidgets.QWidget):
         self.data_table.setColumnCount(5)
         self.data_table.setHorizontalHeaderLabels(["", "Name", "Request", "AddrType", "Response"])
         header = self.data_table.horizontalHeader()
-        # use Fixed resize mode per-column — we compute widths to exactly fill the viewport
-        header.setSectionResizeMode(QtWidgets.QHeaderView.Fixed)
-        # ensure each column uses fixed mode so our computed widths are applied
-        for col in range(self.data_table.columnCount()):
-            header.setSectionResizeMode(col, QtWidgets.QHeaderView.Fixed)
+
+        # Allow user to resize columns
+        header.setSectionResizeMode(QtWidgets.QHeaderView.Interactive)
+        header.setStretchLastSection(True)
+
         header.setSectionsClickable(True)
         header.setHighlightSections(True)
-        # keep interactive resizing but we will control widths programmatically
-        header.setStretchLastSection(False)
+        header.setSectionsMovable(True)  # Enable draggable columns
+
         self.data_table.setAlternatingRowColors(True)
         self.data_table.setSelectionBehavior(QtWidgets.QTableWidget.SelectRows)
+        self.data_table.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.data_table.customContextMenuRequested.connect(self._on_table_context_menu)
         # show vertical header so rows are numbered (like the screenshot)
         self.data_table.verticalHeader().setVisible(True)
         # set default row height similar to DID
         try:
-            self.data_table.verticalHeader().setDefaultSectionSize(34)
+            self.data_table.verticalHeader().setDefaultSectionSize(42)
         except Exception:
             pass
 
         # Use delegates from DID view for full-cell editing and combo box for AddrType
         self._full_delegate = FullCellDelegate(self.data_table)
         self._addrtype_delegate = ComboBoxDelegate(items_provider=lambda idx: ["physical", "functional"], parent=self.data_table)
-        # assign delegates to columns: Name(1), Request(2), AddrType(3), Response(4)
+        self._checkbox_delegate = CenteredCheckBoxDelegate(self.data_table)
+
+        # assign delegates to columns: Checkbox(0), Name(1), Request(2), AddrType(3), Response(4)
+        self.data_table.setItemDelegateForColumn(0, self._checkbox_delegate)
         self.data_table.setItemDelegateForColumn(1, self._full_delegate)
         self.data_table.setItemDelegateForColumn(2, self._full_delegate)
         self.data_table.setItemDelegateForColumn(3, self._addrtype_delegate)
@@ -417,15 +635,10 @@ class UDSSequenceView(QtWidgets.QWidget):
         # ensure vertical header shows row numbers and a comfortable width
         try:
             vh = self.data_table.verticalHeader()
-            vh.setDefaultSectionSize(34)
+            vh.setDefaultSectionSize(42)  # Increased row height
             vh.setVisible(True)
             vh.setFixedWidth(36)
             vh.setSectionResizeMode(QtWidgets.QHeaderView.Fixed)
-            # style vertical header to match table background and center numbers
-            try:
-                vh.setStyleSheet('QHeaderView::section { background-color: #FFFFFF; border: none; }')
-            except Exception:
-                pass
         except Exception:
             pass
 
@@ -433,86 +646,35 @@ class UDSSequenceView(QtWidgets.QWidget):
         self.data_table.setStyleSheet("""
             QTableWidget {
                 background-color: #FFFFFF;
-                border: 1px solid #E5E7EB;
+                border: 1px solid #D1D5DB;
                 border-radius: 6px;
                 font-size: 9pt;
             }
-            QHeaderView::section { background-color: #FFFFFF; border: 1px solid #F1F5F9; padding: 6px; }
-            QTableCornerButton::section { background-color: #FFFFFF; border: none; }
+            QHeaderView::section { background-color: #F3F4F6; border: 1px solid #D1D5DB; padding: 6px; font-weight: bold; color: #374151; }
+            QTableCornerButton::section { background-color: #F3F4F6; border: 1px solid #D1D5DB; }
             QTableWidget::item { padding: 6px; }
-            /* ensure vertical header sections match white background */
-            QHeaderView::section:vertical { background-color: #FFFFFF; }
         """)
         try:
             # also ensure the viewport background is white
             self.data_table.viewport().setStyleSheet('background: #FFFFFF;')
         except Exception:
             pass
-        # set initial column widths after layout
-        QtWidgets.QApplication.instance().processEvents()
-        QTimer.singleShot(0, self._apply_column_widths)
+
+        # Set initial column widths
+        self.data_table.setColumnWidth(0, 40)   # Checkbox - slightly narrower
+        self.data_table.setColumnWidth(1, 350)  # Name
+        self.data_table.setColumnWidth(2, 150)  # Request
+        self.data_table.setColumnWidth(3, 100)  # AddrType
+        # Last column (Response) will stretch
 
     def _apply_column_widths(self, force: bool = False):
-        """Apply relative column widths to match the screenshot proportions.
-
-        Column layout: [checkbox (fixed), Name (largest), Request, AddrType (small), Response]
-        """
-        try:
-            # compute available width using the table viewport so columns fill visible area
-            total = max(1, self.data_table.viewport().width())
-            chk_w = 36
-            remaining = max(0, total - chk_w)
-            # weights for Name, Request, AddrType, Response — tuned to match screenshot (image 10)
-            weights = [0.46, 0.20, 0.12, 0.22]
-            # compute initial widths
-            w1 = int(remaining * weights[0])
-            w2 = int(remaining * weights[1])
-            w3 = int(remaining * weights[2])
-            # ensure last column fills any rounding gap so total columns fill remaining area
-            w4 = max(80, remaining - (w1 + w2 + w3))
-            # ensure non-negative
-            if w4 < 80:
-                # redistribute proportionally if too small
-                total_weight = sum(weights)
-                w1 = int(remaining * (weights[0] / total_weight))
-                w2 = int(remaining * (weights[1] / total_weight))
-                w3 = int(remaining * (weights[2] / total_weight))
-                w4 = max(80, remaining - (w1 + w2 + w3))
-            self.data_table.setColumnWidth(0, chk_w)
-            self.data_table.setColumnWidth(1, w1)
-            self.data_table.setColumnWidth(2, w2)
-            self.data_table.setColumnWidth(3, w3)
-            self.data_table.setColumnWidth(4, w4)
-            # ensure header visual sections use same widths
-            try:
-                header = self.data_table.horizontalHeader()
-                header.resizeSection(0, chk_w)
-                header.resizeSection(1, w1)
-                header.resizeSection(2, w2)
-                header.resizeSection(3, w3)
-                header.resizeSection(4, w4)
-            except Exception:
-                pass
-            # final adjustment: if tiny gap remains, increase last column
-            try:
-                sumw = chk_w + w1 + w2 + w3 + w4
-                gap = total - sumw
-                if gap > 0:
-                    header = self.data_table.horizontalHeader()
-                    header.resizeSection(4, w4 + gap)
-                    self.data_table.setColumnWidth(4, w4 + gap)
-            except Exception:
-                pass
-        except Exception:
-            pass
+        # Deprecated: we use Interactive mode now
+        pass
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
-        # reapply column widths on resize to maintain proportions
-        try:
-            self._apply_column_widths()
-        except Exception:
-            pass
+        # No longer forcing column widths on resize
+
 
     # --- View API for controller ---
     def clear_editor(self):
@@ -556,25 +718,11 @@ class UDSSequenceView(QtWidgets.QWidget):
         addrtype = 'physical'
         response = description
 
-        # first column: use a centered QCheckBox widget so background matches the row
-        chk_widget = QtWidgets.QWidget()
-        chk_layout = QtWidgets.QHBoxLayout(chk_widget)
-        chk_layout.setContentsMargins(6, 0, 6, 0)
-        chk_layout.setAlignment(Qt.AlignCenter)
-        cb = QtWidgets.QCheckBox()
-        cb.setChecked(True)
-        # minimal indicator size so it looks consistent and transparent background
-        cb.setStyleSheet('QCheckBox::indicator { width: 16px; height: 16px; } QCheckBox { background: transparent; }')
-        chk_layout.addWidget(cb)
-        # ensure the cell widget is transparent so alternating row colors remain visible
-        chk_widget.setStyleSheet('background: transparent;')
-        # make cell widget truly transparent so alternating row colors show through
-        try:
-            chk_widget.setAutoFillBackground(False)
-            chk_widget.setAttribute(Qt.WA_TranslucentBackground, True)
-        except Exception:
-            pass
-        self.data_table.setCellWidget(row, 0, chk_widget)
+        # first column: use QTableWidgetItem with CheckStateRole, rendered by CenteredCheckBoxDelegate
+        chk_item = QtWidgets.QTableWidgetItem()
+        chk_item.setFlags(Qt.ItemIsSelectable | Qt.ItemIsEnabled | Qt.ItemIsUserCheckable)
+        chk_item.setData(Qt.CheckStateRole, Qt.Checked)
+        self.data_table.setItem(row, 0, chk_item)
 
         # Name
         self.data_table.setItem(row, 1, QtWidgets.QTableWidgetItem(name))
@@ -598,38 +746,13 @@ class UDSSequenceView(QtWidgets.QWidget):
         return self.data_table.currentRow()
 
     def swap_table_rows(self, row1: int, row2: int):
-        # swap widget contents and item texts to preserve widgets and avoid invalid setItem(None)
         cols = self.data_table.columnCount()
-        widgets_row1 = [self.data_table.cellWidget(row1, c) for c in range(cols)]
-        widgets_row2 = [self.data_table.cellWidget(row2, c) for c in range(cols)]
         for col in range(cols):
-            w1 = widgets_row1[col]
-            w2 = widgets_row2[col]
-            if w1 is not None or w2 is not None:
-                # swap widgets
-                if w1 is not None:
-                    self.data_table.removeCellWidget(row1, col)
-                if w2 is not None:
-                    self.data_table.removeCellWidget(row2, col)
-                if w2 is not None:
-                    self.data_table.setCellWidget(row1, col, w2)
-                if w1 is not None:
-                    self.data_table.setCellWidget(row2, col, w1)
-            else:
-                # swap item texts
-                item1 = self.data_table.item(row1, col)
-                item2 = self.data_table.item(row2, col)
-                t1 = item1.text() if item1 is not None else ''
-                t2 = item2.text() if item2 is not None else ''
-                # ensure there is an item to set text into
-                if item1 is None:
-                    self.data_table.setItem(row1, col, QtWidgets.QTableWidgetItem(t2))
-                else:
-                    item1.setText(t2)
-                if item2 is None:
-                    self.data_table.setItem(row2, col, QtWidgets.QTableWidgetItem(t1))
-                else:
-                    item2.setText(t1)
+            # Swap QTableWidgetItem for all columns (including checkbox column 0)
+            item1 = self.data_table.takeItem(row1, col)
+            item2 = self.data_table.takeItem(row2, col)
+            self.data_table.setItem(row1, col, item2)
+            self.data_table.setItem(row2, col, item1)
 
     def get_request_text(self) -> str:
         return self.request_edit.toPlainText().strip()
@@ -646,3 +769,97 @@ class UDSSequenceView(QtWidgets.QWidget):
 
     def _on_insert_clicked_internal(self):
         self.insert_requested.emit(self.get_response_text())
+
+    def _on_save_config_clicked(self):
+        current_name = self.config_combo.currentText()
+        name, ok = QtWidgets.QInputDialog.getText(self, "保存配置", "请输入配置名称:", text=current_name)
+        if ok and name:
+            self.config_save_requested.emit(name)
+
+    def _on_del_config_clicked(self):
+        current = self.config_combo.currentText()
+        if current and current != "默认":
+            reply = QtWidgets.QMessageBox.question(self, "确认删除", f"确定要删除配置 '{current}' 吗?",
+                                                 QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No)
+            if reply == QtWidgets.QMessageBox.Yes:
+                self.config_delete_requested.emit(current)
+
+    def get_table_data(self):
+        """Return list of dicts representing the table rows."""
+        data = []
+        for row in range(self.data_table.rowCount()):
+            # Checkbox
+            chk_item = self.data_table.item(row, 0)
+            checked = True
+            if chk_item:
+                checked = (chk_item.data(Qt.CheckStateRole) == Qt.Checked)
+
+            name = self.data_table.item(row, 1).text() if self.data_table.item(row, 1) else ""
+            request = self.data_table.item(row, 2).text() if self.data_table.item(row, 2) else ""
+            addrtype = self.data_table.item(row, 3).text() if self.data_table.item(row, 3) else "physical"
+            response = self.data_table.item(row, 4).text() if self.data_table.item(row, 4) else ""
+
+            data.append({
+                "checked": checked,
+                "name": name,
+                "request": request,
+                "addrtype": addrtype,
+                "response": response
+            })
+        return data
+
+    def set_table_data(self, data):
+        """Populate table from list of dicts."""
+        self.data_table.setRowCount(0)
+        if not data or not isinstance(data, list):
+            return
+        for item in data:
+            if not isinstance(item, dict):
+                continue
+            self.append_table_row(item.get("name", ""), item.get("request", ""), item.get("response", ""))
+            # Update addrtype and checked state
+            row = self.data_table.rowCount() - 1
+
+            # AddrType
+            self.data_table.setItem(row, 3, QtWidgets.QTableWidgetItem(item.get("addrtype", "physical")))
+
+            # Checked
+            chk_item = self.data_table.item(row, 0)
+            if chk_item:
+                state = Qt.Checked if item.get("checked", True) else Qt.Unchecked
+                chk_item.setData(Qt.CheckStateRole, state)
+
+    def update_config_list(self, names, current=None):
+        self.config_combo.blockSignals(True)
+        self.config_combo.clear()
+        # Ensure "默认" is first
+        combo_items = ["默认"] + [n for n in names if n != "默认"]
+        self.config_combo.addItems(combo_items)
+
+        if current and current in combo_items:
+            self.config_combo.setCurrentText(current)
+        else:
+            self.config_combo.setCurrentIndex(0)
+        self.config_combo.blockSignals(False)
+
+    def _update_3e_text(self, checked):
+        self.btn_3e.setText("3E 00" if checked else "3E 80")
+
+    def _apply_toggle_style(self, btn, active_color):
+        btn.setStyleSheet(f"""
+            QPushButton {{
+                background-color: #F3F4F6;
+                color: #374151;
+                border: 1px solid #D1D5DB;
+                border-radius: 6px;
+                font-weight: bold;
+            }}
+            QPushButton:checked {{
+                background-color: {active_color};
+                color: white;
+                border: 2px solid {active_color};
+            }}
+            QPushButton:hover:!checked {{
+                background-color: #E5E7EB;
+            }}
+        """)

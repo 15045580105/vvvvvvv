@@ -1,7 +1,11 @@
+import json
+import os
 from app.core.base_model import BaseModel
 
 
 class UDSSequenceModel(BaseModel):
+    CONFIG_FILE = "uds_sequences.json"
+
     def __init__(self, parent=None):
         super().__init__(parent)
         # nested tree data (no new classes) — each node: {code, name, children}
@@ -70,6 +74,7 @@ class UDSSequenceModel(BaseModel):
         # flat commands list for compatibility with other code that expects a list
         self.commands = [f"{n['code']} {n['name']}" for n in self.tree_data]
         self.log = ""
+        self.configs = self._load_configs_from_file()
 
     def get_tree_data(self):
         return self.tree_data
@@ -97,3 +102,82 @@ class UDSSequenceModel(BaseModel):
             return None, None
 
         return recurse(self.tree_data, parts, [])
+
+    def _load_configs_from_file(self):
+        if os.path.exists(self.CONFIG_FILE):
+            try:
+                with open(self.CONFIG_FILE, 'r', encoding='utf-8') as f:
+                    return json.load(f)
+            except Exception:
+                return {}
+        return {}
+
+    def save_config(self, config_name: str, data: list):
+        """
+        Save the given configuration data to a file.
+        Args:
+            config_name: The name of the configuration.
+            data: The configuration data to save (list of commands).
+        """
+        try:
+            with open(self.CONFIG_FILE, 'r', encoding='utf-8') as file:
+                configs = json.load(file)
+        except FileNotFoundError:
+            configs = {}
+
+        configs[config_name] = data
+
+        with open(self.CONFIG_FILE, 'w', encoding='utf-8') as file:
+            json.dump(configs, file, indent=4, ensure_ascii=False)
+
+        # Update in-memory configs
+        self.configs = configs
+
+    def delete_config(self, config_name: str):
+        """Delete a configuration."""
+        try:
+            with open(self.CONFIG_FILE, 'r', encoding='utf-8') as file:
+                configs = json.load(file)
+        except FileNotFoundError:
+            return
+
+        if config_name in configs:
+            del configs[config_name]
+            with open(self.CONFIG_FILE, 'w', encoding='utf-8') as file:
+                json.dump(configs, file, indent=4, ensure_ascii=False)
+            self.configs = configs
+
+    def get_config_names(self):
+        """Return a list of configuration names."""
+        return list(self.configs.keys())
+
+    def load_config(self, config_name: str) -> list:
+        """
+        Load the configuration data for the given name.
+        Args:
+            config_name: The name of the configuration to load.
+        Returns:
+            The configuration data (list of commands).
+        """
+        try:
+            with open(self.CONFIG_FILE, 'r', encoding='utf-8') as file:
+                configs = json.load(file)
+            data = configs.get(config_name, [])
+            if isinstance(data, list):
+                return data
+            return []
+        except (FileNotFoundError, json.JSONDecodeError, Exception):
+            return []
+
+    def get_config_data(self) -> dict:
+        """
+        Retrieve all configuration data.
+        Returns:
+            A dictionary of all configurations.
+        """
+        try:
+            with open(self.CONFIG_FILE, 'r', encoding='utf-8') as file:
+                return json.load(file)
+        except FileNotFoundError:
+            return {}
+
