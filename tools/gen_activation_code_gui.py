@@ -2,6 +2,7 @@ import sys
 
 from PyQt5 import QtWidgets
 
+from app.common.ui.modern_widgets import MessageToast
 from app.common.utils.license_manager import expected_activation_code
 
 
@@ -43,7 +44,7 @@ class ActivationCodeGenerator(QtWidgets.QDialog):
     def _on_generate(self):
         mc = self.mc_input.text().strip()
         if not mc:
-            QtWidgets.QMessageBox.warning(self, "提示", "请先输入机器码")
+            MessageToast(self.view).show_toast("请先输入机器码", 1)
             return
         code = expected_activation_code(mc)
         self.code_output.setPlainText(code)

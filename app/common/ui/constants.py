@@ -1,4 +1,5 @@
 # 控制器类导入（放在基础常量之后，避免循环导入）
+from app.modules.demo_page.controller.demo_page_controller import DemoPageController
 from app.modules.device_management.controller.device_management_controller import DeviceController
 from app.modules.device_topology.controller.device_topology_controller import TopologyController
 from app.modules.device_upgrade.controller.device_upgrade_controller import UpgradeController
@@ -45,7 +46,6 @@ class PageConfig:
     PAGE_DTC = "DTC故障诊断"
     PAGE_DID = "DID数据管理"
     PAGE_LOG_DOWNLOAD = "日志文件下载"
-    # 新增：总线数据下载注册名
     PAGE_BUS_DATA_DOWNLOAD = "总线数据下载"
     PAGE_FILE_TRANSFER = "文件传输中心"
     PAGE_LOG_CONFIG = "日志配置"
@@ -54,8 +54,8 @@ class PageConfig:
     PAGE_PERFORMANCE = "性能监控"
     PAGE_UDS = "UDS指令编排"
     PAGE_CLOCK = "时钟管理"
-    # 新增：数据格式转换注册名
     PAGE_DATA_CONVERTER = "数据格式转换"
+    PAGE_DEMO = "示例页面"
 
     # 导航分组常量（之前缺失，补上）
     NAV_GROUP_DEVICE = "🏎️ 设备管理"
@@ -64,6 +64,7 @@ class PageConfig:
     NAV_GROUP_UPGRADE = "🚀 设备升级"
     NAV_GROUP_CONFIG = "⚙️ 配置中心"
     NAV_GROUP_ADV = "🧬 高级功能"
+    NAV_GROUP_DEMO = "🎉 示例"
 
     # 页面显示名常量（带emoji，用于Tab标签等）
     PAGE_DEVICE_DISPLAY = f"{EMOJI_DEVICE} {PAGE_DEVICE}"
@@ -71,7 +72,6 @@ class PageConfig:
     PAGE_DTC_DISPLAY = f"{EMOJI_DTC} {PAGE_DTC}"
     PAGE_DID_DISPLAY = f"{EMOJI_DID} {PAGE_DID}"
     PAGE_LOG_DOWNLOAD_DISPLAY = f"{EMOJI_LOG_DOWNLOAD} {PAGE_LOG_DOWNLOAD}"
-    # 新增：总线数据下载显示名
     PAGE_BUS_DATA_DOWNLOAD_DISPLAY = f"{EMOJI_BUS_DATA_DOWNLOAD} {PAGE_BUS_DATA_DOWNLOAD}"
     PAGE_FILE_TRANSFER_DISPLAY = f"{EMOJI_FILE_TRANSFER} {PAGE_FILE_TRANSFER}"
     PAGE_LOG_CONFIG_DISPLAY = f"{EMOJI_LOG_CONFIG} {PAGE_LOG_CONFIG}"
@@ -80,8 +80,9 @@ class PageConfig:
     PAGE_PERFORMANCE_DISPLAY = f"{EMOJI_PERFORMANCE} {PAGE_PERFORMANCE}"
     PAGE_UDS_DISPLAY = f"{EMOJI_UDS} {PAGE_UDS}"
     PAGE_CLOCK_DISPLAY = f"{EMOJI_CLOCK} {PAGE_CLOCK}"
-    # 新增：数据格式转换显示名
     PAGE_DATA_CONVERTER_DISPLAY = f"{EMOJI_DATA_CONVERTER} {PAGE_DATA_CONVERTER}"
+    PAGE_DEMO_DISPLAY = f"🎉 {PAGE_DEMO}"
+
 
     # 二级菜单Tab名称常量（用于跳转等调用）
     DEVICE_MANAGEMENT_TAB_NAME = PAGE_DEVICE_DISPLAY
@@ -92,14 +93,13 @@ class PageConfig:
     UDS_SEQUENCE_TAB_NAME = PAGE_UDS_DISPLAY
     FILE_TRANSFER_TAB_NAME = PAGE_FILE_TRANSFER_DISPLAY
     LOG_DOWNLOAD_TAB_NAME = PAGE_LOG_DOWNLOAD_DISPLAY
-    # 新增：总线数据下载 Tab 名称
     BUS_DATA_DOWNLOAD_TAB_NAME = PAGE_BUS_DATA_DOWNLOAD_DISPLAY
     DEVICE_UPGRADE_TAB_NAME = PAGE_UPGRADE_DISPLAY
     LOG_CONFIG_TAB_NAME = PAGE_LOG_CONFIG_DISPLAY
     SCRIPT_EXEC_TAB_NAME = PAGE_SCRIPT_DISPLAY
     CLOCK_MANAGEMENT_TAB_NAME = PAGE_CLOCK_DISPLAY
-    # 新增：数据格式转换 Tab 名称
     DATA_CONVERTER_TAB_NAME = PAGE_DATA_CONVERTER_DISPLAY
+    DEMO_TAB_NAME = PAGE_DEMO_DISPLAY
 
     # 统一页面定义：(注册名, 显示名, 控制器类, 是否对话框)
     PAGE_DEFINITIONS = [
@@ -108,9 +108,7 @@ class PageConfig:
         (PAGE_DTC, PAGE_DTC_DISPLAY, DTCController, PAGE_TYPE_TAB),
         (PAGE_DID, PAGE_DID_DISPLAY, DIDController, PAGE_TYPE_TAB),
         (PAGE_LOG_DOWNLOAD, PAGE_LOG_DOWNLOAD_DISPLAY, LogDownloadController, PAGE_TYPE_TAB),
-        # 新增：总线数据下载页面定义，紧跟在日志下载之后
         (PAGE_BUS_DATA_DOWNLOAD, PAGE_BUS_DATA_DOWNLOAD_DISPLAY, BusDataDownloadController, PAGE_TYPE_TAB),
-        # 新增：数据格式转换，紧跟在总线数据下载之后
         (PAGE_DATA_CONVERTER, PAGE_DATA_CONVERTER_DISPLAY, DataFormatConverterController, PAGE_TYPE_TAB),
         (PAGE_FILE_TRANSFER, PAGE_FILE_TRANSFER_DISPLAY, FileTransferController, PAGE_TYPE_TAB),
         (PAGE_LOG_CONFIG, PAGE_LOG_CONFIG_DISPLAY, LogConfigController, PAGE_TYPE_TAB),
@@ -119,6 +117,7 @@ class PageConfig:
         (PAGE_PERFORMANCE, PAGE_PERFORMANCE_DISPLAY, PerformanceController, PAGE_TYPE_TAB),
         (PAGE_UDS, PAGE_UDS_DISPLAY, UDSSequenceController, PAGE_TYPE_TAB),
         (PAGE_CLOCK, PAGE_CLOCK_DISPLAY, ClockManagementController, PAGE_TYPE_TAB),
+        (PAGE_DEMO, PAGE_DEMO_DISPLAY, DemoPageController, PAGE_TYPE_TAB),
     ]
 
     # 导航树结构
@@ -133,14 +132,13 @@ class PageConfig:
         NAV_GROUP_FILE: {"children": [
             PAGE_FILE_TRANSFER_DISPLAY,
             PAGE_LOG_DOWNLOAD_DISPLAY,
-            # 新增：总线数据下载显示名，放在日志下载下面
             PAGE_BUS_DATA_DOWNLOAD_DISPLAY,
-            # 新增：数据格式转换，位于总线数据下载之后
             PAGE_DATA_CONVERTER_DISPLAY,
         ]},
         NAV_GROUP_UPGRADE: {"children": [PAGE_UPGRADE_DISPLAY]},
         NAV_GROUP_CONFIG: {"children": [PAGE_LOG_CONFIG_DISPLAY]},
         NAV_GROUP_ADV: {"children": [PAGE_SCRIPT_DISPLAY]},
+        NAV_GROUP_DEMO: {"children": [PAGE_DEMO_DISPLAY]},
     }
 
     @classmethod

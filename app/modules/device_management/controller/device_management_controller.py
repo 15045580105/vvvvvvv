@@ -1,5 +1,7 @@
 from PyQt5 import QtWidgets
 from PyQt5.QtCore import QThread, pyqtSignal,QThread
+
+from app.common.ui.modern_widgets import MessageToast
 from app.core.base_controller import BaseController
 from app.core.dependency_injection import di_container
 from app.modules.device_management.models.device_model import DeviceModel, OFFLINE, ONLINE, DISCONNECTED
@@ -100,13 +102,13 @@ class DeviceController(BaseController):
 
         # 前置校验：名称和 IP 必填
         if not name or not ip:
-            QtWidgets.QMessageBox.warning(self.view, "提示", "设备名与IP不能为空")
+            MessageToast(self.view).show_toast("设备名与IP不能为空", 1)
             return
         # 端口必须为数字
         try:
             port = int(port_text)
         except ValueError:
-            QtWidgets.QMessageBox.warning(self.view, "提示", "端口必须为数字")
+            MessageToast(self.view).show_toast("端口必须为数字", 1)
             return
 
         # TODO: 可扩展为更严格的 IP 格式校验
@@ -167,7 +169,7 @@ class DeviceController(BaseController):
         # 所有协议都必须是离线或已断链才能建立连接
         allowed = (OFFLINE, DISCONNECTED)
         if ssh_status not in allowed or doip_status not in allowed or someip_status not in allowed:
-            QtWidgets.QMessageBox.warning(self.view, "提示", "仅在设备离线状态下允许修改信息")
+            MessageToast(self.view).show_toast("仅在设备离线状态下允许修改信息", 1)
             return
 
         dialog = QtWidgets.QDialog(self.view)
@@ -205,12 +207,12 @@ class DeviceController(BaseController):
         pwd = pwd_edit.text().strip()
 
         if not name or not ip:
-            QtWidgets.QMessageBox.warning(self.view, "提示", "设备名与IP不能为空")
+            MessageToast(self.view).show_toast("设备名与IP不能为空", 1)
             return
         try:
             port = int(port_text)
         except ValueError:
-            QtWidgets.QMessageBox.warning(self.view, "提示", "端口必须为数字")
+            MessageToast(self.view).show_toast("端口必须为数字", 1)
             return
 
         self.model.update_device(index, name=name, ip=ip, port=port, user=user, password=pwd)
@@ -232,11 +234,7 @@ class DeviceController(BaseController):
         # 所有协议都必须是离线或已断链才能建立连接
         allowed = (OFFLINE, DISCONNECTED, "连接失败")
         if ssh_status not in allowed or doip_status not in allowed or someip_status not in allowed:
-            QtWidgets.QMessageBox.warning(
-                self.view,
-                "提示",
-                "仅在所有协议均为离线/已断链状态下可建立连接"
-            )
+            MessageToast(self.view).show_toast("仅在所有协议均为离线/已断链状态下可建立连接", 1)
             return
         # 使用副本进行连接，避免多线程直接修改模型数据（虽然 Service 会发信号回来更新）
         device_copy = device.copy()
@@ -276,7 +274,7 @@ class DeviceController(BaseController):
         # 所有协议都必须是离线或断开才能建立连接
         allowed = (OFFLINE, DISCONNECTED)
         if ssh_status not in allowed or doip_status not in allowed or someip_status not in allowed:
-            QtWidgets.QMessageBox.warning(self.view, "提示", "仅在离线/已断链状态下允许删除设备")
+            MessageToast(self.view).show_toast("仅在离线/已断链状态下允许删除设备", 1)
             return
 
         # 二次确认

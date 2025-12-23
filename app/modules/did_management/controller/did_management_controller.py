@@ -5,6 +5,7 @@ from PyQt5 import QtWidgets, QtCore, QtGui
 from PyQt5.QtCore import Qt
 
 from app.common.communication.clients.Doip_Client import DoIPClientHandler
+from app.common.ui.modern_widgets import MessageToast
 from app.core.base_controller import BaseController
 from app.core.dependency_injection import di_container
 from app.services.device_manage.device_service import DeviceService
@@ -355,11 +356,11 @@ class DIDController(BaseController):
             if row.selected
         ]
         if not selected_rows:
-            QtWidgets.QMessageBox.information(self.view, "提示", "请先勾选需要读取的 DID")
+            MessageToast(self.view).show_toast("请先勾选需要读取的 DID", 2)
             return
 
         if not self._get_doip_client():
-             QtWidgets.QMessageBox.warning(self.view, "提示", "请先连接设备 (DoIP)")
+             MessageToast(self.view).show_toast("请先连接设备 (DoIP)", 1)
              return
 
         for row_index, row in selected_rows:
@@ -373,11 +374,11 @@ class DIDController(BaseController):
             if row.selected
         ]
         if not selected_rows:
-            QtWidgets.QMessageBox.information(self.view, "提示", "请先勾选需要写入的 DID")
+            MessageToast(self.view).show_toast("请先勾选需要写入的 DID", 2)
             return
 
         if not self._get_doip_client():
-             QtWidgets.QMessageBox.warning(self.view, "提示", "请先连接设备 (DoIP)")
+             MessageToast(self.view).show_toast("请先连接设备 (DoIP)", 1)
              return
 
         for row_index, row in selected_rows:
@@ -634,14 +635,14 @@ class DIDController(BaseController):
             return
         payload, error = self._get_row_bytes(row)
         if error:
-            QtWidgets.QMessageBox.warning(self.view, "提示", error)
+            MessageToast(self.view).show_toast(error, 1)
             return
         if not payload:
-            QtWidgets.QMessageBox.information(self.view, "提示", "当前行无可解析数据")
+            MessageToast(self.view).show_toast("当前行无可解析数据", 2)
             return
 
         if not self._dpt_service.current_path:
-            QtWidgets.QMessageBox.information(self.view, "提示", "请先导入 DPT 文件")
+            MessageToast(self.view).show_toast("请先导入 DPT 文件", 2)
             return
 
         if not self._dpt_service.is_ready():
@@ -689,7 +690,7 @@ class DIDController(BaseController):
 
         result = self._dpt_service.parse_bytes(payload)
         if not result:
-            QtWidgets.QMessageBox.information(self.view, "提示", "解析失败或无结果")
+            MessageToast(self.view).show_toast("解析失败或无结果", 2)
             return
 
         dialog_parent = self.view
