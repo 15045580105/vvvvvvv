@@ -366,8 +366,8 @@ class DIDController(BaseController):
             return
 
         if not self._device_service.get_doip_client():
-              MessageToast(self.view).show_toast("请先连接设备 (DoIP)", 1)
-              return
+            MessageToast(self.view).show_toast("请先连接设备 (DoIP)", 1)
+            return
 
         for row_index, row in selected_rows:
             self._process_did_row(row_index, row, is_write=False)

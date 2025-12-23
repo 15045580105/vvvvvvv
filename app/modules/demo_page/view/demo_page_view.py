@@ -18,6 +18,7 @@ from PyQt5.QtWidgets import (
     QWizardPage, QFileDialog, QScrollBar, QSizeGrip, QTreeWidgetItem
 )
 
+from app.common.ui.modern_widgets import MessageToast
 from app.common.ui.style import MODERN_STYLESHEET
 
 
@@ -785,7 +786,9 @@ class ControlGalleryWidget(QWidget):
         btn_question.clicked.connect(self.show_question_dialog)
         btn_warning = QPushButton("警告对话框")
         btn_warning.clicked.connect(self.show_warning_dialog)
-        for i, btn in enumerate([btn_about, btn_critical, btn_question, btn_warning]):
+        btn_success = QPushButton("成功对话框")
+        btn_success.clicked.connect(self.show_success_message_box)
+        for i, btn in enumerate([btn_about, btn_critical, btn_question, btn_warning,btn_success]):
             custom_dialogs_layout.addWidget(btn, i // 2, i % 2)
         group_custom_dialogs.setLayout(custom_dialogs_layout)
         layout.addWidget(group_custom_dialogs)
@@ -1211,7 +1214,11 @@ for num in fibonacci(10):
 
     # 对话框函数
     def show_message_box(self):
-        QMessageBox.information(self, "信息", "这是一条信息消息")
+        MessageToast(self).show_toast("这是一条信息消息", 2)
+        self.dialog_result_label.setText("关闭了信息消息框")
+
+    def show_success_message_box(self):
+        MessageToast(self).show_toast("这是一条操作成功消息", 0)
         self.dialog_result_label.setText("关闭了信息消息框")
 
     def show_input_dialog(self):
@@ -1249,7 +1256,7 @@ for num in fibonacci(10):
         self.dialog_result_label.setText("关闭了关于对话框")
 
     def show_critical_dialog(self):
-        QMessageBox.critical(self, "错误", "发生了一个错误！\n请检查您的操作是否正确。")
+        MessageToast(self).show_toast("发生了一个错误！\n请检查您的操作是否正确。", 2)
         self.dialog_result_label.setText("关闭了错误对话框")
 
     def show_question_dialog(self):
@@ -1260,7 +1267,7 @@ for num in fibonacci(10):
             self.dialog_result_label.setText("选择: 否")
 
     def show_warning_dialog(self):
-        QMessageBox.warning(self, "警告", "这是一个警告消息！\n请注意相关事项。")
+        MessageToast(self).show_toast("这是一个警告消息！\n请注意相关事项。", 1)
         self.dialog_result_label.setText("关闭了警告对话框")
 
     def show_wizard_dialog(self):
@@ -1308,7 +1315,7 @@ if __name__ == '__main__':
 
     # 设置应用样式 - 可选
     app.setStyle("Fusion")
-    #app.setStyleSheet(MODERN_STYLESHEET)
+    # app.setStyleSheet(MODERN_STYLESHEET)
 
     window = ControlGalleryWidget()
     window.show()
