@@ -744,3 +744,54 @@ class ValueButtonDelegate(FullCellDelegate):
 
         return super().editorEvent(event, model, option, index)
 
+
+class ValueDetailDialog(QtWidgets.QDialog):
+    """显示 DID 值详细解析结果的对话框。"""
+
+    def __init__(self, parent, parse_result, row_info):
+        super().__init__(parent)
+        self.setWindowTitle(f"详细解析 - {row_info.did}")
+        self.resize(600, 400)
+        # 设为模态或非模态取决于需求，这里作为独立窗口显示
+        self.setWindowFlags(self.windowFlags() & ~Qt.WindowContextHelpButtonHint)
+
+        layout = QtWidgets.QVBoxLayout(self)
+
+        # 顶部信息区
+        info_group = QtWidgets.QGroupBox("基本信息")
+        info_layout = QtWidgets.QFormLayout(info_group)
+        info_layout.addRow("DID:", QtWidgets.QLabel(row_info.did))
+        info_layout.addRow("描述:", QtWidgets.QLabel(row_info.description))
+
+        # 原始值显示（支持换行）
+        val_label = QtWidgets.QLabel(row_info.value)
+        val_label.setWordWrap(True)
+        val_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        info_layout.addRow("原始值:", val_label)
+
+        layout.addWidget(info_group)
+
+        # 解析结果表格
+        self.table = QtWidgets.QTableWidget()
+        self.table.setColumnCount(4)
+        self.table.setHorizontalHeaderLabels(["Bit / Byte", "Function / Name", "Value", "Status / Unit"])
+        self.table.horizontalHeader().setSectionResizeMode(QtWidgets.QHeaderView.Stretch)
+        self.table.setAlternatingRowColors(True)
+        layout.addWidget(self.table)
+
+        # 填充表格
+        if parse_result:
+            # 假设 parse_result.to_table_rows() 返回 [(col1, col2, col3, col4), ...]
+            rows = parse_result.to_table_rows()
+            self.table.setRowCount(len(rows))
+            for r, row_data in enumerate(rows):
+                for c, val in enumerate(row_data):
+                    item = QtWidgets.QTableWidgetItem(str(val))
+                    item.setFlags(item.flags() ^ Qt.ItemIsEditable)  # 只读
+                    self.table.setItem(r, c, item)
+
+        # 底部按钮
+        btn_box = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.Close)
+        btn_box.rejected.connect(self.close)
+        layout.addWidget(btn_box)
+

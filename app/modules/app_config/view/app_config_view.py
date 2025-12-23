@@ -1,10 +1,8 @@
-import sys
-import os
-from PyQt5.QtWidgets import (QApplication, QWidget, QVBoxLayout, QHBoxLayout,
+from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout,
                              QTreeWidget, QTreeWidgetItem, QStackedWidget,
                              QLabel, QComboBox, QLineEdit, QCheckBox, QPushButton,
                              QGroupBox, QFormLayout, QGridLayout, QSplitter,
-                             QFrame, QMessageBox, QFileDialog)
+                             QMessageBox, QFileDialog)
 from PyQt5.QtCore import Qt, QRegExp, pyqtSignal
 from PyQt5.QtGui import QRegExpValidator, QFont, QIntValidator
 from app.common.ui.style import APP_STYLE
@@ -46,7 +44,7 @@ class DoIPSettingsPage(QWidget):
         # 协议版本
         self.protocol_version_combo = QComboBox()
         self.protocol_version_combo.addItem("DoIP V2(ISO 13400-2:2012)")
-        self.protocol_version_combo.addItem("DoIP V1(ISO 13400-2:2010)")
+        self.protocol_version_combo.addItem("DoIP V3(ISO 13400-2:2019)")
         protocol_layout.addRow("Protocol version:", self.protocol_version_combo)
 
         protocol_group.setLayout(protocol_layout)
@@ -78,9 +76,7 @@ class DoIPSettingsPage(QWidget):
 
         # 网络接口
         self.network_combo = QComboBox()
-        self.network_combo.addItem("[以太网 4] 10.1.0.99/8")
-        self.network_combo.addItem("[以太网 3] 192.168.1.100/24")
-        self.network_combo.addItem("[以太网 2] 172.16.0.50/16")
+        self._load_network_interfaces()
         tool_layout.addRow("Network interface:", self.network_combo)
 
         # TCP Use Any
@@ -181,13 +177,35 @@ class DoIPSettingsPage(QWidget):
         """)
         return group
 
+    def _load_network_interfaces(self):
+        self.network_combo.clear()
+        try:
+            from app.common.communication.clients.Doip_Client import DoIPClientHandler
+            handler = DoIPClientHandler()
+            interfaces = handler.get_network_interfaces()
+            for name, ip in interfaces:
+                self.network_combo.addItem(f"[{name}] {ip}", ip)
+        except Exception as e:
+            self.network_combo.addItem(f"Error loading interfaces: {e}")
+
     def update_ui(self, settings):
         """更新界面显示"""
         self.protocol_version_combo.setCurrentIndex(settings.get("protocol_version", 0))
         self.logical_addr_edit.setText(settings.get("logical_addr", "0x0E80"))
         self.routing_type_edit.setText(settings.get("routing_type", "0x00"))
         self.routing_request_check.setChecked(settings.get("routing_request", True))
-        self.network_combo.setCurrentIndex(settings.get("network_interface", 0))
+
+        # Try to match by IP first
+        saved_ip = settings.get("network_interface_ip")
+        if saved_ip:
+            index = self.network_combo.findData(saved_ip)
+            if index >= 0:
+                self.network_combo.setCurrentIndex(index)
+            else:
+                self.network_combo.setCurrentIndex(settings.get("network_interface", 0))
+        else:
+            self.network_combo.setCurrentIndex(settings.get("network_interface", 0))
+
         self.tcp_check.setChecked(settings.get("tcp_use_any", False))
         self.udp_check.setChecked(settings.get("udp_broadcast", False))
         self.physical_addr_edit.setText(settings.get("physical_addr", "0x004F"))
@@ -201,6 +219,7 @@ class DoIPSettingsPage(QWidget):
             "routing_type": self.routing_type_edit.text(),
             "routing_request": self.routing_request_check.isChecked(),
             "network_interface": self.network_combo.currentIndex(),
+            "network_interface_ip": self.network_combo.currentData(),
             "tcp_use_any": self.tcp_check.isChecked(),
             "udp_broadcast": self.udp_check.isChecked(),
             "physical_addr": self.physical_addr_edit.text(),

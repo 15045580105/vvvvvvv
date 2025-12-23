@@ -216,7 +216,19 @@ class DoIPClientHandler:
                     flattened = self._flatten_responses(resp)
                     if flattened:
                         responses.extend(flattened)
-                        break
+                        # 如果不需要收集所有响应，且已经收到响应，则提前退出
+                        if not return_all:
+                            # 简单判断：如果收到肯定响应或否定响应，且不是 0x78 (RCRRP)，则认为交互完成
+                            # 这里简化处理：只要收到数据就退出，除非是 Pending
+                            # 检查是否包含 0x7F ... 0x78
+                            has_pending = False
+                            for r in flattened:
+                                if len(r) >= 3 and r[0] == 0x7F and r[2] == 0x78:
+                                    has_pending = True
+                                    break
+
+                            if not has_pending:
+                                break
                     # 继续循环，直到 timeout
                 except TimeoutError:
                     # 没有更多响应，退出循环

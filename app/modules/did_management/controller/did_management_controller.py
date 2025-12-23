@@ -1,4 +1,4 @@
-from typing import Optional, Tuple
+from typing import Optional, Tuple, cast, Any
 import re
 
 from PyQt5 import QtWidgets, QtCore, QtGui
@@ -9,6 +9,7 @@ from app.common.ui.modern_widgets import MessageToast
 from app.core.base_controller import BaseController
 from app.core.dependency_injection import di_container
 from app.services.device_manage.device_service import DeviceService
+from app.services.configuration.config_service import AppConfigurationService
 from app.modules.did_management.model.did_management_model import (
     DIDModel,
     DIDBitRow,
@@ -19,6 +20,7 @@ from app.modules.did_management.view.did_management_view import (
     FullCellDelegate,
     ComboBoxDelegate,
     ValueButtonDelegate,
+    ValueDetailDialog,
 )
 from app.services.diagnostic.dpt_service import DPTService
 from app.common.utils.security_access_helper import SecurityAccessHelper
@@ -50,12 +52,20 @@ class DIDController(BaseController):
         # call BaseController to wire model/view signals
         super().__init__(self.model, self.view, parent)
 
+        self._config_service = di_container.resolve(AppConfigurationService)
+        if not self._config_service:
+             self._config_service = AppConfigurationService()
+             di_container.register_singleton(AppConfigurationService, self._config_service)
+
+        self._device_service = di_container.resolve(DeviceService)
+        if not self._device_service:
+             self._device_service = DeviceService()
+             di_container.register_singleton(DeviceService, self._device_service)
+
         # services and helpers
         self._dpt_service = dpt_service or DPTService()
         self._dpt_loader_thread: Optional[DPTLoaderThread] = None
         self._value_detail_dialog: Optional["ValueDetailDialog"] = None
-        # DoIP 客户端，延迟创建
-        self._doip_handler: Optional[DoIPClientHandler] = None
 
         # 应用默认列比例（用于初始布局）：
         # [勾选, Description, DID, STR/HEX, DiagnosticSession, SecurityAccess, Value]
@@ -100,7 +110,6 @@ class DIDController(BaseController):
         table.setItemDelegateForColumn(5, sec_delegate)
 
         # 绑定视图信号
-        self.view.destroyed.connect(self._on_view_destroyed)
         self.view.dpt_import_requested.connect(self._handle_dpt_import)
         self.view.value_detail_requested.connect(self._on_value_detail_requested)
         self.view.read_requested.connect(self._on_read_clicked)
@@ -134,13 +143,6 @@ class DIDController(BaseController):
 
     # -------------------- 顶部按钮行为 --------------------
 
-    def _get_doip_client(self) -> Optional[DoIPClientHandler]:
-        """获取已连接设备的 DoIP 客户端。"""
-        device_service = di_container.resolve(DeviceService)
-        if not device_service:
-            return None
-        return device_service.get_doip_client()
-
     def _process_did_row(self, row_index: int, row, is_write: bool = False) -> None:
         """处理单行 DID 的读/写操作。
 
@@ -151,8 +153,7 @@ class DIDController(BaseController):
         4. 执行 Read (0x22) 或 Write (0x2E)
         5. 更新 UI
         """
-        client = self._get_doip_client()
-        if not client:
+        if not self._device_service.get_doip_client():
             self.model.apply_update(rx="错误: 未连接 DoIP 设备")
             self.model.update_row(row_index, value_color="#EF4444")
             return
@@ -181,7 +182,7 @@ class DIDController(BaseController):
 
         tx_session = bytes([0x10, target_session])
         self.model.apply_update(tx=f"会话控制: {tx_session.hex(' ').upper()}")
-        rx_session = client.send_doip_message(tx_session)
+        rx_session = self._device_service.send_doip_payload(tx_session)
 
         if not rx_session or rx_session[0] != 0x50:
              self.model.apply_update(rx=f"会话控制失败: {rx_session.hex(' ').upper() if rx_session else '无响应'}")
@@ -221,7 +222,7 @@ class DIDController(BaseController):
 
             tx_seed = bytes([0x27, req_seed_level])
             self.model.apply_update(tx=f"请求种子: {tx_seed.hex(' ').upper()}")
-            rx_seed = client.send_doip_message(tx_seed)
+            rx_seed = self._device_service.send_doip_payload(tx_seed)
             self.model.apply_update(rx=f"收到种子: {rx_seed.hex(' ').upper()}")
             if not rx_seed or rx_seed[0] != 0x67:
                 self.model.apply_update(rx=f"请求种子失败: {rx_seed.hex(' ').upper() if rx_seed else '无响应'}")
@@ -235,13 +236,18 @@ class DIDController(BaseController):
                  return
 
             seed = rx_seed[2:]
-            key, error_msg = SecurityAccessHelper.calculate_key(sec_level, seed)
+
+            dll_path = self._config_service.diag_layer_settings.get("dll_path")
+            if dll_path:
+                key, error_msg = SecurityAccessHelper.calculate_key(sec_level, seed, dll_path=dll_path)
+            else:
+                key, error_msg = SecurityAccessHelper.calculate_key(sec_level, seed)
 
             if key:
                 # 发送密钥: 27 Level+1 Key
                 tx_key = bytes([0x27, req_seed_level + 1]) + key
                 self.model.apply_update(tx=f"发送密钥: {tx_key.hex(' ').upper()}")
-                rx_key = client.send_doip_message(tx_key)
+                rx_key = self._device_service.send_doip_payload(tx_key)
 
                 if not rx_key or rx_key[0] != 0x67:
                     self.model.apply_update(rx=f"安全访问失败: {rx_key.hex(' ').upper() if rx_key else '无响应'}")
@@ -285,7 +291,7 @@ class DIDController(BaseController):
 
             tx_bytes = bytes([0x2E, hi, lo]) + payload
             self.model.apply_update(tx=f"写入 DID: {tx_bytes.hex(' ').upper()}")
-            rx_bytes = client.send_doip_message(tx_bytes)
+            rx_bytes = self._device_service.send_doip_payload(tx_bytes)
 
             if not rx_bytes:
                 self.model.apply_update(rx="写入失败: 无响应")
@@ -303,7 +309,7 @@ class DIDController(BaseController):
             # 读取 (0x22)
             tx_bytes = bytes([0x22, hi, lo])
             self.model.apply_update(tx=f"读取 DID: {tx_bytes.hex(' ').upper()}")
-            rx_bytes = client.send_doip_message(tx_bytes)
+            rx_bytes = self._device_service.send_doip_payload(tx_bytes)
 
             if not rx_bytes:
                 self.model.apply_update(rx="读取失败: 无响应")
@@ -359,12 +365,13 @@ class DIDController(BaseController):
             MessageToast(self.view).show_toast("请先勾选需要读取的 DID", 2)
             return
 
-        if not self._get_doip_client():
-             MessageToast(self.view).show_toast("请先连接设备 (DoIP)", 1)
-             return
+        if not self._device_service.get_doip_client():
+              MessageToast(self.view).show_toast("请先连接设备 (DoIP)", 1)
+              return
 
         for row_index, row in selected_rows:
             self._process_did_row(row_index, row, is_write=False)
+            QtWidgets.QApplication.processEvents()
 
     def _on_write_clicked(self) -> None:
         """点击“写入”：按勾选顺序处理每一行。"""
@@ -377,22 +384,15 @@ class DIDController(BaseController):
             MessageToast(self.view).show_toast("请先勾选需要写入的 DID", 2)
             return
 
-        if not self._get_doip_client():
+        if not self._device_service.get_doip_client():
              MessageToast(self.view).show_toast("请先连接设备 (DoIP)", 1)
              return
 
         for row_index, row in selected_rows:
             self._process_did_row(row_index, row, is_write=True)
+            QtWidgets.QApplication.processEvents()
 
 
-    def _on_view_destroyed(self) -> None:
-        """视图销毁时断开 DoIP 连接。"""
-        # 关闭 DoIP
-        try:
-            if self._doip_handler is not None:
-                self._doip_handler.disconnect()
-        except Exception:
-            pass
 
 
     def on_dpt_selected(self, file_path: str) -> None:
@@ -652,7 +652,7 @@ class DIDController(BaseController):
 
     def _load_dpt_and_show_detail(self, row: int):
         progress = QtWidgets.QProgressDialog("正在解析 DPT 文件...", "取消", 0, 0, self.view)
-        progress.setWindowModality(Qt.WindowModal)
+        progress.setModal(True)
         progress.setMinimumDuration(0)
         progress.setWindowTitle("请稍候")
         # Set cancel button
@@ -695,9 +695,10 @@ class DIDController(BaseController):
 
         dialog_parent = self.view
         # 关闭旧对话框（运行时 _value_detail_dialog 为 QDialog 或 None，这里仅做 None 判断）
-        if self._value_detail_dialog:
+        dlg = cast(Any, self._value_detail_dialog)
+        if dlg:
             try:
-                self._value_detail_dialog.close()  # type: ignore[call-arg]
+                dlg.close()
             except Exception:
                 pass
         self._value_detail_dialog = ValueDetailDialog(dialog_parent, result, self.model.did_rows[row])
