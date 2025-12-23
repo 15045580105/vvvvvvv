@@ -1,4 +1,4 @@
-from typing import List, Dict, Any, Tuple
+from typing import Dict, Any, Tuple
 import time
 
 from PyQt5.QtCore import QObject, pyqtSignal
@@ -6,8 +6,10 @@ from paramiko.ssh_exception import AuthenticationException, SSHException
 
 from app.common.communication.clients.Doip_Client import DoIPClientHandler
 from app.common.communication.clients.Someip_Client import SomeIPClient
-from app.modules.device_management.models.device_model import CONNECTING, DISCONNECTED, CONNECT_FAILED, ONLINE
+from app.modules.device_management.models.device_model import CONNECTING, DISCONNECTED, CONNECT_FAILED
 from app.services.communication.ssh_service import SSHService
+from app.services.configuration.config_service import AppConfigurationService
+from app.core.dependency_injection import di_container
 import warnings
 
 # Suppress the SIP/PyQt deprecation about sipPyTypeDict() which is raised from the
@@ -34,6 +36,11 @@ class DeviceService(QObject):
         # 独立的 DoIP / SomeIP 客户端实例，由 DeviceService 统一管理生命周期
         self._doip_handler: DoIPClientHandler | None = None
         self._someip_client: SomeIPClient | None = None
+
+        self._config_service = di_container.resolve(AppConfigurationService)
+        if not self._config_service:
+            self._config_service = AppConfigurationService()
+            di_container.register_singleton(AppConfigurationService, self._config_service)
 
     def connect_device(self, device: Dict[str, Any]) -> None:
         """连接单个设备：按 SSH/DoIP/SomeIP 三种协议尝试建链，并统一发出状态信号。
@@ -141,6 +148,22 @@ class DeviceService(QObject):
         ip = device.get("ip") or ""
         # 默认使用经典 DoIP 端口 13400，如有特殊端口可后续通过 device 字段扩展
         tcp_port = int(device.get("doip_port", 13400))
+
+        # 从 AppConfig 获取 DoIP 配置
+        doip_settings = self._config_service.doip_settings
+
+        # 协议版本转换: 0 -> 0x02 (DoIP V2), 1 -> 0x03 (DoIP V3/Other)
+        # 注意：界面上 Index 0 是 V2, Index 1 是 V1(但用户要求传3)
+        pv_index = int(doip_settings.get("protocol_version", 0))
+        if pv_index == 1:
+            protocol_version = 0x03
+        else:
+            protocol_version = 0x02
+
+        client_logical_address = int(doip_settings.get("logical_addr", "0x0E80"), 16)
+        routing_type = int(doip_settings.get("routing_type", "0x00"), 16)
+        ecu_logical_address = int(doip_settings.get("physical_addr", "0x004F"), 16)
+
         # ECU 逻辑地址及本机逻辑地址可按需从 device 中扩展配置，这里使用 DoIPClientHandler 默认值
         self.log_signal.emit(f"正在通过DoIP连接设备 {ip}:{tcp_port}...")
         if not ip:
@@ -151,8 +174,30 @@ class DeviceService(QObject):
         if self._doip_handler is None:
             self._doip_handler = DoIPClientHandler()
 
+        # 处理网卡选择
+        target_ip = doip_settings.get("network_interface_ip")
+        if target_ip:
+            self._doip_handler.select_network_interface(target_ip)
+        else:
+            # Fallback to index logic if IP not found (e.g. old config)
+            interface_index = int(doip_settings.get("network_interface", 0))
+            interfaces = self._doip_handler.get_network_interfaces()
+            if 0 <= interface_index < len(interfaces):
+                local_ip = interfaces[interface_index][1]
+                self._doip_handler.select_network_interface(local_ip)
+            else:
+                # Auto select if index is invalid
+                self._doip_handler.select_network_interface()
+
         try:
-            ok = self._doip_handler.connect(ip, tcp_port=tcp_port)
+            ok = self._doip_handler.connect(
+                ecu_ip=ip,
+                tcp_port=tcp_port,
+                ecu_logical_address=ecu_logical_address,
+                activation_type=routing_type,
+                protocol_version=protocol_version,
+                client_logical_address=client_logical_address
+            )
         except Exception as exc:  # 防御性捕获，避免影响 SSH
             self.log_signal.emit(f"DoIP 连接异常: {exc}")
             device["doip_connect_status"] = "连接失败"
@@ -277,7 +322,7 @@ class DeviceService(QObject):
         self,
         payload: bytes,
         *,
-        timeout: float = 1.0,
+        timeout: float | None = None,
         response_index: int | None = None,
         target_did: int | None = None,
         prefer_last: bool = False,
@@ -287,6 +332,14 @@ class DeviceService(QObject):
         if client is None:
             self.log_signal.emit("DoIP 客户端未连接，无法发送报文")
             return None
+
+        if timeout is None:
+            try:
+                timeout_ms = int(self._config_service.diag_layer_settings.get("s3_client_time", 3000))
+                timeout = timeout_ms / 1000.0
+            except (ValueError, TypeError):
+                timeout = 3.0
+
         try:
             return client.send_doip_message(
                 payload,

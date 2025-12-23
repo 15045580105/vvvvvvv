@@ -4,14 +4,137 @@ import time
 from PyQt5 import QtWidgets, QtCore
 
 from app.core.base_controller import BaseController
+from app.core.dependency_injection import di_container
 from app.modules.uds_sequence.model.uds_sequence_model import UDSSequenceModel
 from app.modules.uds_sequence.view.uds_sequence_view import UDSSequenceView, NAME_CN
-# Try to import DeviceService, handle potential circular imports or missing files gracefully if needed
-try:
-    from app.services.device_manage.device_service import DeviceService
-except ImportError:
-    DeviceService = None
+from app.services.device_manage.device_service import DeviceService
+from app.services.configuration.config_service import AppConfigurationService
 
+
+class SequenceWorker(QtCore.QThread):
+    log_signal = QtCore.pyqtSignal(str)
+    update_row_signal = QtCore.pyqtSignal(int, str)
+    finished_signal = QtCore.pyqtSignal()
+
+    def __init__(self, device_service, data, times, stop_on_fail):
+        super().__init__()
+        self.device_service = device_service
+        self.data = data
+        self.times = times
+        self.stop_on_fail = stop_on_fail
+        self.is_running = True
+
+    def run(self):
+        try:
+            for i in range(self.times):
+                if not self.is_running:
+                    break
+                self.log_signal.emit(f"--- 第 {i+1}/{self.times} 次循环 ---")
+                for row_index, item in enumerate(self.data):
+                    if not self.is_running:
+                        break
+                    if not item.get("checked", True):
+                        continue
+
+                    name = item.get("name", "")
+                    request = item.get("request", "")
+
+                    # Check if it is a delay
+                    if name == '⏱' or item.get("response") == '延迟(ms)':
+                        try:
+                            delay_ms = int(request)
+                            self.log_signal.emit(f"等待 {delay_ms} ms...")
+                            time.sleep(delay_ms / 1000.0)
+                        except ValueError:
+                            self.log_signal.emit(f"无效的延迟时间: {request}")
+                    else:
+                        # Send command
+                        self.log_signal.emit(f"TX: {request}")
+
+                        resp = self._send_uds_command(request)
+                        self.log_signal.emit(f"RX: {resp}")
+
+                        # Update table response
+                        self.update_row_signal.emit(row_index, resp)
+
+                        # Check for failure if stop_on_fail is enabled
+                        if self.stop_on_fail:
+                            is_fail = False
+                            if "Error" in resp or "No Response" in resp:
+                                is_fail = True
+                            elif resp.startswith("7F"):
+                                is_fail = True
+
+                            if is_fail:
+                                self.log_signal.emit(f"执行失败，停止序列 (响应: {resp})")
+                                return # Stop execution
+        except Exception as e:
+            self.log_signal.emit(f"执行异常: {str(e)}")
+        finally:
+            self.finished_signal.emit()
+
+    def stop(self):
+        self.is_running = False
+
+    def _send_uds_command(self, request_str: str, timeout: float = None) -> str:
+        if not self.device_service.get_doip_client():
+            return "Error: No Client"
+
+        # Clean request string
+        req_hex = request_str.replace(' ', '')
+        try:
+            # Convert hex string to bytes
+            payload = bytes.fromhex(req_hex)
+
+            # Use DeviceService to send payload (it handles timeout from config)
+            resp = self.device_service.send_doip_payload(payload, timeout=timeout)
+
+            if resp is None:
+                return "No Response"
+
+            return resp.hex().upper()
+        except Exception as e:
+            return f"Error: {str(e)}"
+
+class BatchSendWorker(QtCore.QThread):
+    log_signal = QtCore.pyqtSignal(str)
+    finished_signal = QtCore.pyqtSignal()
+
+    def __init__(self, device_service, request_str, times):
+        super().__init__()
+        self.device_service = device_service
+        self.request_str = request_str
+        self.times = times
+        self.is_running = True
+
+    def run(self):
+        try:
+            for i in range(self.times):
+                if not self.is_running:
+                    break
+
+                self.log_signal.emit(f"TX: {self.request_str}")
+
+                req_hex = self.request_str.replace(' ', '')
+                try:
+                    payload = bytes.fromhex(req_hex)
+                    resp = self.device_service.send_doip_payload(payload) # timeout default
+
+                    resp_str = "No Response"
+                    if resp is not None:
+                        resp_str = resp.hex().upper()
+
+                    self.log_signal.emit(f"RX: {resp_str}")
+                except Exception as e:
+                    self.log_signal.emit(f"Error: {str(e)}")
+
+        except Exception as e:
+            self.log_signal.emit(f"Batch execution exception: {str(e)}")
+        finally:
+            self.finished_signal.emit()
+
+    def stop(self):
+        self.is_running = False
 
 class UDSSequenceController(BaseController):
     def __init__(self, parent=None):
@@ -19,11 +142,24 @@ class UDSSequenceController(BaseController):
         self.view = UDSSequenceView(self.model, parent)
         super().__init__(self.model, self.view, parent)
 
+        self._config_service = di_container.resolve(AppConfigurationService)
+        if not self._config_service:
+             self._config_service = AppConfigurationService()
+             di_container.register_singleton(AppConfigurationService, self._config_service)
+
+        self._device_service = di_container.resolve(DeviceService)
+        if not self._device_service:
+             self._device_service = DeviceService()
+             di_container.register_singleton(DeviceService, self._device_service)
+
         self.current_config_name = None
+        self.worker = None
+        self.batch_worker = None
         self._connect_signals()
 
     def _connect_signals(self):
         self.view.send_requested.connect(self._on_send_requested)
+        self.view.send_single_requested.connect(self._on_send_requested)
         self.view.insert_requested.connect(self._on_insert_requested)
         self.view.table_operation_requested.connect(self._on_table_operation)
         self.view.delay_insert_requested.connect(self._on_delay_insert_requested)
@@ -70,27 +206,10 @@ class UDSSequenceController(BaseController):
             # Insert at current row or append if no selection
             current_row = self.view.get_current_row()
             if current_row < 0:
-                current_row = self.view.data_table.rowCount()
+                self._on_add_command_requested(code)
+                return
 
-            self.view.data_table.insertRow(current_row)
-
-            # Use view's logic to populate the row, but we need to do it manually since append_table_row appends
-            # We can reuse the logic from append_table_row but targeting a specific row
-            # Or just call append and move? No, let's duplicate the population logic briefly or refactor view.
-            # For simplicity, let's use a helper in view or just append then move.
-            # Actually, let's just use append_table_row and move it if needed, or better:
-            # Let's add a method to view to insert at specific row.
-            # But since I cannot edit view easily again without reading, I will use append then move.
-
-            self.view.append_table_row(display_name, request, "")
-            new_row = self.view.data_table.rowCount() - 1
-            if current_row < new_row:
-                # Move row from new_row to current_row
-                # This is tricky with QTableWidget.
-                # Let's just append for now and I will add insert_table_row to view in next turn if user complains.
-                # Actually, the user asked for "Insert at Selection".
-                # I should probably add `insert_table_row` to View.
-                pass
+            self.view.insert_table_row(current_row, display_name, request, "")
             self.view.log_message(f"插入指令: {code} {display_name}")
 
     def _send_tester_present(self):
@@ -99,10 +218,28 @@ class UDSSequenceController(BaseController):
         # If we are in a loop in _on_run_sequence_requested, processEvents handles this timer?
         # Yes, processEvents will process timer events.
         cmd = f"3E {self.tester_present_mode}"
-        # We don't want to log every heartbeat to the main log to avoid spam, or maybe we do?
-        # Let's log to console or a separate debug log. For now, suppress log or log simply.
-        # self.view.log_message(f"Heartbeat: {cmd}")
-        self._send_uds_command(cmd)
+
+        # Log heartbeat request
+        self.view.log_message(f"TX: {cmd} (Heartbeat)")
+
+        # Use short timeout for 3E 80 (Suppress Positive Response)
+        timeout = None
+        if self.tester_present_mode == "80":
+            timeout = 0.05
+
+        resp = self._send_uds_command(cmd, timeout=timeout)
+
+        # Log heartbeat response
+        if "Error" in resp:
+             # Log error if any (e.g. No Client)
+             # self.view.log_message(f"Error sending Heartbeat: {resp}")
+             pass
+        elif "No Response" in resp:
+             # Log no response if that's the case (common for 3E 80)
+             # self.view.log_message(f"RX: No Response (Heartbeat)")
+             pass
+        else:
+             self.view.log_message(f"RX: {resp} (Heartbeat)")
 
     def _on_run_sequence_requested(self, times: int):
         """Execute the checked instructions in the table sequentially."""
@@ -111,8 +248,7 @@ class UDSSequenceController(BaseController):
             self.view.log_message("序列为空，无法执行")
             return
 
-        client = self._get_doip_client()
-        if not client:
+        if not self._device_service.get_doip_client():
             self.view.log_message("错误: 未连接 DoIP 客户端")
             # For testing without client, we might want to proceed or return
             # return
@@ -127,77 +263,33 @@ class UDSSequenceController(BaseController):
         # Disable UI during execution to prevent modification
         self.view.set_editor_enabled(False)
         self.view.run_sequence_btn.setEnabled(False)
-        QtWidgets.QApplication.processEvents()
 
         # Start Tester Present
+        self._send_tester_present()
         self.tester_present_timer.start(2000) # 2 seconds
 
-        try:
-            for i in range(times):
-                self.view.log_message(f"--- 第 {i+1}/{times} 次循环 ---")
-                for item in data:
-                    if not item.get("checked", True):
-                        continue
+        # Create and start worker
+        self.worker = SequenceWorker(self._device_service, data, times, stop_on_fail)
+        self.worker.log_signal.connect(self.view.log_message)
+        self.worker.update_row_signal.connect(self.view.update_row_response)
+        self.worker.finished_signal.connect(self._on_sequence_finished)
+        self.worker.start()
 
-                    name = item.get("name", "")
-                    request = item.get("request", "")
-
-                    # Check if it is a delay
-                    if name == '⏱' or item.get("response") == '延迟(ms)':
-                        try:
-                            delay_ms = int(request)
-                            self.view.log_message(f"等待 {delay_ms} ms...")
-                            # Use loop with processEvents to keep UI responsive
-                            end_time = time.time() + (delay_ms / 1000.0)
-                            while time.time() < end_time:
-                                QtWidgets.QApplication.processEvents()
-                                time.sleep(0.01)
-                        except ValueError:
-                            self.view.log_message(f"无效的延迟时间: {request}")
-                    else:
-                        # Send command
-                        self.view.log_message(f"发送: {request}")
-                        QtWidgets.QApplication.processEvents()
-
-                        resp = "No Response"
-                        if client:
-                            resp = self._send_uds_command(request)
-                            self.view.log_message(f"接收: {resp}")
-                        else:
-                            # Simulation mode if no client
-                            self.view.log_message(f"模拟发送: {request}")
-                            time.sleep(0.1)
-                            resp = f"50 {request.replace(' ', '')[2:] if len(request)>2 else ''}"
-                            self.view.log_message(f"模拟接收: {resp}")
-
-                        # Check for failure if stop_on_fail is enabled
-                        if stop_on_fail:
-                            # Simple failure check: "Error", "No Response", or Negative Response (7F)
-                            is_fail = False
-                            if "Error" in resp or "No Response" in resp:
-                                is_fail = True
-                            elif resp.startswith("7F"):
-                                is_fail = True
-
-                            if is_fail:
-                                self.view.log_message(f"执行失败，停止序列 (响应: {resp})")
-                                return # Stop execution
-
-                QtWidgets.QApplication.processEvents()
-        finally:
-            self.tester_present_timer.stop()
-            self.view.set_editor_enabled(True)
-            self.view.run_sequence_btn.setEnabled(True)
-            self.view.log_message("序列执行结束")
+    def _on_sequence_finished(self):
+        self.tester_present_timer.stop()
+        self.view.set_editor_enabled(True)
+        self.view.run_sequence_btn.setEnabled(True)
+        self.view.log_message("序列执行结束")
+        self.worker = None
 
     def _on_send_requested(self, request_data: str):
         if request_data:
-            self.model.log += f"发送请求: {request_data}\n"
-            self.view.log_message(f"发送请求: {request_data}")
+            self.model.log += f"TX: {request_data}\n"
+            self.view.log_message(f"TX: {request_data}")
 
             # Actually send the command
             resp = self._send_uds_command(request_data)
-            self.view.log_message(f"接收响应: {resp}")
+            self.view.log_message(f"RX: {resp}")
 
             # Update response field if it's a single send
             try:
@@ -281,27 +373,24 @@ class UDSSequenceController(BaseController):
             # Don't clear the table on invalid selection — just disable editor inputs.
             self.view.set_editor_enabled(False)
 
-    def _get_doip_client(self):
-        if DeviceService:
-            return DeviceService().get_doip_client()
-        return None
-
-    def _send_uds_command(self, request_str: str) -> str:
-        client = self._get_doip_client()
-        if not client:
+    def _send_uds_command(self, request_str: str, timeout: float = None) -> str:
+        if not self._device_service.get_doip_client():
             return "Error: No Client"
 
         # Clean request string
         req_hex = request_str.replace(' ', '')
         try:
-            # Assuming client has send_uds_command method
-            # This depends on the actual DoIP client implementation
-            # For now, let's assume it returns a response string or bytes
-            # We might need to convert bytes to hex string
-            resp = client.send_uds_command(req_hex)
-            if isinstance(resp, bytes):
-                return resp.hex().upper()
-            return str(resp)
+            # Convert hex string to bytes
+            payload = bytes.fromhex(req_hex)
+
+            # Use DeviceService to send payload (it handles timeout from config)
+            resp = self._device_service.send_doip_payload(payload, timeout=timeout)
+
+
+            if resp is None:
+                return "No Response"
+
+            return resp.hex().upper()
         except Exception as e:
             return f"Error: {str(e)}"
 

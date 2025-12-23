@@ -109,6 +109,7 @@ class UDSSequenceView(QtWidgets.QWidget):
     table_operation_requested = pyqtSignal(str)
     delay_insert_requested = pyqtSignal(str)
     send_batch_requested = pyqtSignal(int)
+    send_single_requested = pyqtSignal(str)  # New signal for right-click send
     run_sequence_requested = pyqtSignal(int)  # New signal for running the sequence
     config_save_requested = pyqtSignal(str)
     config_load_requested = pyqtSignal(str)
@@ -207,11 +208,21 @@ class UDSSequenceView(QtWidgets.QWidget):
         cmd_splitter.addWidget(self.cmd_tree)
 
         self.editor_widget = self.create_editor_widget()
-        cmd_splitter.addWidget(self.editor_widget)
+
+        # Wrap editor_widget in a ScrollArea to handle small widths
+        self.scroll_area = QtWidgets.QScrollArea()
+        self.scroll_area.setWidget(self.editor_widget)
+        self.scroll_area.setWidgetResizable(True)
+        self.scroll_area.setFrameShape(QtWidgets.QFrame.NoFrame)
+
+        cmd_splitter.addWidget(self.scroll_area)
 
         cmd_splitter.setStretchFactor(0, 1)
         cmd_splitter.setStretchFactor(1, 3)
         cmd_splitter.setSizes([250, 650])
+        # Prevent collapsing to ensure both sides remain visible and draggable
+        cmd_splitter.setCollapsible(0, False)
+        cmd_splitter.setCollapsible(1, False)
 
         cmd_layout.addWidget(cmd_splitter)
         main_splitter.addWidget(cmd_group)
@@ -302,6 +313,16 @@ class UDSSequenceView(QtWidgets.QWidget):
         # Show menu even if no item is clicked (for "Check All" etc.)
 
         menu = QtWidgets.QMenu(self)
+
+        # Add "Send" action if a row is selected or clicked
+        if item:
+            row = item.row()
+            req_item = self.data_table.item(row, 2)
+            if req_item:
+                req_text = req_item.text()
+                act_send = menu.addAction("发送此指令")
+                act_send.triggered.connect(lambda: self.send_single_requested.emit(req_text))
+                menu.addSeparator()
 
         act_check_all = menu.addAction("勾选全部")
         act_check_all.triggered.connect(lambda _: self._set_all_check_state(Qt.Checked))
@@ -548,6 +569,8 @@ class UDSSequenceView(QtWidgets.QWidget):
         toolbar_widget = QtWidgets.QWidget()
         toolbar_widget.setLayout(btn_row_layout)
         toolbar_widget.setFixedHeight(44)
+        # Set minimum width to ensure buttons don't get crushed; scrollbar will appear if smaller
+        toolbar_widget.setMinimumWidth(750)
 
         self.data_table = QtWidgets.QTableWidget()
         self.setup_table()
@@ -700,43 +723,33 @@ class UDSSequenceView(QtWidgets.QWidget):
     def reset_table(self):
         self.data_table.setRowCount(0)
 
-    def append_table_row(self, param_name: str, param_value: str, description: str):
-        """Append a row to the table.
-
-        Backwards-compatible API: older calls used (param_name, param_value, description).
-        New table has 5 columns: checkbox, Name, Request, AddrType, Response.
-        If called with 3 args, map them as Name=param_name, Request=param_value, Response=description, AddrType defaults to 'physical'.
-        New callers can pass keyword args or call with 5 args via a tuple: append_table_row(name, request, addrtype, response, checked=True)
-        """
-        row = self.data_table.rowCount()
+    def insert_table_row(self, row: int, param_name: str, param_value: str, description: str, addrtype: str = 'physical', checked: bool = True):
+        """Insert a row at the specified index."""
         self.data_table.insertRow(row)
 
-        # Determine mapping based on types/values
-        # If description looks like addr/desc we treat as response
-        name = param_name
-        request = param_value
-        addrtype = 'physical'
-        response = description
-
-        # first column: use QTableWidgetItem with CheckStateRole, rendered by CenteredCheckBoxDelegate
+        # first column: use QTableWidgetItem with CheckStateRole
         chk_item = QtWidgets.QTableWidgetItem()
         chk_item.setFlags(Qt.ItemIsSelectable | Qt.ItemIsEnabled | Qt.ItemIsUserCheckable)
-        chk_item.setData(Qt.CheckStateRole, Qt.Checked)
+        chk_item.setData(Qt.CheckStateRole, Qt.Checked if checked else Qt.Unchecked)
         self.data_table.setItem(row, 0, chk_item)
 
         # Name
-        self.data_table.setItem(row, 1, QtWidgets.QTableWidgetItem(name))
+        self.data_table.setItem(row, 1, QtWidgets.QTableWidgetItem(param_name))
         # Request
-        self.data_table.setItem(row, 2, QtWidgets.QTableWidgetItem(request))
+        self.data_table.setItem(row, 2, QtWidgets.QTableWidgetItem(param_value))
         # AddrType default
         self.data_table.setItem(row, 3, QtWidgets.QTableWidgetItem(addrtype))
         # Response
-        self.data_table.setItem(row, 4, QtWidgets.QTableWidgetItem(response))
-        # After adding a row, ensure column widths remain proportional
+        self.data_table.setItem(row, 4, QtWidgets.QTableWidgetItem(description))
+
         try:
             self._apply_column_widths()
         except Exception:
             pass
+
+    def append_table_row(self, param_name: str, param_value: str, description: str):
+        """Append a row to the table."""
+        self.insert_table_row(self.data_table.rowCount(), param_name, param_value, description)
 
     def remove_table_row(self, row: int):
         if 0 <= row < self.data_table.rowCount():
@@ -783,6 +796,11 @@ class UDSSequenceView(QtWidgets.QWidget):
                                                  QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No)
             if reply == QtWidgets.QMessageBox.Yes:
                 self.config_delete_requested.emit(current)
+
+    def update_row_response(self, row: int, response: str):
+        """Update the response column for a specific row."""
+        if 0 <= row < self.data_table.rowCount():
+            self.data_table.setItem(row, 4, QtWidgets.QTableWidgetItem(response))
 
     def get_table_data(self):
         """Return list of dicts representing the table rows."""
