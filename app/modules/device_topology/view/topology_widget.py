@@ -1,6 +1,6 @@
 import sys
 from PyQt5 import QtGui, QtWidgets
-from PyQt5.QtCore import Qt, QSize, QPointF, QPropertyAnimation, QEasingCurve, QRectF, QPoint
+from PyQt5.QtCore import Qt, QSize, QPointF, QPropertyAnimation, QEasingCurve, QRectF, QPoint, pyqtSignal
 from PyQt5.QtGui import QPainter, QPen, QBrush, QColor, QFont, QFontMetrics
 from PyQt5.QtWidgets import (
     QWidget, QApplication, QVBoxLayout, QGraphicsView, QGraphicsScene,
@@ -154,6 +154,8 @@ class ConnectionLabelItem(QGraphicsItem):
 
 class TopologyWidget(QGraphicsView):
     """支持缩放和滚动的拓扑图视图，内置透明悬浮工具栏"""
+
+    request_info_update = pyqtSignal(str)  # 新增信号：请求更新信息，参数为信息类型标识
 
     def __init__(self, node_data, parent=None):
         super().__init__(parent)
@@ -337,8 +339,8 @@ class TopologyWidget(QGraphicsView):
         self.storage_info_widget = QWidget()
         self.storage_labels = {}
         setup_form_layout(self.storage_info_widget, self.storage_labels, [
-            ("a_core_storage", "A核存储情况："),
-            ("m_core_storage", "M核存储情况：")
+            ("a_core_storage", "存储情况：")
+            # ("m_core_storage", "M核存储情况：")
         ])
 
         # 6. 以太网网络诊断
@@ -376,8 +378,20 @@ class TopologyWidget(QGraphicsView):
         panel = FloatingPanel(text, self.window(), content_widget)
         self.panels[btn] = panel
 
-        btn.clicked.connect(lambda checked, b=btn: self._show_panel(b))
+        # 修改连接逻辑：点击时先触发信号，再显示面板
+        btn.clicked.connect(lambda checked, b=btn, t=text: self._on_tool_btn_clicked(b, t))
         layout.addWidget(btn)
+
+    def _on_tool_btn_clicked(self, button, text):
+        """工具按钮点击处理"""
+        if not button.isChecked():
+            # 如果是取消选中（即关闭面板），不需要请求数据
+            self._show_panel(button)
+            return
+
+        # 发送请求信号
+        self.request_info_update.emit(text)
+        self._show_panel(button)
 
     def update_vehicle_info(self, info: dict):
         self.vehicle_labels["vin"].setText(info.get("vin", "—"))
@@ -412,7 +426,7 @@ class TopologyWidget(QGraphicsView):
 
     def update_storage_info(self, info: dict):
         self.storage_labels["a_core_storage"].setText(info.get("a_core_storage", "—"))
-        self.storage_labels["m_core_storage"].setText(info.get("m_core_storage", "—"))
+        # self.storage_labels["m_core_storage"].setText(info.get("m_core_storage", "—"))
 
     def _show_panel(self, button):
         """显示面板"""
@@ -847,3 +861,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

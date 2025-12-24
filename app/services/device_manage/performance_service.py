@@ -1,10 +1,9 @@
 from __future__ import annotations
 
-import random
+import re
+import time
 from dataclasses import dataclass
 from typing import Callable, List, Optional, Tuple
-
-from app.services.communication.ssh_service import SSHService
 
 
 class PerformanceFetchError(Exception):
@@ -15,27 +14,35 @@ class PerformanceFetchError(Exception):
 class PerformanceMetrics:
     cpu: float
     mem: float
-    mem_bw: float
-
+    disk_usage: float
+    disk_read_kb: float
+    disk_write_kb: float
 
 @dataclass
 class ProcessSample:
+    type: str
     user: str
     pid: int
     cpu_percent: float
     mem_percent: float
-    virt: int
-    res: int
-    command: str
+    vsz_kb: int
+    rss_kb: int
+    tty: str
+    stat: str
+    start_time: str
+    cpu_time: str
+    container: str
+    process_name: str
+    full_command: str
     group_name: Optional[str] = None
 
 
 class PerformanceService:
-    """通过 SSH 采集远程 PC 性能/进程数据的服务。"""
+    """通过 SSHClient 发指令采集样机的性能/进程数据的服务。"""
 
     def __init__(
         self,
-        ssh_service: Optional[SSHService] = None,
+        device_service,
         executor: Optional[Callable[[str, int], Tuple[int, str, str]]] = None,
         *,
         host: Optional[str] = None,
@@ -45,165 +52,280 @@ class PerformanceService:
         key_file: Optional[str] = None,
         use_dummy: bool = True,
     ) -> None:
-        self._ssh_service = ssh_service or SSHService()
+        self._device_service = device_service
         self._executor = executor
         self._target: Optional[tuple[str, int]] = None
         self._use_dummy = use_dummy
+        # 从 device_service 获取 ssh_client 实例
+        self._ssh_client = self._device_service.get_ssh_client()
 
-        if host and port and username:
-            self.configure_target(host, port, username, password=password, key_file=key_file)
-            # 用户显式配置了 SSH 目标后默认关闭 dummy
-            self._use_dummy = use_dummy
+        # State for calculating rates
+        self._prev_cpu = None
+        self._prev_disk_io = None
+        self._prev_disk_time = None
+        self._use_dummy = False
 
-    def configure_target(
-        self,
-        host: str,
-        port: int,
-        username: str,
-        *,
-        password: Optional[str] = None,
-        key_file: Optional[str] = None,
-        eager_connect: bool = False,
-    ) -> None:
-        """配置 SSH 目标主机，可反复调用以切换目标。"""
-        self._target = (host, port)
-        self._ssh_service.register_host(
-            host=host,
-            port=port,
-            username=username,
-            password=password,
-            key_file=key_file,
-            eager_connect=eager_connect,
+    def fetch_metrics(self, timeout: int = 5) -> PerformanceMetrics:
+        """采集 CPU / 内存 / 磁盘指标。"""
+        # 每次采集前，重新从 DeviceService 获取最新的 SSHClient 实例（确保状态同步）
+        self._ssh_client = self._device_service.get_ssh_client()
+
+        # 1. CPU
+        cpu_usage = 0.0
+        current_cpu = self.get_cpu_usage()
+        if current_cpu and self._prev_cpu:
+            total_time_diff = current_cpu['total_time'] - self._prev_cpu['total_time']
+            idle_time_diff = current_cpu['idle_time'] - self._prev_cpu['idle_time']
+
+            if total_time_diff > 0:
+                cpu_usage = 100.0 * (total_time_diff - idle_time_diff) / total_time_diff
+
+        self._prev_cpu = current_cpu
+
+        # 2. Memory
+        mem_usage = 0.0
+        memory = self.get_memory_usage()
+        if memory:
+            mem_usage = memory['usage_percent']
+
+        # 3. Disk I/O
+        disk_usage = 0.0
+        read_kb = 0.0
+        write_kb = 0.0
+
+        disk_io = self.get_disk_io()
+        if disk_io:
+            disk_usage = disk_io['usage_percent']
+            read_kb = disk_io['read_kb']
+            write_kb = disk_io['write_kb']
+
+        return PerformanceMetrics(
+            cpu=cpu_usage,
+            mem=mem_usage,
+            disk_usage=disk_usage,
+            disk_read_kb=read_kb,
+            disk_write_kb=write_kb
         )
 
-    # ------------------------------------------------------------------
-    # 对外接口
-    # ------------------------------------------------------------------
-    def fetch_metrics(self, timeout: int = 5) -> PerformanceMetrics:
-        """采集 CPU / 内存 / 内存带宽指标。"""
-        command = "get_perf_metrics"
-        return self._parse_metrics_output(*self._execute(command, timeout))
 
     def fetch_processes(self, limit: int = 20, timeout: int = 8) -> List[ProcessSample]:
-        """采集进程列表，默认返回前 limit 条。"""
-        command = f"get_process_list --limit {limit}"
-        return self._parse_process_output(*self._execute(command, timeout))
+        """采集进程列表。"""
+        # 每次采集前，重新从 DeviceService 获取最新的 SSHClient 实例
+        self._ssh_client = self._device_service.get_ssh_client()
 
-    # ------------------------------------------------------------------
-    # 内部实现
-    # ------------------------------------------------------------------
-    def _execute(self, command: str, timeout: int) -> Tuple[int, str, str]:
-        if self._executor:
-            return self._executor(command, timeout)
-
-        if self._target:
-            host, port = self._target
-            stdout, stderr, exit_code = self._ssh_service.execute(host, port, command, timeout=timeout)
-            return exit_code, stdout, stderr
-
-        if self._use_dummy:
-            return self._dummy_executor(command)
-
-        raise PerformanceFetchError("PerformanceService: 未配置 SSH 目标，也未启用 dummy 模式。")
-
-    @staticmethod
-    def _parse_metrics_output(returncode: int, stdout: str, stderr: str) -> PerformanceMetrics:
-        if returncode != 0:
-            raise PerformanceFetchError(f"性能命令执行失败: {stderr.strip() or returncode}")
-
-        line = (stdout or "").strip()
-        if not line:
-            raise PerformanceFetchError("未获取到性能指标数据")
-
-        parts = [p.strip() for p in line.split(",")]
-        if len(parts) != 3:
-            raise PerformanceFetchError(f"性能指标格式不正确: {line}")
-
-        try:
-            cpu, mem, mem_bw = (float(parts[0]), float(parts[1]), float(parts[2]))
-        except ValueError as exc:  # pragma: no cover - 数据异常直接抛出
-            raise PerformanceFetchError(f"无法解析性能指标: {line}") from exc
-
-        for name, value in (("CPU", cpu), ("内存", mem), ("内存带宽", mem_bw)):
-            if not 0.0 <= value <= 100.0:
-                raise PerformanceFetchError(f"{name} 数值超出范围: {value}")
-
-        return PerformanceMetrics(cpu=cpu, mem=mem, mem_bw=mem_bw)
-
-    @staticmethod
-    def _parse_process_output(returncode: int, stdout: str, stderr: str) -> List[ProcessSample]:
-        if returncode != 0:
-            raise PerformanceFetchError(f"进程采集失败: {stderr.strip() or returncode}")
-
-        lines = [line.strip() for line in (stdout or "").splitlines() if line.strip()]
-        if not lines:
+        if self._ssh_client is None or not self._ssh_client.is_connected():
+            # raise PerformanceFetchError("SSH设备未连接，无法采集进程数据")
             return []
 
-        processes: List[ProcessSample] = []
+        command = "ps aux"
+        stdout = self._ssh_client.execute_command(command)
+        if not stdout:
+            return []
+
+        return self._parse_process_output(stdout)
+
+    @staticmethod
+    def _parse_process_output(stdout: str) -> List[ProcessSample]:
+        lines = stdout.strip().split('\n')
+        processes = []
+
+        # Skip header if present
+        if len(lines) > 0 and "PID" in lines[0]:
+            lines = lines[1:]
+
         for line in lines:
-            parts = [p.strip() for p in line.split(",")]
-            if len(parts) < 7:
-                # 跳过无法解析的行，但保留其它数据
+            if not line.strip():
                 continue
+
+            # 匹配格式: USER PID %CPU %MEM VSZ RSS TTY STAT START TIME COMMAND
+            pattern = r'^(\S+)\s+(\d+)\s+([\d.]+)\s+([\d.]+)\s+(\d+)\s+(\d+)\s+(\S+)\s+(\S+)\s+(\S+)\s+([\d:]+)\s+(.+)$'
+            match = re.match(pattern, line)
+
+            if not match:
+                parts = line.split()
+                if len(parts) < 11:
+                    continue
+                try:
+                    user, pid, cpu, mem, vsz, rss, tty, stat, start, time = parts[:10]
+                    command = ' '.join(parts[10:])
+                except (IndexError, ValueError):
+                    continue
+            else:
+                user, pid, cpu, mem, vsz, rss, tty, stat, start, time, command = match.groups()
+
+            # Initialize
+            p_type = 'unknown'
+            container = 'unknown'
+            process_name = 'unknown'
+
+            # Logic from processmonitor.py
+            if command.startswith('/containers/'):
+                p_type = 'type1'
+                path_parts = command.split()[0].split('/')
+                if len(path_parts) > 3:
+                    container = path_parts[2]
+                    process_name = path_parts[-1]
+            elif command.strip() == '/bin/sh /containers/NeuSARPlatform/neusar_startup.sh':
+                p_type = 'type2'
+                container = 'NeuSARPlatform'
+                process_name = 'neusar_startup.sh'
+
             try:
-                user = parts[0]
-                pid = int(parts[1])
-                cpu_percent = float(parts[2])
-                mem_percent = float(parts[3])
-                virt = int(parts[4])
-                res = int(parts[5])
-                command = parts[6]
-                group_name = parts[7] if len(parts) > 7 and parts[7] else None
+                processes.append(ProcessSample(
+                    type=p_type,
+                    user=user,
+                    pid=int(pid),
+                    cpu_percent=float(cpu),
+                    mem_percent=float(mem),
+                    vsz_kb=int(vsz),
+                    rss_kb=int(rss),
+                    tty=tty,
+                    stat=stat,
+                    start_time=start,
+                    cpu_time=time,
+                    container=container,
+                    process_name=process_name,
+                    full_command=command
+                ))
             except ValueError:
                 continue
 
-            processes.append(
-                ProcessSample(
-                    user=user,
-                    pid=pid,
-                    cpu_percent=cpu_percent,
-                    mem_percent=mem_percent,
-                    virt=virt,
-                    res=res,
-                    command=command,
-                    group_name=group_name,
-                )
-            )
-
         return processes
 
-    @staticmethod
-    def _dummy_executor(command: str, timeout: int = 5) -> Tuple[int, str, str]:  # pragma: no cover - UI 调试占位
-        if "get_process_list" in command:
-            limit = 20
-            if "--limit" in command:
-                try:
-                    limit = int(command.split("--limit")[-1].strip().split()[0])
-                except ValueError:
-                    limit = 20
-            lines = []
-            users = ["root", "system", "user1", "user2"]
-            groups = ["Core", "Service", "User", "Others"]
-            commands = [
-                "diagnostic_service",
-                "memory_manager",
-                "logger_daemon",
-                "python app.py",
-                "java -jar service.jar",
-            ]
-            for idx in range(limit):
-                user = random.choice(users)
-                pid = 1200 + idx
-                cpu = random.uniform(0, 40)
-                mem = random.uniform(0, 30)
-                virt = random.randint(50_000, 500_000)
-                res = random.randint(10_000, 200_000)
-                cmd = random.choice(commands)
-                group = random.choice(groups)
-                lines.append(f"{user},{pid},{cpu:.1f},{mem:.1f},{virt},{res},{cmd},{group}")
-            return 0, "\n".join(lines), ""
 
-        cpu = random.uniform(10, 80)
-        mem = random.uniform(20, 90)
-        mem_bw = random.uniform(5, 95)
-        return 0, f"{cpu:.1f},{mem:.1f},{mem_bw:.1f}", ""
+    def get_cpu_usage(self):
+        """获取CPU使用率"""
+        # 从/proc/stat读取CPU信息
+        command = "cat /proc/stat | grep '^cpu '"
+        output = self._ssh_client.execute_command(command)
+
+        if not output:
+            return None
+
+        # 解析CPU数据: user, nice, system, idle, iowait, irq, softirq, steal, guest, guest_nice
+        cpu_data = re.findall(r'\d+', output)
+        if len(cpu_data) < 4:
+            return None
+
+        # 计算总CPU时间和空闲时间
+        total_time = sum(map(int, cpu_data))
+        idle_time = int(cpu_data[3])  # idle是第4个字段
+
+        return {
+            'total_time': total_time,
+            'idle_time': idle_time,
+            'usage_percent': None  # 需要两次测量才能计算百分比
+        }
+
+    def get_memory_usage(self):
+        """获取内存使用情况"""
+        command = "free -k | grep Mem:"
+        output = self._ssh_client.execute_command(command)
+
+        if not output:
+            return None
+
+        # 解析内存数据: total, used, free, shared, buff/cache, available
+        mem_data = re.findall(r'\d+', output)
+        if len(mem_data) < 6:
+            return None
+
+        total = int(mem_data[0])
+        used = int(mem_data[1])
+        free = int(mem_data[2])
+        available = int(mem_data[5])
+
+        usage_percent = (used / total) * 100 if total > 0 else 0
+
+        return {
+            'total_kb': total,
+            'used_kb': used,
+            'free_kb': free,
+            'available_kb': available,
+            'usage_percent': usage_percent
+        }
+
+    def get_disk_io(self):
+        """获取磁盘I/O统计和使用率"""
+        # 修改命令，匹配更广泛的磁盘设备，包括mmcblk设备
+        command = "cat /proc/diskstats | grep -E '^(\\s*[0-9]+\\s+[0-9]+\\s+)(mmcblk0|sd|vd|hd)[a-z]* ' | head -1"
+        output = self._ssh_client.execute_command(command)
+
+        if not output:
+            # 如果上面的命令没有返回结果，尝试获取第一个非零设备
+            command = "cat /proc/diskstats | head -1"
+            output = self._ssh_client.execute_command(command)
+
+        if not output:
+            return None
+
+        # 解析磁盘I/O数据
+        # 使用更灵活的正则表达式匹配数字，适应不同格式的空格
+        io_data = re.findall(r'\d+', output)
+        if len(io_data) < 11:
+            return None
+
+        # 读取和写入的扇区数（1扇区=512字节）
+        # 根据/proc/diskstats格式，第6个字段是读取的扇区数，第10个字段是写入的扇区数
+        read_sectors = int(io_data[5])
+        write_sectors = int(io_data[9])
+
+        # 获取I/O操作时间（毫秒），第13个字段
+        io_time_ms = int(io_data[12]) if len(io_data) > 12 else 0
+        # 获取加权I/O操作时间（毫秒），第14个字段
+        weighted_io_time_ms = int(io_data[13]) if len(io_data) > 13 else 0
+
+        current_time = time.time()
+        usage_percent = 0.0
+
+        # 计算磁盘使用率（基于I/O操作时间）
+        if self._prev_disk_io and self._prev_disk_time:
+            time_diff = current_time - self._prev_disk_time
+            if time_diff > 0:
+                # 计算I/O操作时间的增量
+                io_time_diff = io_time_ms - self._prev_disk_io['io_time_ms']
+                # 转换为使用率百分比（I/O时间占总时间的比例）
+                usage_percent = min(100.0, (io_time_diff / (time_diff * 1000)) * 100)
+
+        # 保存当前状态用于下一次计算
+        self._prev_disk_io = {
+            'read_sectors': read_sectors,
+            'write_sectors': write_sectors,
+            'io_time_ms': io_time_ms,
+            'weighted_io_time_ms': weighted_io_time_ms
+        }
+        self._prev_disk_time = current_time
+
+        return {
+            'read_sectors': read_sectors,
+            'write_sectors': write_sectors,
+            'read_kb': read_sectors * 0.5,  # 转换为KB
+            'write_kb': write_sectors * 0.5,  # 转换为KB
+            'io_time_ms': io_time_ms,
+            'weighted_io_time_ms': weighted_io_time_ms,
+            'usage_percent': usage_percent
+        }
+
+    def get_system_info(self):
+        """获取系统基本信息"""
+        # 获取主机名
+        hostname_cmd = "hostname"
+        hostname = self._ssh_client.execute_command(hostname_cmd) or "Unknown"
+
+        # 获取系统负载
+        loadavg_cmd = "cat /proc/loadavg"
+        loadavg = self._ssh_client.execute_command(loadavg_cmd) or "0 0 0"
+        load_1, load_5, load_15 = loadavg.split()[:3]
+
+        # 获取系统运行时间
+        uptime_cmd = "cat /proc/uptime"
+        uptime_output = self._ssh_client.execute_command(uptime_cmd) or "0"
+        uptime_seconds = float(uptime_output.split()[0])
+
+        return {
+            'hostname': hostname,
+            'load_1min': float(load_1),
+            'load_5min': float(load_5),
+            'load_15min': float(load_15),
+            'uptime_seconds': uptime_seconds
+        }

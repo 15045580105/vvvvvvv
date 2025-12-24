@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import threading
 from dataclasses import dataclass
-from typing import Dict, List, Tuple, Optional, Any
+from typing import Dict, List, Tuple, Optional, Any, Callable
 
 from app.services.device_manage.device_service import DeviceService
 
@@ -37,20 +37,71 @@ class TopologyService:
       * use_dummy=False: 通过注入的 DeviceService 使用 DoIPClient 向 ECU 请求真实拓扑数据。
     """
 
-    def __init__(self, device_service: Optional[DeviceService] = None, *, use_dummy: bool = True) -> None:
-        self._use_dummy = use_dummy
+    def __init__(self, device_service: Optional[DeviceService] = None) -> None:
         self._device_service = device_service
 
     def fetch_snapshot(self, device_info: Dict[str, Any] = None) -> TopologySnapshot:
         """采集整车拓扑概览。后续可接入 DoIP，目前在 use_dummy=True 时返回模拟数据。"""
-        if self._use_dummy or self._device_service is None:
-            return self._build_dummy_snapshot()
         return self._fetch_doip_snapshot(device_info)
+
+    def fetch_vehicle_info(self, log_callback: Optional[Callable[[str], None]] = None) -> Dict[str, str]:
+        """仅采集车辆信息"""
+        if log_callback: log_callback("开始采集车辆信息...")
+        info = {
+            "vin": self._get_vin(log_callback),
+            "vehicle_mode": self._get_vehicle_mode(log_callback),
+            "user_mode": self._get_user_mode(log_callback),
+            "factory_mode": self._get_factory_mode(log_callback),
+            "voltage": self._get_voltage(log_callback)
+        }
+        if log_callback: log_callback("车辆信息采集完成")
+        return info
+
+    def fetch_service_status(self, log_callback: Optional[Callable[[str], None]] = None) -> Dict[str, str]:
+        """仅采集服务状态"""
+        if log_callback: log_callback("开始采集服务状态...")
+        service_status_raw = self._get_service_status(log_callback)
+        if log_callback: log_callback("服务状态采集完成")
+        return {"status_summary": service_status_raw}
+
+    def fetch_security_info(self, log_callback: Optional[Callable[[str], None]] = None) -> Dict[str, str]:
+        """仅采集证书信息"""
+        if log_callback: log_callback("开始采集证书信息...")
+        info = {
+            "cert_info": self._get_cert_info(log_callback),
+            "key_slot_status": self._get_key_slot_status(log_callback),
+            "cms_env": self._get_cms_env(log_callback)
+        }
+        if log_callback: log_callback("证书信息采集完成")
+        return info
+
+    def fetch_network_mgmt(self, log_callback: Optional[Callable[[str], None]] = None) -> Dict[str, str]:
+        """仅采集网络管理信息"""
+        if log_callback: log_callback("开始采集网络管理信息...")
+        pnc_mgmt = self._get_pnc_status(log_callback)
+        link_status = self._get_eth_link_status(log_callback)
+        network_mgmt = {}
+        network_mgmt.update(pnc_mgmt)
+        network_mgmt.update(link_status)
+        if log_callback: log_callback("网络管理信息采集完成")
+        return network_mgmt
+
+    def fetch_storage_info(self, device_info: Dict[str, Any] = None, log_callback: Optional[Callable[[str], None]] = None) -> Dict[str, str]:
+        """仅采集存储信息"""
+        if log_callback: log_callback("开始采集存储信息...")
+        info = {
+            "a_core_storage": self._get_storage_info(device_info, log_callback),
+            "m_core_storage": self._get_version_info(device_info, log_callback),
+        }
+        if log_callback: log_callback("存储信息采集完成")
+        return info
 
     def _fetch_doip_snapshot(self, device_info: Dict[str, Any] = None) -> TopologySnapshot:
         """通过已建立的 DoIP 连接向 ECU 请求拓扑信息，并转换为 TopologySnapshot。"""
         if self._device_service is None:
             raise TopologyServiceError("未注入 DeviceService，无法通过 DoIP 采集拓扑")
+        # 4. 以太网 link 状态（新增）：通过 22 BE1A 获取当前各节点 link up/down 信息
+        link_status = self._get_eth_link_status()
 
         # 1. 车辆信息
         vin = self._get_vin()
@@ -80,8 +131,6 @@ class TopologyService:
             "cms_env": cms_env
         }
 
-        # 4. 以太网 link 状态（新增）：通过 22 BE1A 获取当前各节点 link up/down 信息
-        link_status = self._get_eth_link_status()
 
         # 5. PNC 网络管理 (SomeIP)
         pnc_mgmt = self._get_pnc_status()
@@ -112,11 +161,14 @@ class TopologyService:
         )
 
     # --- DoIP Helpers ---
-    def _send_uds_read(self, did_high, did_low) -> Optional[bytes]:
+    def _send_uds_read(self, did_high, did_low, log_callback: Optional[Callable[[str], None]] = None) -> Optional[bytes]:
         payload = bytes([0x22, did_high, did_low])
+        if log_callback: log_callback(f"发送 UDS 读取: {payload.hex(' ').upper()}")
         rx = self._device_service.send_doip_payload(payload, timeout=1.0)
         if rx and len(rx) >= 3 and rx[0] == 0x62 and rx[1] == did_high and rx[2] == did_low:
+            if log_callback: log_callback(f"收到 UDS 响应: {rx.hex(' ').upper()}")
             return rx[3:]
+        if log_callback: log_callback(f"UDS 读取失败或无响应: {rx.hex(' ').upper() if rx else 'None'}")
         return None
 
     def _get_eth_link_status(self) -> Dict[str, str]:
@@ -244,12 +296,12 @@ class TopologyService:
         # 这是一个 Event，通常需要 Subscribe。
         # 这里简化为尝试等待 Event，如果 client 已经 subscribe 了。
         # 或者我们尝试 subscribe。
-        client = self._device_service.get_someip_client()
-        if client:
-            client.subscribe_eventgroup(0x1055, 0xFFFF, 0x9001) # 假设 instance 0xFFFF
-            # 等待回调... 略复杂，暂时返回 "监听中..."
-            return "监听中..."
-        return "Client未就绪"
+        # client = self._device_service.get_someip_client()
+        # if client:
+        #     client.subscribe_eventgroup(0x1055, 0xFFFF, 0x9001) # 假设 instance 0xFFFF
+        #     # 等待回调... 略复杂，暂时返回 "监听中..."
+        #     return "监听中..."
+        return "SomeIP Client未就绪"
 
     def _get_service_status(self) -> str:
         # 10FA, 0003
@@ -266,21 +318,130 @@ class TopologyService:
         }
 
     # --- SSH Helpers ---
-    def _get_storage_info(self, device_info: Dict[str, Any]) -> str:
-        if not device_info: return "无设备信息"
-        cmd = "df -h | grep /dev"
-        out, err, code = self._device_service.execute_ssh_command_on_device(device_info, cmd)
-        if code == 0:
-            return out.strip()
-        return f"Error: {err}"
+    def _get_storage_info(self, device_info: Dict[str, Any], log_callback: Optional[Callable[[str], None]] = None) -> str:
+        # if not device_info: return "无设备信息"
+        cmd = "df -h"
+        if log_callback: log_callback(f"发送 SSH 指令: {cmd}")
 
-    def _get_version_info(self, device_info: Dict[str, Any]) -> str:
-        if not device_info: return "无设备信息"
+        try:
+            res = self._device_service.get_ssh_client().execute_command(cmd)
+            out = res
+            if isinstance(res, tuple):
+                 out = res[0]
+
+        except Exception as e:
+            return f"Error: {e}"
+
+        if out:
+            # 筛选以 /dev 开头的行
+            lines = [line for line in out.strip().splitlines() if line.strip().startswith('/dev')]
+            result = "\n".join(lines)
+            if log_callback: log_callback(f"SSH 指令成功: \n{result}")
+            return result
+
+        if log_callback: log_callback(f"SSH 指令失败 or Empty")
+        return "Error: Empty response"
+
+    def _get_version_info(self, device_info: Dict[str, Any], log_callback: Optional[Callable[[str], None]] = None) -> str:
+        # if not device_info: return "无设备信息"
         cmd = "get_ccu_all_version"
-        out, err, code = self._device_service.execute_ssh_command_on_device(device_info, cmd)
-        if code == 0:
-            return out.strip()
-        return f"Error: {err}"
+        if log_callback: log_callback(f"发送 SSH 指令: {cmd}")
+        out = self._device_service.get_ssh_client().execute_command(cmd)
+        return out.strip()
+
+    # --- Network Diagnosis Helpers (Moved from Controller) ---
+
+    def execute_capture_routine(self, command: bytes, log_callback: Optional[Callable[[str], None]] = None) -> bool:
+        """执行抓包相关的 UDS 例程"""
+        if self._device_service is None:
+            if log_callback:
+                log_callback("DeviceService 未注入，无法执行抓包指令")
+            return False
+
+        # 定义内部日志函数，如果未提供 callback 则忽略
+        def _log(msg: str):
+            if log_callback:
+                log_callback(msg)
+
+        return self._device_service.execute_secure_routine(command, sec_level=0x01, log_callback=_log)
+
+    def capture_ccu_eth(self, log_callback: Optional[Callable[[str], None]] = None) -> bool:
+        """CCU ETH数据抓包"""
+        cmd = bytes.fromhex("31 01 BE E7 3E")
+        return self.execute_capture_routine(cmd, log_callback)
+
+    def capture_node_eth(self, log_callback: Optional[Callable[[str], None]] = None) -> bool:
+        """节点 ETH数据抓包"""
+        cmd = bytes.fromhex("31 01 BE E7 03")
+        return self.execute_capture_routine(cmd, log_callback)
+
+    def capture_vehicle_eth(self, log_callback: Optional[Callable[[str], None]] = None) -> bool:
+        """整车 ETH数据抓包"""
+        cmd = bytes.fromhex("31 01 BE E7 FF")
+        return self.execute_capture_routine(cmd, log_callback)
+
+    def get_tx_rx_count(self, log_callback: Optional[Callable[[str], None]] = None) -> Tuple[bool, str]:
+        """获取 TX/RX 计数"""
+        if self._device_service is None:
+            if log_callback: log_callback("服务不可用: DeviceService 未注入")
+            return False, "服务不可用"
+
+        ssh_client = self._device_service.get_ssh_client()
+        if not ssh_client or not ssh_client.is_connected():
+            if log_callback: log_callback("SSH未连接")
+            return False, "SSH未连接"
+
+        cmd = "Use -mib -all"
+        if log_callback: log_callback(f"发送 SSH 指令: {cmd}")
+        out = ssh_client.execute_command(cmd)
+
+        if log_callback:
+            if out:
+                log_callback(f"收到 SSH 响应: {out.strip()}")
+            else:
+                log_callback("SSH 指令执行无响应或失败")
+
+        # execute_command 返回 stdout (str) 或 None
+        if out is not None:
+            return True, out.strip().splitlines()[0] if out else "OK"
+        else:
+            return False, "执行失败"
+
+    def ping_ip(self, ip: str, log_callback: Optional[Callable[[str], None]] = None) -> bool:
+        """Ping 指定 IP"""
+        if self._device_service is None:
+            if log_callback: log_callback("服务不可用: DeviceService 未注入")
+            return False
+
+        ssh_client = self._device_service.get_ssh_client()
+        if not ssh_client or not ssh_client.is_connected():
+            if log_callback: log_callback("SSH未连接")
+            return False
+
+        cmd = f"ping -c 2 {ip}"
+        if log_callback: log_callback(f"发送 SSH 指令: {cmd}")
+
+        out = ssh_client.execute_command(cmd)
+
+        if log_callback:
+            if out:
+                log_callback(f"收到 SSH 响应: {out.strip()}")
+            else:
+                log_callback("SSH 指令执行无响应或失败")
+
+        if not out:
+            return False
+
+        # 解析 ping 结果
+        if "100% packet loss" in out or "0 packets received" in out:
+            if log_callback: log_callback(f"Ping {ip} 结果: 不通 (丢包)")
+            return False
+
+        if "packets received" in out:
+             if log_callback: log_callback(f"Ping {ip} 结果: 通")
+             return True
+
+        return False
 
     # -------------------- 模拟数据路径 --------------------
     @staticmethod

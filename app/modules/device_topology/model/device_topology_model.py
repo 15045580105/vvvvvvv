@@ -14,7 +14,7 @@ class TopologyModel(BaseModel):
         self.storage_info = {}
         self._service = TopologyService()
         self._snapshot: TopologySnapshot | None = None
-        self.refresh()
+        # self.refresh()
 
     def refresh(self):
         snapshot: TopologySnapshot = self._service.fetch_snapshot()

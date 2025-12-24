@@ -1,4 +1,5 @@
 from typing import Dict, Any, Tuple
+from typing import List, Dict, Any, Tuple, Callable, Optional
 import time
 
 from PyQt5.QtCore import QObject, pyqtSignal
@@ -6,8 +7,10 @@ from paramiko.ssh_exception import AuthenticationException, SSHException
 
 from app.common.communication.clients.Doip_Client import DoIPClientHandler
 from app.common.communication.clients.Someip_Client import SomeIPClient
+from app.modules.device_management.models.device_model import CONNECTING, DISCONNECTED, CONNECT_FAILED, ONLINE
+from app.common.communication.clients.ssh_client import SSHClient
+from app.common.utils.security_access_helper import SecurityAccessHelper
 from app.modules.device_management.models.device_model import CONNECTING, DISCONNECTED, CONNECT_FAILED
-from app.services.communication.ssh_service import SSHService
 from app.services.configuration.config_service import AppConfigurationService
 from app.core.dependency_injection import di_container
 import warnings
@@ -32,10 +35,10 @@ class DeviceService(QObject):
 
     def __init__(self) -> None:
         super().__init__()
-        self._ssh_service = SSHService()
-        # 独立的 DoIP / SomeIP 客户端实例，由 DeviceService 统一管理生命周期
+        # 独立的 DoIP / SomeIP /SSH 客户端实例，由 DeviceService 统一管理生命周期
         self._doip_handler: DoIPClientHandler | None = None
         self._someip_client: SomeIPClient | None = None
+        self._ssh_client: SSHClient | None = None
 
         self._config_service = di_container.resolve(AppConfigurationService)
         if not self._config_service:
@@ -54,19 +57,21 @@ class DeviceService(QObject):
         # 强制等待，确保UI有时间渲染所有协议的转圈状态
         time.sleep(0.5)
 
-        # 1. DoIP 连接
+        # 1. SomeIP 客户端准备
+        time.sleep(1.0)
+        self._connect_someip(device)
+        self._change_status(device)
+
+        # 2. DoIP 连接
         # 模拟连接过程，避免瞬间完成导致看不到转圈
         time.sleep(1.0)
         self._connect_doip(device)
         self._change_status(device)
 
-        # 2. SomeIP 客户端准备
-        time.sleep(1.0)
-        self._connect_someip(device)
-        self._change_status(device)
 
         # 3. SSH 连接：通过执行 ipconfig 验证链路
         time.sleep(0.5)
+        self.active_ssh_command()
         self._connect_ssh(device)
         self._change_status(device)
 
@@ -86,12 +91,11 @@ class DeviceService(QObject):
 
     def _disconnect_ssh(self, device):
         self.log_signal.emit("正在通过SSH断开设备...")
-        ip = device.get("ip")
-        port = int(device.get("port", 22))
         try:
-            self._ssh_service.close_host(ip, port)
-            device["ssh_connect_status"] = DISCONNECTED
-            device["ssh_connect_info"] = "SSH已断链成功"
+            if not self._ssh_client is None and self._ssh_client.is_connected():
+                self._ssh_client.disconnect()
+                device["ssh_connect_status"] = DISCONNECTED
+                device["ssh_connect_info"] = "SSH已断链成功"
         except Exception as e:
             msg = f"SSH 断开异常: {e}"
             self.log_signal.emit(msg)
@@ -123,21 +127,13 @@ class DeviceService(QObject):
                 device["doip_connect_status"] = CONNECT_FAILED
                 device["doip_connect_info"] = msg
 
-
-    def _connect_ssh(self, device):
+    def is_ssh_connected(self, device: Dict[str, Any]) -> bool:
+        """检查指定设备的 SSH 是否连接成功。"""
         ip = device.get("ip")
         port = int(device.get("port", 22))
-        self.log_signal.emit(f"正在通过SSH连接设备 {ip}:{port}...")
-        out, err, code = self.execute_ssh_command_on_device(device, "get_ccu_all_version")
-        if code == 0:
-            self.log_signal.emit("SSH 连接成功")
-            device["ssh_connect_status"] = "建链成功"
-            device["ssh_connect_info"] = f"已成功连接到SSH服务 {ip}:{port}"
-        else:
-            self.log_signal.emit(f" SSH 连接失败: {err}")
-            device["ssh_connect_status"] = "连接失败"
-            device["ssh_connect_info"] = err or f"SSH 连接{ip}:{port}失败"
-
+        if not ip:
+            return False
+        return self._ssh_client.is_connected()
 
     def _connect_doip(self, device: Dict[str, Any]) -> None:
         """内部辅助：为当前设备建立 DoIP 连接，并在 device 上写入状态字段。
@@ -211,7 +207,7 @@ class DeviceService(QObject):
             device["doip_connect_status"] = "连接失败"
             device["doip_connect_info"] = f"DoIP 连接 {ip}:{tcp_port} 失败"
 
-    def _ensure_someip_client(self, local_ip: str | None = None) -> SomeIPClient | None:
+    def _ensure_someip_client(self, device_ip: str | None = None) -> SomeIPClient | None:
         """内部辅助：创建并启动 SomeIPClient。
 
         当前简单实现：
@@ -221,8 +217,9 @@ class DeviceService(QObject):
         if self._someip_client is not None:
             return self._someip_client
 
-        ip = local_ip or "127.0.0.1"
-        client = SomeIPClient(local_ip=ip, local_port=0)
+        ip = device_ip or "10.1.0.79"
+        local_ip = "10.1.0.99"
+        client = SomeIPClient(local_ip=local_ip)
         started = client.start()
         if not started:
             self.log_signal.emit(f"SomeIP 客户端启动失败，本地IP={ip}")
@@ -237,8 +234,8 @@ class DeviceService(QObject):
         注意：SOME/IP 多数场景是无连接 UDP，这里仅表示“本地客户端已就绪”。
         """
         # 可以按需从 device 中取本地网卡 IP 或接口信息，目前简单使用回环地址
-        local_ip = device.get("ip")  # 可选字段
-        client = self._ensure_someip_client(local_ip)
+        device_ip = device.get("ip")  # 可选字段
+        client = self._ensure_someip_client(device_ip)
         if client is None:
             device["someip_connect_status"] = "连接失败"
             device["someip_connect_info"] = "SomeIP 客户端启动失败"
@@ -260,16 +257,13 @@ class DeviceService(QObject):
         }
         self.protocol_status_changed_signal.emit(payload)
 
-    def execute_ssh_command_on_device(
+
+
+    def _connect_ssh(
         self,
         device: Dict[str, Any],
-        command: str,
         timeout: int = 30,
-    ) -> Tuple[str, str, int]:
-        """对单个设备执行 SSH 命令并返回 (stdout, stderr, exit_code)，内部捕获异常避免应用崩溃。
-        本方法内部也会更新 device["ssh_connect_status"] 和 device["ssh_connect_info"]，
-        以便上层在需要时将最新状态透传给 Controller/Model。
-        """
+    ) -> tuple[str, str, int] | None:
         host = device.get("ip")
         port = int(device.get("port", 22))
         username = device.get("user") or device.get("username") or "root"
@@ -277,8 +271,15 @@ class DeviceService(QObject):
         key_file = device.get("key_file")
         try:
             # register_host 幂等，重复调用安全
-            self._ssh_service.register_host(host, port, username, password, key_file, eager_connect=False)
-            out, err, code = self._ssh_service.execute(host, port, command, timeout=timeout)
+            self._ssh_client = SSHClient()
+            connect_result = self._ssh_client.connect(host, port, username, password)
+            if not connect_result:
+                device["ssh_connect_status"] = "连接失败"
+                device["ssh_connect_info"] = "SSH 认证失败"
+                return "", "SSH 认证失败", 255
+            device["ssh_connect_status"] = "建链成功"
+            device["ssh_connect_info"] = f"SSH 已连接到 {host}:{port}"
+            self.log_signal.emit(f"SSH 已连接到 {host}:{port}")
         except AuthenticationException as e:
             msg = f"SSH认证失败: {e}"
             self.log_signal.emit(msg)
@@ -297,15 +298,6 @@ class DeviceService(QObject):
             device["ssh_connect_status"] = "连接失败"
             device["ssh_connect_info"] = msg
             return "", msg, 255
-
-        if code == 0:
-            device["ssh_connect_status"] = "建链成功"
-            device["ssh_connect_info"] = f"命令成功: {command}" if command else "SSH 命令执行成功"
-        else:
-            msg = err or f"SSH命令失败, 返回码 {code}"
-            device["ssh_connect_status"] = "连接失败"
-            device["ssh_connect_info"] = msg
-        return out, err, code
 
 
     def close_device_all_connections(self, device: Dict[str, Any]) -> None:
@@ -356,50 +348,100 @@ class DeviceService(QObject):
         """返回当前 SomeIP 客客户端实例（可能为 None）。"""
         return self._someip_client
 
-    def get_ssh_service(self) -> SSHService:
-        """返回当前 SSH 服务实例。"""
-        return self._ssh_service
+    def get_ssh_client(self) -> SSHClient | None:
+        """返回当前 SSH 客客户端实例（可能为 None）。"""
+        return self._ssh_client
+
 
     def close_device_connections(self):
-        self._ssh_service.close_all()
+        self._ssh_client.disconnect()
         self._someip_client.stop()
         self._doip_handler.disconnect()
 
 
-def main():
-    # 测试入口
-    # 注意：请根据实际环境修改 IP、用户名和密码
-    test_device = {
-        "ip": "10.1.0.79",
-        "port": 22,
-        "username": "root",
-        "password": "$ww0328_G"
-    }
-
-    print(f"Starting SSH test for device: {test_device['ip']}")
-    service = DeviceService()
-
-    # 监听日志信号
-    service.log_signal.connect(lambda msg: print(f"[Service Log] {msg}"))
-
-    # 1. 测试 get_ccu_all_version
-    cmd1 = "get_ccu_all_version"
-    print(f"\n>>> Executing: {cmd1}")
-    out1, err1, code1 = service.execute_ssh_command_on_device(test_device, cmd1)
-    print(f"Res Code: {code1}")
-    print(f"Output:\n{out1}")
-    if err1:
-        print(f"Error:\n{err1}")
-
-    # 2. 测试 df -h
-    cmd2 = "df -h"
-    print(f"\n>>> Executing: {cmd2}")
-    out2, err2, code2 = service.execute_ssh_command_on_device(test_device, cmd2)
-    print(f"Code: {code2}")
-    print(f"Output:\n{out2}")
-    if err2:
-        print(f"Error:\n{err2}")
+    def active_ssh_command(self):
+        """
+        发送 DoIP 指令激活 SSH (或其他功能)
+        """
+        self.log_signal.emit("开始发送激活 SSH 指令...")
+        # 31 01 BE E9
+        routine = bytes.fromhex("31 01 BE E9")
+        self.execute_secure_routine(routine, sec_level=0x21)
 
 
-if __name__ == "__main__":
-    main()
+    def execute_secure_routine(self, routine_command: bytes, sec_level: int = 0x21, log_callback: Optional[Callable[[str], None]] = None) -> bool:
+        """
+        执行带安全访问的 UDS 例程序列:
+        1. 10 03 (Extended Session)
+        2. 27 <sec_level> (Request Seed) -> Calculate Key -> 27 <sec_level+1> (Send Key)
+        3. <routine_command>
+
+        :param routine_command: 例程指令 bytes
+        :param sec_level: 安全访问级别
+        :param log_callback: 日志回调函数，接受一个字符串参数。如果提供，则日志通过此回调输出；否则通过 self.log_signal 发出。
+        """
+        # 定义内部日志函数
+        def _log(msg: str):
+            if log_callback:
+                log_callback(msg)
+            else:
+                self.log_signal.emit(msg)
+
+        client = self.get_doip_client()
+        if not client:
+            _log("DoIP 未连接，无法发送指令")
+            return False
+
+        # 1. 诊断会话控制 (10 03)
+        tx_session = bytes.fromhex("10 03")
+        _log(f"发送: {tx_session.hex(' ').upper()}")
+        rx_session = client.send_doip_message(tx_session)
+        if not rx_session or rx_session[0] != 0x50:
+            _log(f"会话控制失败: {rx_session.hex(' ').upper() if rx_session else '无响应'}")
+            return False
+        _log(f"会话控制成功: {rx_session.hex(' ').upper()}")
+
+        # 2. 安全访问
+        tx_seed = bytes([0x27, sec_level])
+        _log(f"请求种子: {tx_seed.hex(' ').upper()}")
+        rx_seed = client.send_doip_message(tx_seed)
+
+        if not rx_seed or rx_seed[0] != 0x67:
+            _log(f"请求种子失败: {rx_seed.hex(' ').upper() if rx_seed else '无响应'}")
+            return False
+        _log(f"收到种子: {rx_seed.hex(' ').upper()}")
+
+        # 计算密钥
+        if len(rx_seed) < 3:
+            _log("种子响应长度不足")
+            return False
+
+        seed = rx_seed[2:]
+        key, error_msg = SecurityAccessHelper.calculate_key(sec_level, seed)
+
+        if not key:
+            _log(f"密钥计算失败: {error_msg}")
+            return False
+
+        # 发送密钥
+        tx_key = bytes([0x27, sec_level + 1]) + key
+        _log(f"发送密钥: {tx_key.hex(' ').upper()}")
+        rx_key = client.send_doip_message(tx_key)
+
+        if not rx_key or rx_key[0] != 0x67:
+            _log(f"安全访问失败: {rx_key.hex(' ').upper() if rx_key else '无响应'}")
+            # return False
+        else:
+            _log(f"安全访问成功: {rx_key.hex(' ').upper()}")
+
+        # 3. 例程控制
+        _log(f"发送例程: {routine_command.hex(' ').upper()}")
+        rx_routine = client.send_doip_message(routine_command)
+
+        # 检查响应是否为肯定响应 (Request Service ID + 0x40)
+        expected_response_sid = routine_command[0] + 0x40
+        if not rx_routine or rx_routine[0] != expected_response_sid:
+            _log(f"例程控制失败: {rx_routine.hex(' ').upper() if rx_routine else '无响应'}")
+            return False
+        _log(f"例程控制成功: {rx_routine.hex(' ').upper()}")
+        return True

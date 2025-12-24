@@ -8,13 +8,20 @@ from app.core.base_model import BaseModel
 @dataclass
 class ProcessInfo:
     """单个进程信息模型。"""
+    type: str
     user: str
     pid: int
     cpu_percent: float
     mem_percent: float
-    virt: int  # KB
-    res: int   # KB
-    command: str
+    vsz_kb: int
+    rss_kb: int
+    tty: str
+    stat: str
+    start_time: str
+    cpu_time: str
+    container: str
+    process_name: str
+    full_command: str
     group_name: Optional[str] = None
 
 
@@ -30,8 +37,8 @@ class ProcessGroupStat:
 class PerformanceModel(BaseModel):
     def __init__(self, parent=None):
         super().__init__(parent)
-        # 历史采样数据列表: (timestamp, cpu, mem, mem_bw)
-        self.samples: list[tuple[float, float, float, float]] = []
+        # 历史采样数据列表: (timestamp, cpu, mem, disk_usage, disk_read_kb, disk_write_kb)
+        self.samples: list[tuple[float, float, float, float, float, float]] = []
         self.max_points: int = 120
         self.last_error: str | None = None
 
@@ -43,13 +50,13 @@ class PerformanceModel(BaseModel):
 
         # 兼容旧接口的简单进程列表
         self.processes = []
-        self.update_processes()
+        # self.update_processes()
 
     # ============ 性能曲线相关 ============
-    def append_sample(self, cpu: float, mem: float, mem_bw: float, ts: float | None = None):
+    def append_sample(self, cpu: float, mem: float, disk_usage: float, disk_read_kb: float, disk_write_kb: float, ts: float | None = None):
         """追加一个性能采样点，并裁剪到 max_points。"""
         ts = ts or time.time()
-        self.samples.append((ts, cpu, mem, mem_bw))
+        self.samples.append((ts, cpu, mem, disk_usage, disk_read_kb, disk_write_kb))
         if len(self.samples) > self.max_points:
             self.samples = self.samples[-self.max_points:]
         self.dataChanged.emit()
@@ -99,6 +106,25 @@ class PerformanceModel(BaseModel):
     def get_filtered_processes(self) -> List[ProcessInfo]:
         """根据选中分组和搜索条件返回过滤后的进程列表。"""
         result = self.process_list
+
+        # 1. 分组过滤
+        if self.selected_group_name:
+            result = [p for p in result if (p.group_name or "Others") == self.selected_group_name]
+
+        # 2. 搜索过滤
+        if self.search_text:
+            kw = self.search_text.lower()
+            result = [
+                p for p in result
+                if kw in str(p.pid)
+                or kw in p.user.lower()
+                or kw in p.full_command.lower()
+                or kw in p.process_name.lower()
+                or kw in p.container.lower()
+                or (p.group_name and kw in p.group_name.lower())
+            ]
+
+        return result
 
         if self.selected_group_name:
             result = [p for p in result if (p.group_name or "Others") == self.selected_group_name]
