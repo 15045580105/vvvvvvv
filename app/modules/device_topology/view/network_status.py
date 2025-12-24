@@ -122,19 +122,22 @@ class NetworkStatusPanel(QtWidgets.QWidget):
 
         main_layout.addLayout(status_grid, stretch=1)
 
-        # === Section 3: Ping buttons (2 rows x 7 columns) ====================
-        ping_grid = QtWidgets.QGridLayout()
-        ping_grid.setHorizontalSpacing(6)
-        ping_grid.setVerticalSpacing(4)
+        # === Section 3: Ping buttons (2 rows: 3 items top, 4 items bottom) ===
+        ping_layout = QtWidgets.QVBoxLayout()
+        ping_layout.setSpacing(10)
 
-        # Helper for creating ping button + result line edit
-        def add_ping_item(col: int, label: str, key_suffix: str):
-            btn = ModernButton(f"Ping {label}", BTN_COLORS[col % len(BTN_COLORS)], dense=True)
+        def create_ping_widget(label: str, key_suffix: str, color_idx: int) -> QtWidgets.QWidget:
+            widget = QtWidgets.QWidget()
+            layout = QtWidgets.QVBoxLayout(widget)
+            layout.setContentsMargins(0, 0, 0, 0)
+            layout.setSpacing(4)
+
+            btn = ModernButton(f"Ping {label}", BTN_COLORS[color_idx % len(BTN_COLORS)], dense=True)
             btn.setObjectName(f"pushButton_ping_{key_suffix}")
             btn.setSizePolicy(QSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed))
             btn.setFixedHeight(40)
             self._register_button(f"ping_{key_suffix}", btn)
-            ping_grid.addWidget(btn, 0, col)
+            layout.addWidget(btn)
 
             line_edit = QtWidgets.QLineEdit()
             line_edit.setObjectName(f"lineEdit_ping_{key_suffix}")
@@ -144,27 +147,36 @@ class NetworkStatusPanel(QtWidgets.QWidget):
             line_edit.setStyleSheet("font-size: 15px;")
             line_edit.setFixedHeight(40)
             self._register_status(f"ping_{key_suffix}_result", line_edit)
-            ping_grid.addWidget(line_edit, 1, col)
+            layout.addWidget(line_edit)
+            return widget
 
         ping_nodes = [
-            (0, "ADC", "adc"),
-            (1, "IDC", "idc"),
-            (2, "TBOX", "tbox"),
-            (3, "FL", "fl"),
-            (4, "IFC", "ifc"),
-            (5, "RT1", "rt1"),
-            (6, "RT2", "rt2"),
+            ("ADC", "adc"),
+            ("IDC", "idc"),
+            ("TBOX", "tbox"),
+            ("FL", "fl"),
+            ("IFC", "ifc"),
+            ("RT1", "rt1"),
+            ("RT2", "rt2"),
         ]
-        for col, label, key in ping_nodes:
-            add_ping_item(col, label, key)
 
-        # 让 7 列平均拉伸，同时行也有一定高度
-        for col in range(7):
-            ping_grid.setColumnStretch(col, 1)
-        ping_grid.setRowStretch(0, 1)
-        ping_grid.setRowStretch(1, 1)
+        # Row 1: 3 items
+        row1_layout = QtWidgets.QHBoxLayout()
+        row1_layout.setSpacing(6)
+        for i in range(3):
+            label, key = ping_nodes[i]
+            row1_layout.addWidget(create_ping_widget(label, key, i))
+        ping_layout.addLayout(row1_layout)
 
-        main_layout.addLayout(ping_grid, stretch=1)
+        # Row 2: 4 items
+        row2_layout = QtWidgets.QHBoxLayout()
+        row2_layout.setSpacing(6)
+        for i in range(3, 7):
+            label, key = ping_nodes[i]
+            row2_layout.addWidget(create_ping_widget(label, key, i))
+        ping_layout.addLayout(row2_layout)
+
+        main_layout.addLayout(ping_layout, stretch=1)
 
     # --- helpers ------------------------------------------------------------
     def _register_button(self, key: str, button: ModernButton) -> None:

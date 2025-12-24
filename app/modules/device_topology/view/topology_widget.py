@@ -229,13 +229,13 @@ class TopologyWidget(QGraphicsView):
         # 初始化各个信息面板的内容 Widget
         self._init_info_widgets()
 
-        # 添加工具按钮 - 使用更紧凑的设计
         self._add_tool_button("车辆信息", toolbar_layout, self.vehicle_info_widget)
         self._add_tool_button("服务状态信息", toolbar_layout, self.service_status_widget)
         self._add_tool_button("证书信息", toolbar_layout, self.security_info_widget)
         self._add_tool_button("网络管理", toolbar_layout, self.network_mgmt_widget)
         self._add_tool_button("储存信息", toolbar_layout, self.storage_info_widget)
-        self._add_tool_button("以太网网络诊断", toolbar_layout, self.network_diag_widget)
+        self._add_tool_button("版本信息", toolbar_layout, self.version_info_widget)
+        self._add_tool_button("以太网网络诊断", toolbar_layout, self.network_diag_widget, initial_size=(850, 500))
 
         toolbar_layout.addStretch()
 
@@ -343,10 +343,19 @@ class TopologyWidget(QGraphicsView):
             # ("m_core_storage", "M核存储情况：")
         ])
 
-        # 6. 以太网网络诊断
+        # 6. 版本信息
+        self.version_info_widget = QWidget()
+        self.version_labels = {}
+        setup_form_layout(self.version_info_widget, self.version_labels, [
+            ("sw_version", "软件版本："),
+            ("hw_version", "硬件版本："),
+            ("boot_version", "Boot版本：")
+        ])
+
+        # 7. 以太网网络诊断
         self.network_diag_widget = NetworkStatusPanel()
 
-    def _add_tool_button(self, text, layout, content_widget=None):
+    def _add_tool_button(self, text, layout, content_widget=None, initial_size=None):
         """添加透明工具按钮"""
         btn = QPushButton(text)
         btn.setCheckable(True)
@@ -375,7 +384,7 @@ class TopologyWidget(QGraphicsView):
             }
         """)
 
-        panel = FloatingPanel(text, self.window(), content_widget)
+        panel = FloatingPanel(text, self.window(), content_widget, initial_size)
         self.panels[btn] = panel
 
         # 修改连接逻辑：点击时先触发信号，再显示面板
@@ -428,6 +437,11 @@ class TopologyWidget(QGraphicsView):
         self.storage_labels["a_core_storage"].setText(info.get("a_core_storage", "—"))
         # self.storage_labels["m_core_storage"].setText(info.get("m_core_storage", "—"))
 
+    def update_version_info(self, info: dict):
+        self.version_labels["sw_version"].setText(info.get("sw_version", "—"))
+        self.version_labels["hw_version"].setText(info.get("hw_version", "—"))
+        self.version_labels["boot_version"].setText(info.get("boot_version", "—"))
+
     def _show_panel(self, button):
         """显示面板"""
         panel = self.panels[button]
@@ -436,8 +450,6 @@ class TopologyWidget(QGraphicsView):
             panel.hide()
             button.setChecked(False)
         else:
-            self.hide_all_panels()
-
             # 计算面位位置：相对于按钮
             global_pos = button.mapToGlobal(button.rect().bottomLeft())
             global_pos.setY(global_pos.y() + 8)
@@ -456,7 +468,6 @@ class TopologyWidget(QGraphicsView):
         super().resizeEvent(event)
         # 工具栏宽度比视图小20px（左右各10px边距）
         self.toolbar.setGeometry(10, 10, self.viewport().width() - 20, 46)
-        self.hide_all_panels()
 
     def init_nodes(self, node_data):
         self.main_node = TopologyNode(0, "主交换机\nMAIN SWITCH", "")
@@ -618,17 +629,35 @@ class TopologyWidget(QGraphicsView):
 class FloatingPanel(QWidget):
     """浮动信息面板"""
 
-    def __init__(self, title, parent=None, content_widget=None):
+    # 边缘常量
+    EDGE_NONE = 0
+    EDGE_LEFT = 1
+    EDGE_TOP = 2
+    EDGE_RIGHT = 4
+    EDGE_BOTTOM = 8
+    EDGE_MARGIN = 10
+
+    def __init__(self, title, parent=None, content_widget=None, initial_size=None):
         super().__init__(parent)
         self.title = title
         self.animation = None
         self.custom_content = content_widget
+        self.initial_size = initial_size if initial_size else (420, 380)
+
+        # 拖拽和调整大小状态
+        self._drag_pos = None
+        self._resize_edge = self.EDGE_NONE
+        self._is_resizing = False
+
+        self.setMouseTracking(True)
         self.init_ui()
 
     def init_ui(self):
         """初始化面板UI"""
-        self.setWindowFlags(Qt.Popup | Qt.FramelessWindowHint)
+        self.setObjectName("FloatingPanel")
+        self.setWindowFlags(Qt.Tool | Qt.FramelessWindowHint)
         self.setAttribute(Qt.WA_TranslucentBackground)
+        self.setStyleSheet("QWidget#FloatingPanel { background: transparent; border: none; }")
 
         # 主容器，用于绘制阴影
         main_layout = QVBoxLayout(self)
@@ -656,8 +685,8 @@ class FloatingPanel(QWidget):
         layout.setSpacing(0)
 
         # 标题栏
-        title_bar = QWidget(main_frame)
-        title_bar.setStyleSheet("""
+        self.title_bar = QWidget(main_frame)
+        self.title_bar.setStyleSheet("""
             QWidget {
                 background-color: #F9FAFB;
                 border-top-left-radius: 12px;
@@ -666,7 +695,7 @@ class FloatingPanel(QWidget):
             }
         """)
 
-        title_layout = QHBoxLayout(title_bar)
+        title_layout = QHBoxLayout(self.title_bar)
         title_layout.setContentsMargins(16, 12, 12, 12)
 
         title_label = QLabel(self.title)
@@ -739,12 +768,13 @@ class FloatingPanel(QWidget):
 
         content_area.setWidget(content_widget)
 
-        layout.addWidget(title_bar)
+        layout.addWidget(self.title_bar)
         layout.addWidget(content_area)
 
         main_layout.addWidget(main_frame)
 
-        self.setFixedSize(420, 380)
+        self.resize(*self.initial_size)
+        self.setMinimumSize(300, 200)
         self.hide()
 
     def add_panel_content(self, layout):
@@ -774,6 +804,104 @@ class FloatingPanel(QWidget):
 
             layout.addLayout(grid_layout)
         layout.addStretch()
+
+    def _get_edge(self, pos):
+        edge = self.EDGE_NONE
+        r = self.rect()
+        m = self.EDGE_MARGIN
+
+        if pos.x() <= m:
+            edge |= self.EDGE_LEFT
+        elif pos.x() >= r.width() - m:
+            edge |= self.EDGE_RIGHT
+
+        if pos.y() <= m:
+            edge |= self.EDGE_TOP
+        elif pos.y() >= r.height() - m:
+            edge |= self.EDGE_BOTTOM
+
+        return edge
+
+    def _update_cursor(self, edge):
+        if edge == self.EDGE_LEFT | self.EDGE_TOP or edge == self.EDGE_RIGHT | self.EDGE_BOTTOM:
+            self.setCursor(Qt.SizeFDiagCursor)
+        elif edge == self.EDGE_RIGHT | self.EDGE_TOP or edge == self.EDGE_LEFT | self.EDGE_BOTTOM:
+            self.setCursor(Qt.SizeBDiagCursor)
+        elif edge & self.EDGE_LEFT or edge & self.EDGE_RIGHT:
+            self.setCursor(Qt.SizeHorCursor)
+        elif edge & self.EDGE_TOP or edge & self.EDGE_BOTTOM:
+            self.setCursor(Qt.SizeVerCursor)
+        else:
+            self.setCursor(Qt.ArrowCursor)
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            edge = self._get_edge(event.pos())
+            if edge != self.EDGE_NONE:
+                self._is_resizing = True
+                self._resize_edge = edge
+                self._drag_pos = event.globalPos()
+                event.accept()
+            else:
+                # 检查点击是否在标题栏区域
+                local_pos = self.title_bar.mapFrom(self, event.pos())
+                if self.title_bar.rect().contains(local_pos):
+                    self._drag_pos = event.globalPos() - self.frameGeometry().topLeft()
+                    self._is_resizing = False
+                    event.accept()
+        else:
+            super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        if event.buttons() & Qt.LeftButton:
+            if self._is_resizing:
+                delta = event.globalPos() - self._drag_pos
+                self._drag_pos = event.globalPos()
+
+                geo = self.geometry()
+                # 使用 QRectF 进行计算，避免精度问题，最后转回 QRect
+                new_geo = QRectF(geo)
+
+                min_w = self.minimumWidth()
+                min_h = self.minimumHeight()
+
+                if self._resize_edge & self.EDGE_LEFT:
+                    new_w = geo.width() - delta.x()
+                    if new_w >= min_w:
+                        new_geo.setLeft(geo.left() + delta.x())
+
+                if self._resize_edge & self.EDGE_RIGHT:
+                    new_w = geo.width() + delta.x()
+                    if new_w >= min_w:
+                        new_geo.setRight(geo.right() + delta.x())
+
+                if self._resize_edge & self.EDGE_TOP:
+                    new_h = geo.height() - delta.y()
+                    if new_h >= min_h:
+                        new_geo.setTop(geo.top() + delta.y())
+
+                if self._resize_edge & self.EDGE_BOTTOM:
+                    new_h = geo.height() + delta.y()
+                    if new_h >= min_h:
+                        new_geo.setBottom(geo.bottom() + delta.y())
+
+                self.setGeometry(new_geo.toRect())
+                event.accept()
+
+            elif self._drag_pos: # 移动模式
+                self.move(event.globalPos() - self._drag_pos)
+                event.accept()
+        else:
+            # 更新鼠标光标
+            self._update_cursor(self._get_edge(event.pos()))
+            super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        self._is_resizing = False
+        self._resize_edge = self.EDGE_NONE
+        self._drag_pos = None
+        self.setCursor(Qt.ArrowCursor)
+        super().mouseReleaseEvent(event)
 
     def show_at(self, pos):
         """在指定位置显示面板"""
