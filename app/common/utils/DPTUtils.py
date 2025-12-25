@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import Iterable, List, Dict, Any, Union
+import struct
 
 
 # -----------------------------
@@ -11,98 +12,54 @@ from typing import Iterable, List, Dict, Any, Union
 
 @dataclass
 class DPTFieldDef:
-    """单个信号/字段在 DPT 文件中的定义。
+    """单个信号/字段在 DPT 文件中的定义。"""
+    name: str  # 对应 JSON 中的 description
+    byte_offset: int
+    byte_length: int
+    encoding: str = "Unsigned"
+    conversion: Any = None
+    bit_fields: Dict[str, Any] = field(default_factory=dict)
+    fixed_value: Any = None
 
-    这里只实现一个比较通用的定义：
-    - name: 字段名
-    - start_bit: 起始 bit（从 0 开始计数，0 表示第一个字节的最低位或最高位，视项目约定）
-    - length: bit 长度
-    - description: 文字说明
-    - values: 可选的值映射表（例如 {0: "关闭", 1: "开启"}）
-
-    真实项目里 DPT 一般会更复杂（字节序、信号类型、比例系数、偏移量等），
-    这些可以在后续慢慢扩展，这里先留好字段。
-    """
-
-    name: str
-    start_bit: int
-    length: int
-    description: str = ""
-    values: Dict[int, str] = field(default_factory=dict)
-    factor: float = 1.0
-    offset: float = 0.0
-    unit: str | None = None
+    # 内部使用
+    key: str = "" # JSON key
 
 
 @dataclass
 class DPTFieldValue:
     """解析后的单个字段结果。"""
-
     name: str
-    bit_range: str
-    raw_bits: str
-    raw_value: int
-    physical_value: Union[int, float, str]
-    description: str
+    range_str: str # Bit / Byte range string
+    raw_hex: str   # Raw value in Hex or Binary
+    parsed_value: str # Parsed/Converted value
+    status: str = "" # Additional status info
 
 
 @dataclass
 class DPTParseResult:
-    """一次解析的整体结果，可以直接给到 DID 模块的 model 使用。"""
-
+    """一次解析的整体结果。"""
     bytes_hex: str
     fields: List[DPTFieldValue] = field(default_factory=list)
+    description: str = "" # DID description from DPT file
 
     def to_table_rows(self) -> List[List[str]]:
-        """转换为表格行，方便 DID 页面四列表格展示。
+        """转换为表格行。
 
-        默认四列含义：
-        - 第 0 列：bit 位（例如 "0-3"）
-        - 第 1 列：功能/信号名称
-        - 第 2 列：二进制值
-        - 第 3 列：状态（解析值 + 描述）
+        列定义:
+        - Byte / Bit
+        - Function / Name
+        - Value (Raw/Hex/Bin)
+        - Status / Unit (Parsed Value)
         """
-
         rows: List[List[str]] = []
         for f in self.fields:
-            status_parts = [str(f.physical_value)]
-            if f.description:
-                status_parts.append(f"({f.description})")
-            status = " ".join(status_parts)
             rows.append([
-                f.bit_range,
+                f.range_str,
                 f.name,
-                f.raw_bits,
-                status,
+                f.raw_hex,
+                f.parsed_value,
             ])
         return rows
-
-
-# -----------------------------
-# 工具函数
-# -----------------------------
-
-
-def _bytes_to_bits(data: bytes) -> str:
-    """将整段字节转换为二进制字符串，高位在前。
-
-    例如: b"\x12\xA0" -> "0001001010100000" (两个字节共 16 位)。
-    """
-
-    return "".join(f"{b:08b}" for b in data)
-
-
-def _slice_bits(bit_str: str, start_bit: int, length: int) -> str:
-    """从整体 bit 串中截取 [start_bit, start_bit+length) 区间。"""
-
-    end = start_bit + length
-    if start_bit < 0 or end > len(bit_str):
-        return ""
-    return bit_str[start_bit:end]
-
-
-def _bits_to_int(bits: str) -> int:
-    return int(bits, 2) if bits else 0
 
 
 # -----------------------------
@@ -111,130 +68,209 @@ def _bits_to_int(bits: str) -> int:
 
 
 class DPTParser:
-    """DPT 解析工具。
+    def __init__(self, field_defs: List[DPTFieldDef], description: str = ""):
+        # 按 byte_offset 排序
+        self._fields = sorted(field_defs, key=lambda f: f.byte_offset)
+        self.description = description
 
-    目前实现思路：
-    1. 在构造时加载/注入 DPT 字段定义列表（可以来自配置文件、数据库等）。
-    2. 调用 `parse_bytes` 传入字节数组，返回 `DPTParseResult`。
-
-    这里提供一个比较通用的实现，你可以在业务层根据具体 DPT 格式
-    自行构造 `DPTFieldDef` 列表，再交给本解析器处理。
-    """
-
-    def __init__(self, fields: Iterable[DPTFieldDef]):
-        self._fields: List[DPTFieldDef] = sorted(
-            list(fields), key=lambda f: f.start_bit
-        )
-
-    # 方便后续根据 DID 编号等做筛选
     @classmethod
     def from_dict_config(cls, config: Dict[str, Any]) -> "DPTParser":
-        """从一个简单的 dict 配置构造解析器。
+        """从 dict 配置构造解析器。
 
-        config 示例：
-        {
-            "fields": [
-                {"name": "Signal1", "start_bit": 0, "length": 4, "description": "状态位"},
-                {"name": "Signal2", "start_bit": 4, "length": 8, "factor": 0.5, "unit": "V"},
-            ]
-        }
+        支持两种格式：
+        1. {"fields": [...]} (旧格式)
+        2. {"field_key": {...}, ...} (新格式)
         """
-
         fields: List[DPTFieldDef] = []
-        for item in config.get("fields", []):
+
+        # 检查是否是旧格式
+        if "fields" in config and isinstance(config["fields"], list):
+            # 旧格式转换逻辑 (略，或者假设不再使用旧格式，或者做简单兼容)
+            # 这里为了支持新需求，主要处理新格式
+            pass
+
+        # 处理新格式：遍历字典
+        # 如果 config 包含 "fields" 键且是列表，则遍历该列表（兼容旧代码逻辑，如果需要）
+        # 但根据 dpt_service.py 的修改，传入的 config 可能是 {"hardware_code": {...}}
+
+        source = config
+        if "fields" in config and isinstance(config["fields"], list):
+             # 如果是旧格式列表，暂不支持或需要适配，这里假设传入的是新格式字典
+             # 或者如果 dpt_service 传递了 {"fields": list}，我们需要处理
+             source = {f["name"]: f for f in config["fields"]} # 尝试转换
+
+        for key, item in source.items():
+            if not isinstance(item, dict):
+                continue
+
             fields.append(
                 DPTFieldDef(
-                    name=item["name"],
-                    start_bit=int(item["start_bit"]),
-                    length=int(item["length"]),
-                    description=item.get("description", ""),
-                    values=item.get("values", {}) or {},
-                    factor=float(item.get("factor", 1.0)),
-                    offset=float(item.get("offset", 0.0)),
-                    unit=item.get("unit"),
+                    key=key,
+                    name=item.get("description", key),
+                    byte_offset=int(item.get("byte_offset", 0)),
+                    byte_length=int(item.get("byte_length", 0)),
+                    encoding=item.get("encoding", "Unsigned"),
+                    conversion=item.get("conversion"),
+                    bit_fields=item.get("bit_fields", {}),
+                    fixed_value=item.get("fixed_value")
                 )
             )
         return cls(fields)
 
     def parse_bytes(self, data: Union[bytes, bytearray, Iterable[int]]) -> DPTParseResult:
-        """解析一段字节数据，返回结构化结果。
-
-        参数:
-            data: 可以是 bytes、bytearray 或 int 可迭代对象（0-255）。
-
-        返回:
-            DPTParseResult，内部 `fields` 列表可直接用于页面展示。
-        """
-
         if isinstance(data, (bytearray, list, tuple)):
             data_bytes = bytes(data)
         elif isinstance(data, bytes):
             data_bytes = data
         else:
-            # 尝试把任意 Iterable[int] 转成 bytes
-            data_bytes = bytes(int(x) & 0xFF for x in data)  # type: ignore[arg-type]
+            data_bytes = bytes(int(x) & 0xFF for x in data)
 
-        bits = _bytes_to_bits(data_bytes)
         bytes_hex = " ".join(f"{b:02X}" for b in data_bytes)
-
-        result = DPTParseResult(bytes_hex=bytes_hex)
+        result = DPTParseResult(bytes_hex=bytes_hex, description=self.description)
 
         for fdef in self._fields:
-            raw_bits = _slice_bits(bits, fdef.start_bit, fdef.length)
-            raw_value = _bits_to_int(raw_bits)
+            # 提取字节
+            start = fdef.byte_offset
+            end = start + fdef.byte_length
+            if start >= len(data_bytes):
+                continue
 
-            # 物理值计算: (raw * factor + offset)
-            physical: Union[int, float, str]
-            if fdef.factor != 1.0 or fdef.offset != 0.0:
-                physical = raw_value * fdef.factor + fdef.offset
+            chunk = data_bytes[start:min(end, len(data_bytes))]
+
+            # 如果有 bit_fields，则解析位
+            if fdef.bit_fields:
+                self._parse_bit_fields(fdef, chunk, result)
             else:
-                physical = raw_value
-
-            # 若有枚举值映射，则优先显示枚举文本
-            if fdef.values and raw_value in fdef.values:
-                physical = fdef.values[raw_value]
-
-            # 单位拼接
-            if isinstance(physical, (int, float)) and fdef.unit:
-                physical = f"{physical}{fdef.unit}"
-
-            bit_range = (
-                f"{fdef.start_bit}"
-                if fdef.length == 1
-                else f"{fdef.start_bit}-{fdef.start_bit + fdef.length - 1}"
-            )
-
-            field_val = DPTFieldValue(
-                name=fdef.name,
-                bit_range=bit_range,
-                raw_bits=raw_bits,
-                raw_value=raw_value,
-                physical_value=physical,
-                description=fdef.description,
-            )
-            result.fields.append(field_val)
+                self._parse_standard_field(fdef, chunk, result)
 
         return result
 
+    def _parse_standard_field(self, fdef: DPTFieldDef, chunk: bytes, result: DPTParseResult):
+        # Range string
+        if fdef.byte_length == 1:
+            range_str = f"{fdef.byte_offset}/ALL"
+        else:
+            range_str = f"{fdef.byte_offset}-{fdef.byte_offset + fdef.byte_length - 1}/ALL"
 
-# -----------------------------
-# 便捷函数：直接解析，返回表格行
-# -----------------------------
+        # Raw Hex
+        raw_hex = chunk.hex(' ').upper()
+
+        # Parsed Value
+        parsed_val = ""
+
+        if fdef.encoding == "ASCII":
+            try:
+                parsed_val = chunk.decode("ascii")
+            except:
+                parsed_val = chunk.decode("ascii", errors="replace")
+        elif fdef.encoding == "Unsigned":
+            # Big-endian integer
+            val = int.from_bytes(chunk, byteorder='big', signed=False)
+
+            # Conversion
+            if fdef.conversion:
+                if isinstance(fdef.conversion, dict):
+                    # Try exact match
+                    # JSON keys are strings, convert val to string
+                    val_str = str(val)
+                    # Check if conversion has keys like "0", "1"
+                    # Also check for range mapping if needed (not implemented yet based on simple dict)
+                    # dpt.json example: "conversion": {"0": "Link up", ...}
+                    if val_str in fdef.conversion:
+                        parsed_val = fdef.conversion[val_str]
+                    else:
+                        parsed_val = str(val)
+                elif isinstance(fdef.conversion, str):
+                    parsed_val = f"{val} ({fdef.conversion})"
+                else:
+                    parsed_val = str(val)
+            else:
+                parsed_val = str(val)
+        else:
+            parsed_val = raw_hex
+
+        result.fields.append(DPTFieldValue(
+            name=fdef.name,
+            range_str=range_str,
+            raw_hex=raw_hex,
+            parsed_value=parsed_val
+        ))
+
+    def _parse_bit_fields(self, fdef: DPTFieldDef, chunk: bytes, result: DPTParseResult):
+        # Convert chunk to bits string
+        # Assuming big-endian for bits within bytes?
+        # Usually bit 0 is LSB or MSB depending on definition.
+        # dpt.json example: "bit_0": "Link up".
+        # Usually bit 0 is the Least Significant Bit (LSB).
+
+        val = int.from_bytes(chunk, byteorder='big', signed=False)
+
+        # Sort bit fields by bit index
+        # Keys are "bit_0", "bit_1", etc.
+        # Need to parse "bit_X" or "bit_X_Y" (range)?
+        # dpt.json has "bit_0", "bit_1".
+
+        sorted_bits = []
+        for k, v in fdef.bit_fields.items():
+            if k.startswith("bit_"):
+                try:
+                    idx = int(k.split("_")[1])
+                    sorted_bits.append((idx, v))
+                except:
+                    pass
+
+        sorted_bits.sort(key=lambda x: x[0])
+
+        for bit_idx, bit_def in sorted_bits:
+            # Extract bit value
+            # Assuming bit_0 is LSB (value & 1)
+            bit_val = (val >> bit_idx) & 1
+
+            # Calculate absolute byte index and relative bit index if needed
+            # But user requested "ByteIndex/BitIndex"
+            # If the field spans multiple bytes, we need to know which byte this bit belongs to.
+            # Assuming bit_0 is LSB of the whole chunk (Big Endian integer).
+            # If chunk is 1 byte: bit 0 is LSB.
+            # If chunk is 2 bytes: bit 0 is LSB of byte 1 (the last byte).
+            # Wait, usually "bit 0" in these definitions refers to the bit within the byte if it's a byte-based definition.
+            # But here we read `byte_length` bytes.
+            # If `byte_length` is 1, then `byte_offset` is the byte index.
+            # `bit_idx` is the bit index.
+
+            # If `byte_length` > 1, it gets complicated.
+            # Assuming byte_length=1 for bit_fields usually.
+
+            current_byte_offset = fdef.byte_offset
+            # If multiple bytes, we might need to adjust current_byte_offset based on bit_idx
+            # But let's assume simple case first or that bit_idx is within the chunk.
+
+            range_str = f"{current_byte_offset}/{bit_idx}"
+
+            raw_hex = str(bit_val)
+
+            parsed_val = str(bit_val)
+            conversion = bit_def.get("conversion")
+            if conversion and isinstance(conversion, dict):
+                val_str = str(bit_val)
+                if val_str in conversion:
+                    parsed_val = conversion[val_str]
+
+            description = bit_def.get("description", "")
+
+            result.fields.append(DPTFieldValue(
+                name=description,
+                range_str=range_str,
+                raw_hex=raw_hex,
+                parsed_value=parsed_val
+            ))
 
 
 def parse_bytes_to_table_rows(
     data: Union[bytes, bytearray, Iterable[int]],
     field_defs: Iterable[DPTFieldDef],
 ) -> List[List[str]]:
-    """一次性完成: 使用字段定义解析字节，并返回四列表格行。
-
-    方便 DID 界面直接调用，返回值格式：
-        [
-            ["bit位", "功能", "二进制值", "状态"],
-            ...
-        ]
-    """
-
-    parser = DPTParser(field_defs)
+    parser = DPTParser(list(field_defs))
     result = parser.parse_bytes(data)
     return result.to_table_rows()
+
+

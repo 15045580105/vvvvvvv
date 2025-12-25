@@ -528,7 +528,7 @@ class UDSSequenceView(QtWidgets.QWidget):
         btn_row_layout.addWidget(line2)
 
         # 3E Toggle
-        self.btn_3e = QtWidgets.QPushButton("💓")
+        self.btn_3e = QtWidgets.QPushButton("3E")
         self.btn_3e.setCheckable(True)
         self.btn_3e.setToolTip("Tester Present: 3E 80 (点击切换 3E 00)")
         self.btn_3e.setFixedSize(32, 32)
@@ -536,7 +536,7 @@ class UDSSequenceView(QtWidgets.QWidget):
         btn_row_layout.addWidget(self.btn_3e)
 
         # Stop on Fail Toggle
-        self.btn_stop_fail = QtWidgets.QPushButton("🛑")
+        self.btn_stop_fail = QtWidgets.QPushButton("⚠")
         self.btn_stop_fail.setCheckable(True)
         self.btn_stop_fail.setToolTip("遇错停止: 选中后遇到错误将停止执行")
         self.btn_stop_fail.setFixedSize(32, 32)
@@ -801,6 +801,11 @@ class UDSSequenceView(QtWidgets.QWidget):
         """Update the response column for a specific row."""
         if 0 <= row < self.data_table.rowCount():
             self.data_table.setItem(row, 4, QtWidgets.QTableWidgetItem(response))
+
+    def update_row_request(self, row: int, request: str):
+        """Update the request column for a specific row."""
+        if 0 <= row < self.data_table.rowCount():
+            self.data_table.setItem(row, 2, QtWidgets.QTableWidgetItem(request))
 
     def get_table_data(self):
         """Return list of dicts representing the table rows."""
