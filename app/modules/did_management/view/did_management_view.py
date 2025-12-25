@@ -4,6 +4,7 @@ from PyQt5.QtCore import Qt
 
 from app.common.ui.widgets import ModernButton
 from app.presentation.views.base_view import BaseView
+from app.modules.ecu_initialization.view.ecu_initialization_view import ECUInitView
 
 
 class FullCellDelegate(QtWidgets.QStyledItemDelegate):
@@ -228,6 +229,7 @@ class DIDView(BaseView):
     move_down_requested = QtCore.pyqtSignal()
     cell_clicked = QtCore.pyqtSignal(int, int)
     cell_double_clicked = QtCore.pyqtSignal(int, int)
+    ecu_init_requested = QtCore.pyqtSignal()
 
     def setup_ui(self):
         # 存储待应用的像素宽度（在首次布局完成后应用）
@@ -240,6 +242,9 @@ class DIDView(BaseView):
         # 顶部控制条：DPT 导入 + 表格操作 + 读取/响应（全部放在同一行）
         ctl = QtWidgets.QHBoxLayout()
         ctl.setSpacing(6)
+
+        self.ecu_init_btn = ModernButton("ECU初始化", "#8B5CF6", "🔧")
+        ctl.addWidget(self.ecu_init_btn)
 
         self.dpt_import_btn = ModernButton("导入DPT文件", "#22C55E", "📂")
         ctl.addWidget(self.dpt_import_btn)
@@ -263,6 +268,52 @@ class DIDView(BaseView):
         ctl.addWidget(self.write_btn)
 
         main_layout.addLayout(ctl)
+
+        # ECU 初始化面板容器 (初始隐藏)
+        self.ecu_panel = QtWidgets.QWidget()
+        self.ecu_panel.setVisible(False)
+        # 设置初始高度为0，用于动画
+        self.ecu_panel.setFixedHeight(0)
+
+        ecu_layout = QtWidgets.QVBoxLayout(self.ecu_panel)
+        ecu_layout.setContentsMargins(0, 0, 0, 0)
+        ecu_layout.setSpacing(0)
+
+        # ECU View
+        self.ecu_init_view = ECUInitView()
+        # 给 ECU View 一个最小高度，确保内容不被压缩太厉害
+        self.ecu_init_view.setMinimumHeight(200)
+        ecu_layout.addWidget(self.ecu_init_view)
+
+        # 收起按钮栏
+        collapse_bar = QtWidgets.QWidget()
+        collapse_bar.setFixedHeight(20)
+        collapse_bar.setStyleSheet("background-color: #f0f0f0; border-top: 1px solid #dcdcdc; border-bottom: 1px solid #dcdcdc;")
+        collapse_layout = QtWidgets.QHBoxLayout(collapse_bar)
+        collapse_layout.setContentsMargins(0, 0, 0, 0)
+        collapse_layout.setSpacing(0)
+
+        self.collapse_btn = QtWidgets.QPushButton("▲")
+        self.collapse_btn.setFixedSize(40, 20)
+        self.collapse_btn.setCursor(Qt.PointingHandCursor)
+        self.collapse_btn.setStyleSheet("""
+            QPushButton {
+                border: none;
+                background-color: transparent;
+                color: #666;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: #e0e0e0;
+                color: #333;
+            }
+        """)
+        self.collapse_btn.clicked.connect(self.toggle_ecu_init_panel)
+        collapse_layout.addWidget(self.collapse_btn)
+
+        ecu_layout.addWidget(collapse_bar)
+
+        main_layout.addWidget(self.ecu_panel)
 
         # 中间区域：DID 表格
         table_container = QtWidgets.QVBoxLayout()
@@ -352,6 +403,7 @@ class DIDView(BaseView):
         self.remove_btn.clicked.connect(self.remove_row_requested.emit)
         self.up_btn.clicked.connect(self.move_up_requested.emit)
         self.down_btn.clicked.connect(self.move_down_requested.emit)
+        self.ecu_init_btn.clicked.connect(self.toggle_ecu_init_panel)
 
         # 表格事件交给 controller，view 只做信号透传
         self.table.cellClicked.connect(self.cell_clicked.emit)
@@ -360,6 +412,34 @@ class DIDView(BaseView):
         # 初始布局：延迟应用列宽以便字体度量和视口尺寸可用
         # 使用 singleShot 在事件循环处理完布局后运行一次，防止初始尺寸过窄并确保表头可见
         QtCore.QTimer.singleShot(0, lambda: self._apply_column_widths(force=True))
+
+    def toggle_ecu_init_panel(self):
+        """切换 ECU 初始化面板的显示/隐藏状态（带动画）。"""
+        if self.ecu_panel.isVisible():
+            # 收起动画
+            self.animation = QtCore.QPropertyAnimation(self.ecu_panel, b"maximumHeight")
+            self.animation.setDuration(300)
+            self.animation.setStartValue(self.ecu_panel.height())
+            self.animation.setEndValue(0)
+            self.animation.setEasingCurve(QtCore.QEasingCurve.InOutQuad)
+            self.animation.finished.connect(lambda: self.ecu_panel.setVisible(False))
+            self.animation.start()
+        else:
+            # 展开动画
+            self.ecu_panel.setVisible(True)
+            # 移除之前的最大高度限制以允许测量
+            self.ecu_panel.setMaximumHeight(16777215) # QWIDGETSIZE_MAX
+            # 计算建议高度 (或者使用固定高度)
+            target_height = 300 # 或者 self.ecu_init_view.sizeHint().height() + 30
+
+            self.animation = QtCore.QPropertyAnimation(self.ecu_panel, b"maximumHeight")
+            self.animation.setDuration(300)
+            self.animation.setStartValue(0)
+            self.animation.setEndValue(target_height)
+            self.animation.setEasingCurve(QtCore.QEasingCurve.InOutQuad)
+            # 动画结束后，固定高度或保持最大高度
+            self.animation.finished.connect(lambda: self.ecu_panel.setFixedHeight(target_height))
+            self.animation.start()
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
@@ -562,7 +642,7 @@ class DIDView(BaseView):
             editor.setFocus()
 
     def eventFilter(self, obj, event):
-        # 仅处理 table.viewport() 的鼠标事件：在 Value 列按钮上显示 tooltip 与手形光标
+        # 仅处理 table.viewport() 的鼠标事件：在 Value 列按钮上显示提示与手形光标
         try:
             if obj is not getattr(self, 'table', None) and obj is not getattr(self, 'table', None) and obj is not None:
                 # we only care about the table viewport
@@ -751,7 +831,7 @@ class ValueDetailDialog(QtWidgets.QDialog):
     def __init__(self, parent, parse_result, row_info):
         super().__init__(parent)
         self.setWindowTitle(f"详细解析 - {row_info.did}")
-        self.resize(600, 400)
+        self.resize(800, 500)
         # 设为模态或非模态取决于需求，这里作为独立窗口显示
         self.setWindowFlags(self.windowFlags() & ~Qt.WindowContextHelpButtonHint)
 
@@ -761,7 +841,10 @@ class ValueDetailDialog(QtWidgets.QDialog):
         info_group = QtWidgets.QGroupBox("基本信息")
         info_layout = QtWidgets.QFormLayout(info_group)
         info_layout.addRow("DID:", QtWidgets.QLabel(row_info.did))
-        info_layout.addRow("描述:", QtWidgets.QLabel(row_info.description))
+
+        # 优先使用解析结果中的描述，如果没有则使用表格行中的描述
+        description = parse_result.description if parse_result and parse_result.description else row_info.description
+        info_layout.addRow("描述:", QtWidgets.QLabel(description))
 
         # 原始值显示（支持换行）
         val_label = QtWidgets.QLabel(row_info.value)
@@ -774,8 +857,14 @@ class ValueDetailDialog(QtWidgets.QDialog):
         # 解析结果表格
         self.table = QtWidgets.QTableWidget()
         self.table.setColumnCount(4)
-        self.table.setHorizontalHeaderLabels(["Bit / Byte", "Function / Name", "Value", "Status / Unit"])
-        self.table.horizontalHeader().setSectionResizeMode(QtWidgets.QHeaderView.Stretch)
+        self.table.setHorizontalHeaderLabels(["Byte / Bit", "Function / Name", "Value", "Status / Unit"])
+
+        header = self.table.horizontalHeader()
+        header.setSectionResizeMode(0, QtWidgets.QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(1, QtWidgets.QHeaderView.Stretch)
+        header.setSectionResizeMode(2, QtWidgets.QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(3, QtWidgets.QHeaderView.Stretch)
+
         self.table.setAlternatingRowColors(True)
         layout.addWidget(self.table)
 
@@ -788,6 +877,7 @@ class ValueDetailDialog(QtWidgets.QDialog):
                 for c, val in enumerate(row_data):
                     item = QtWidgets.QTableWidgetItem(str(val))
                     item.setFlags(item.flags() ^ Qt.ItemIsEditable)  # 只读
+                    item.setToolTip(str(val)) # 悬浮显示完整内容
                     self.table.setItem(r, c, item)
 
         # 底部按钮

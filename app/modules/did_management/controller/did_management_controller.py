@@ -4,7 +4,6 @@ import re
 from PyQt5 import QtWidgets, QtCore, QtGui
 from PyQt5.QtCore import Qt
 
-from app.common.communication.clients.Doip_Client import DoIPClientHandler
 from app.common.ui.modern_widgets import MessageToast
 from app.core.base_controller import BaseController
 from app.core.dependency_injection import di_container
@@ -24,6 +23,7 @@ from app.modules.did_management.view.did_management_view import (
 )
 from app.services.diagnostic.dpt_service import DPTService
 from app.common.utils.security_access_helper import SecurityAccessHelper
+from app.modules.ecu_initialization.controller.ecu_initialization_controller import ECUInitController
 
 
 class DPTLoaderThread(QtCore.QThread):
@@ -44,11 +44,16 @@ class DPTLoaderThread(QtCore.QThread):
 
 class DIDController(BaseController):
     """DID 控制器：负责界面交互、消息监听与 DPT 解析的协调逻辑。"""
+    switch_page = QtCore.pyqtSignal(dict, str)
 
     def __init__(self, parent=None, dpt_service: Optional[DPTService] = None):
         # 初始化模型 & 视图
         self.model = DIDModel(parent)
         self.view = DIDView(parent)
+
+        # 初始化 ECU 初始化控制器，使用 DIDView 中的子视图
+        self.ecu_init_controller = ECUInitController(parent, view=self.view.ecu_init_view)
+
         # call BaseController to wire model/view signals
         super().__init__(self.model, self.view, parent)
 
@@ -325,7 +330,13 @@ class DIDController(BaseController):
                 # 如果有 DPT 服务则解析
                 rows = None
                 if self._dpt_service.is_ready():
-                    result = self._dpt_service.parse_bytes(rx_bytes)
+                    # Pass data_bytes instead of rx_bytes
+                    # Pass DID
+                    did_clean = row.did.strip().replace(" ", "").upper()
+                    if did_clean.startswith("0X"):
+                        did_clean = did_clean[2:]
+
+                    result = self._dpt_service.parse_bytes(data_bytes, did=did_clean)
                     if result:
                         rows = [
                             DIDBitRow(
@@ -392,8 +403,10 @@ class DIDController(BaseController):
             self._process_did_row(row_index, row, is_write=True)
             QtWidgets.QApplication.processEvents()
 
-
-
+    def _on_ecu_init_requested(self) -> None:
+        """点击 ECU 初始化按钮，切换到 ECU 初始化界面。"""
+        # 视图层已处理显示/隐藏逻辑，此处可添加业务逻辑（如初始化数据）
+        pass
 
     def on_dpt_selected(self, file_path: str) -> None:
         """选择 DPT 文件后委托 DPTService 加载并保存路径。"""
@@ -424,7 +437,7 @@ class DIDController(BaseController):
             self.view,
             "选择 DPT 文件",
             start_dir,
-            "DPT Files (*.xlsx *.xls);;All Files (*.*)",
+            "DPT Files (*.json)",
         )
         if file_path:
             self.on_dpt_selected(file_path)
@@ -688,7 +701,11 @@ class DIDController(BaseController):
         # 获取当前行的 DID
         did_str = self.model.did_rows[row].did
 
-        result = self._dpt_service.parse_bytes(payload)
+        did_clean = did_str.strip().replace(" ", "").upper()
+        if did_clean.startswith("0X"):
+             did_clean = did_clean[2:]
+
+        result = self._dpt_service.parse_bytes(payload, did=did_clean)
         if not result:
             MessageToast(self.view).show_toast("解析失败或无结果", 2)
             return

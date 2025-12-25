@@ -9,20 +9,24 @@ from app.modules.uds_sequence.model.uds_sequence_model import UDSSequenceModel
 from app.modules.uds_sequence.view.uds_sequence_view import UDSSequenceView, NAME_CN
 from app.services.device_manage.device_service import DeviceService
 from app.services.configuration.config_service import AppConfigurationService
+from app.common.utils.security_access_helper import SecurityAccessHelper
 
 
 class SequenceWorker(QtCore.QThread):
     log_signal = QtCore.pyqtSignal(str)
     update_row_signal = QtCore.pyqtSignal(int, str)
+    update_request_signal = QtCore.pyqtSignal(int, str)
     finished_signal = QtCore.pyqtSignal()
 
-    def __init__(self, device_service, data, times, stop_on_fail):
+    def __init__(self, device_service, data, times, stop_on_fail, config_service=None):
         super().__init__()
         self.device_service = device_service
         self.data = data
         self.times = times
         self.stop_on_fail = stop_on_fail
+        self.config_service = config_service
         self.is_running = True
+        self.seed_map = {}
 
     def run(self):
         try:
@@ -48,11 +52,55 @@ class SequenceWorker(QtCore.QThread):
                         except ValueError:
                             self.log_signal.emit(f"无效的延迟时间: {request}")
                     else:
+                        # Handle Security Access (Service 27) Key Calculation
+                        try:
+                            req_bytes = bytes.fromhex(request.replace(' ', ''))
+                            if len(req_bytes) >= 2 and req_bytes[0] == 0x27:
+                                sub_func = req_bytes[1]
+                                # Even sub-function means Send Key
+                                if sub_func % 2 == 0:
+                                    seed_level = sub_func - 1
+                                    if seed_level in self.seed_map:
+                                        seed = self.seed_map[seed_level]
+                                        dll_path = self._get_dll_path()
+
+                                        key, err = SecurityAccessHelper.calculate_key(seed_level, seed, dll_path)
+                                        if key:
+                                            # Construct new request: 27 <sub_func> <key>
+                                            new_req = bytearray([0x27, sub_func]) + key
+                                            request = new_req.hex().upper()
+
+                                            # Update UI with calculated key
+                                            self.update_request_signal.emit(row_index, request)
+                                            self.log_signal.emit(f"计算Key成功 (Level {seed_level}): {key.hex().upper()}")
+
+                                            # Remove used seed
+                                            del self.seed_map[seed_level]
+                                        else:
+                                            self.log_signal.emit(f"计算Key失败: {err}")
+                        except Exception as e:
+                            self.log_signal.emit(f"预处理请求异常: {str(e)}")
+
                         # Send command
                         self.log_signal.emit(f"TX: {request}")
 
                         resp = self._send_uds_command(request)
                         self.log_signal.emit(f"RX: {resp}")
+
+                        # Handle Security Access (Service 27) Seed Recording
+                        if not resp.startswith("Error") and not resp.startswith("No Response"):
+                            try:
+                                resp_bytes = bytes.fromhex(resp)
+                                # Positive response for 27 is 67
+                                if len(resp_bytes) >= 2 and resp_bytes[0] == 0x67:
+                                    sub_func = resp_bytes[1]
+                                    # Odd sub-function means Request Seed response
+                                    if sub_func % 2 != 0:
+                                        seed = resp_bytes[2:]
+                                        self.seed_map[sub_func] = seed
+                                        self.log_signal.emit(f"记录Seed (Level {sub_func}): {seed.hex().upper()}")
+                            except Exception:
+                                pass
 
                         # Update table response
                         self.update_row_signal.emit(row_index, resp)
@@ -71,10 +119,16 @@ class SequenceWorker(QtCore.QThread):
         except Exception as e:
             self.log_signal.emit(f"执行异常: {str(e)}")
         finally:
+            self.seed_map.clear()
             self.finished_signal.emit()
 
     def stop(self):
         self.is_running = False
+
+    def _get_dll_path(self):
+        if self.config_service:
+            return self.config_service._settings.get("diag_layer", {}).get("dll_path", "")
+        return None  # Default fallback to None
 
     def _send_uds_command(self, request_str: str, timeout: float = None) -> str:
         if not self.device_service.get_doip_client():
@@ -269,9 +323,10 @@ class UDSSequenceController(BaseController):
         self.tester_present_timer.start(2000) # 2 seconds
 
         # Create and start worker
-        self.worker = SequenceWorker(self._device_service, data, times, stop_on_fail)
+        self.worker = SequenceWorker(self._device_service, data, times, stop_on_fail, self._config_service)
         self.worker.log_signal.connect(self.view.log_message)
         self.worker.update_row_signal.connect(self.view.update_row_response)
+        self.worker.update_request_signal.connect(self.view.update_row_request)
         self.worker.finished_signal.connect(self._on_sequence_finished)
         self.worker.start()
 
