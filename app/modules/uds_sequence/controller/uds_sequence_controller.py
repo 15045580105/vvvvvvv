@@ -6,7 +6,7 @@ from PyQt5 import QtWidgets, QtCore
 from app.core.base_controller import BaseController
 from app.core.dependency_injection import di_container
 from app.modules.uds_sequence.model.uds_sequence_model import UDSSequenceModel
-from app.modules.uds_sequence.view.uds_sequence_view import UDSSequenceView, NAME_CN
+from app.modules.uds_sequence.view.uds_sequence_view import UDSSequenceView, NAME_CN, ExportConfigDialog
 from app.services.device_manage.device_service import DeviceService
 from app.services.configuration.config_service import AppConfigurationService
 from app.common.utils.security_access_helper import SecurityAccessHelper
@@ -504,82 +504,90 @@ class UDSSequenceController(BaseController):
             self._on_config_load_requested("默认")
 
     def _on_config_import_requested(self):
-        """Handle importing a configuration from a file."""
-        path, _ = QtWidgets.QFileDialog.getOpenFileName(self.view, "导入配置", "", "JSON Files (*.json)")
-        if not path:
+        """Handle importing configuration(s) from file(s)."""
+        paths, _ = QtWidgets.QFileDialog.getOpenFileNames(self.view, "导入配置", "", "JSON Files (*.json)")
+        if not paths:
             return
 
-        try:
-            with open(path, 'r', encoding='utf-8') as f:
-                data = json.load(f)
+        success_count = 0
+        existing_names = self.model.get_config_names()
 
-            if not isinstance(data, list):
-                self.view.log_message("导入失败: 文件格式错误 (应为列表)")
-                return
+        for path in paths:
+            try:
+                with open(path, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
 
-            # Use filename as config name
-            filename = os.path.basename(path)
-            config_name = os.path.splitext(filename)[0]
-            existing_names = self.model.get_config_names()
-
-            # Ask user for name, loop if duplicate
-            while True:
-                text_val = config_name
-                # If it's a duplicate, prompt with warning
-                if config_name in existing_names:
-                    label = f"配置 '{config_name}' 已存在，请输入新名称:"
-                else:
-                    label = "请输入配置名称:"
-
-                name, ok = QtWidgets.QInputDialog.getText(self.view, "导入配置", label, text=text_val)
-                if not ok:
-                    return # Cancelled
-
-                if not name:
-                    continue # Empty name, ask again
-
-                # If user entered a name that exists (and it's not the one we started with, or we are looping), check again
-                if name in existing_names:
-                    config_name = name # Update for next loop message
+                if not isinstance(data, list):
+                    self.view.log_message(f"导入失败 ({os.path.basename(path)}): 文件格式错误 (应为列表)")
                     continue
 
-                # Unique name found
-                config_name = name
-                break
+                # Use filename as config name
+                filename = os.path.basename(path)
+                config_name = os.path.splitext(filename)[0]
 
-            # Auto-save '默认' if we are currently in it
-            if self.current_config_name == "默认":
-                self.model.save_config("默认", self.view.get_table_data())
+                # Auto-rename if duplicate
+                base_name = config_name
+                counter = 1
+                while config_name in existing_names:
+                    config_name = f"{base_name} ({counter})"
+                    counter += 1
 
-            self.model.save_config(config_name, data)
-            self.view.update_config_list(self.model.get_config_names(), current=config_name)
-            self.view.set_table_data(data)
-            self.view.log_message(f"配置 '{config_name}' 导入成功")
-            self.current_config_name = config_name
+                # Add to existing names list so next iteration knows about it
+                existing_names.append(config_name)
 
-        except Exception as e:
-            self.view.log_message(f"导入失败: {str(e)}")
+                # Auto-save '默认' if we are currently in it (only once)
+                if self.current_config_name == "默认" and success_count == 0:
+                    self.model.save_config("默认", self.view.get_table_data())
+
+                self.model.save_config(config_name, data)
+                success_count += 1
+                self.view.log_message(f"配置 '{config_name}' 导入成功")
+
+            except Exception as e:
+                self.view.log_message(f"导入失败 ({os.path.basename(path)}): {str(e)}")
+
+        if success_count > 0:
+            # Refresh list
+            self.view.update_config_list(self.model.get_config_names(), current=self.current_config_name)
+            # If we imported something, we might want to switch to it?
+            # Usually batch import just adds them. User stays on current.
+            if self.current_config_name:
+                 self.view.config_combo.setCurrentText(self.current_config_name)
+
 
     def _on_config_export_requested(self):
-        """Handle exporting the current configuration to a file."""
-        data = self.view.get_table_data()
-        if not data:
-            self.view.log_message("当前序列为空，无法导出")
-            return
+        """Handle exporting configurations."""
+        config_names = self.model.get_config_names()
+        dialog = ExportConfigDialog(config_names, self.view)
+        if dialog.exec_() == QtWidgets.QDialog.Accepted:
+            selected_configs = dialog.selected_configs
+            export_path = dialog.export_path
 
-        current_config = self.view.config_combo.currentText()
-        default_name = f"{current_config}.json" if current_config and current_config != "默认" else "uds_sequence.json"
+            if not os.path.exists(export_path):
+                try:
+                    os.makedirs(export_path)
+                except Exception as e:
+                    self.view.log_message(f"创建导出目录失败: {str(e)}")
+                    return
 
-        path, _ = QtWidgets.QFileDialog.getSaveFileName(self.view, "导出配置", default_name, "JSON Files (*.json)")
-        if not path:
-            return
+            success_count = 0
+            for name in selected_configs:
+                try:
+                    # If it's the current one, save it first to ensure latest changes are exported
+                    if name == self.current_config_name:
+                        self.model.save_config(name, self.view.get_table_data())
 
-        try:
-            with open(path, 'w', encoding='utf-8') as f:
-                json.dump(data, f, indent=4, ensure_ascii=False)
-            self.view.log_message(f"配置导出成功: {path}")
-        except Exception as e:
-            self.view.log_message(f"导出失败: {str(e)}")
+                    data = self.model.load_config(name)
+                    file_path = os.path.join(export_path, f"{name}.json")
+
+                    with open(file_path, 'w', encoding='utf-8') as f:
+                        json.dump(data, f, indent=4, ensure_ascii=False)
+
+                    success_count += 1
+                except Exception as e:
+                    self.view.log_message(f"导出 '{name}' 失败: {str(e)}")
+
+            self.view.log_message(f"成功导出 {success_count} 个配置到 {export_path}")
 
 
 if __name__ == "__main__":

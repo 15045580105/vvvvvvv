@@ -103,6 +103,86 @@ class CenteredCheckBoxDelegate(QtWidgets.QStyledItemDelegate):
         return super().editorEvent(event, model, option, index)
 
 
+class ExportConfigDialog(QtWidgets.QDialog):
+    def __init__(self, config_names, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("导出配置")
+        self.resize(400, 300)
+        self.selected_configs = []
+        self.export_path = ""
+        self.setup_ui(config_names)
+
+    def setup_ui(self, config_names):
+        layout = QtWidgets.QVBoxLayout(self)
+
+        # Config List
+        layout.addWidget(QtWidgets.QLabel("选择要导出的配置:"))
+        self.list_widget = QtWidgets.QListWidget()
+        for name in config_names:
+            item = QtWidgets.QListWidgetItem(name)
+            item.setCheckState(Qt.Unchecked)
+            self.list_widget.addItem(item)
+        layout.addWidget(self.list_widget)
+
+        # Select All / Deselect All
+        btn_layout = QtWidgets.QHBoxLayout()
+        btn_all = QtWidgets.QPushButton("全选")
+        btn_all.clicked.connect(self.select_all)
+        btn_none = QtWidgets.QPushButton("全不选")
+        btn_none.clicked.connect(self.deselect_all)
+        btn_layout.addWidget(btn_all)
+        btn_layout.addWidget(btn_none)
+        btn_layout.addStretch()
+        layout.addLayout(btn_layout)
+
+        # Export Path
+        layout.addWidget(QtWidgets.QLabel("导出路径:"))
+        path_layout = QtWidgets.QHBoxLayout()
+        self.path_edit = QtWidgets.QLineEdit()
+        self.path_btn = QtWidgets.QPushButton("浏览...")
+        self.path_btn.clicked.connect(self.browse_folder)
+        path_layout.addWidget(self.path_edit)
+        path_layout.addWidget(self.path_btn)
+        layout.addLayout(path_layout)
+
+        # Dialog Buttons
+        buttons = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel)
+        buttons.accepted.connect(self.validate_and_accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def select_all(self):
+        for i in range(self.list_widget.count()):
+            self.list_widget.item(i).setCheckState(Qt.Checked)
+
+    def deselect_all(self):
+        for i in range(self.list_widget.count()):
+            self.list_widget.item(i).setCheckState(Qt.Unchecked)
+
+    def browse_folder(self):
+        folder = QtWidgets.QFileDialog.getExistingDirectory(self, "选择导出目录")
+        if folder:
+            self.path_edit.setText(folder)
+
+    def validate_and_accept(self):
+        self.selected_configs = []
+        for i in range(self.list_widget.count()):
+            item = self.list_widget.item(i)
+            if item.checkState() == Qt.Checked:
+                self.selected_configs.append(item.text())
+
+        self.export_path = self.path_edit.text()
+
+        if not self.selected_configs:
+            QtWidgets.QMessageBox.warning(self, "提示", "请至少选择一个配置")
+            return
+        if not self.export_path:
+            QtWidgets.QMessageBox.warning(self, "提示", "请选择导出路径")
+            return
+
+        self.accept()
+
+
 class UDSSequenceView(QtWidgets.QWidget):
     send_requested = pyqtSignal(str)
     insert_requested = pyqtSignal(str)
@@ -299,6 +379,14 @@ class UDSSequenceView(QtWidgets.QWidget):
             return
 
         menu = QtWidgets.QMenu(self)
+
+        # Add Send action
+        action_send = menu.addAction("发送此指令")
+        # Format code (e.g. 10.01 -> 10 01) and emit signal
+        req_text = ' '.join(code.split('.'))
+        action_send.triggered.connect(lambda: self.send_single_requested.emit(req_text))
+
+        menu.addSeparator()
 
         action_add = menu.addAction("添加到末尾")
         action_add.triggered.connect(lambda: self.add_command_requested.emit(code))
