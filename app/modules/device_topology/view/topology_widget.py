@@ -347,9 +347,7 @@ class TopologyWidget(QGraphicsView):
         self.version_info_widget = QWidget()
         self.version_labels = {}
         setup_form_layout(self.version_info_widget, self.version_labels, [
-            ("sw_version", "软件版本："),
-            ("hw_version", "硬件版本："),
-            ("boot_version", "Boot版本：")
+            ("version", "版本信息：")
         ])
 
         # 7. 以太网网络诊断
@@ -438,9 +436,13 @@ class TopologyWidget(QGraphicsView):
         # self.storage_labels["m_core_storage"].setText(info.get("m_core_storage", "—"))
 
     def update_version_info(self, info: dict):
-        self.version_labels["sw_version"].setText(info.get("sw_version", "—"))
-        self.version_labels["hw_version"].setText(info.get("hw_version", "—"))
-        self.version_labels["boot_version"].setText(info.get("boot_version", "—"))
+        """更新版本信息面板"""
+        if not info: return
+        # 假设 info 结构: {"m_core_storage": "..."}
+        # 这里我们只展示 m_core_storage 作为版本信息
+        val = info.get("m_core_storage", "—")
+        if "version" in self.version_labels:
+            self.version_labels["version"].setText(val)
 
     def _show_panel(self, button):
         """显示面板"""
@@ -470,17 +472,60 @@ class TopologyWidget(QGraphicsView):
         self.toolbar.setGeometry(10, 10, self.viewport().width() - 20, 46)
 
     def init_nodes(self, node_data):
-        self.main_node = TopologyNode(0, "主交换机\nMAIN SWITCH", "")
+        self.scene.clear()
+        self.child_nodes.clear()
+        self.node_items.clear()
+        self.connection_items.clear()
+
+        if not node_data:
+            return
+
+        # 解析节点数据
+        # 假设第一个节点是中心节点 (ETH Switch)
+        main_node_data = node_data[0]
+        remaining_nodes = node_data[1:]
+
+        # 处理中心节点
+        if len(main_node_data) == 5:
+            name, icon, status, x, y = main_node_data
+            self.main_node = TopologyNode(0, name, "")
+            self.main_node.status = status
+        else:
+            # 回退旧格式或默认
+            self.main_node = TopologyNode(0, "主交换���\nMAIN SWITCH", "")
+
         self.main_node_item = NodeGraphicsItem(self.main_node, is_main=True)
         self.scene.addItem(self.main_node_item)
         self.node_items[0] = self.main_node_item
 
-        for node_id, node_name, connection_note in node_data:
+        # 处理子节点
+        for i, data in enumerate(remaining_nodes):
+            # 兼容两种格式:
+            # 1. (node_id, node_name, connection_note) - 旧格式
+            # 2. (name, icon, status, x, y) - TopologySnapshot 格式
+
+            if len(data) == 3:
+                node_id, node_name, connection_note = data
+                status = "online"
+            elif len(data) == 5:
+                node_name, icon, status_str, x, y = data
+                node_id = i + 1
+                connection_note = ""
+
+                # 映射状态字符串到内部状态
+                status = "online" if status_str in ["正常", "online", "Link up"] else "offline"
+            else:
+                continue
+
             node = TopologyNode(node_id, node_name, connection_note)
+            node.status = status
             self.child_nodes.append(node)
             item = NodeGraphicsItem(node)
             self.node_items[node_id] = item
             self.scene.addItem(item)
+
+        # 关键：初始化节点后���须重新布局
+        self.layout_nodes()
 
     def layout_nodes(self):
         if not self.main_node_item:
@@ -989,4 +1034,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

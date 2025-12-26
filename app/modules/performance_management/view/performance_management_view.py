@@ -1,7 +1,160 @@
-from PyQt5 import QtWidgets, QtCore
-from PyQt5.QtChart import QChart, QChartView, QLineSeries, QValueAxis
-from PyQt5.QtGui import QPainter
+from PyQt5 import QtWidgets, QtCore, QtGui
+from PyQt5.QtChart import QChart, QChartView, QLineSeries, QValueAxis, QAreaSeries
+from PyQt5.QtGui import QPainter, QColor, QLinearGradient, QGradient
 from app.common.ui.widgets import ModernButton
+
+
+class MetricCard(QtWidgets.QFrame):
+    clicked = QtCore.pyqtSignal(str)
+
+    def __init__(self, title, identifier, parent=None):
+        super().__init__(parent)
+        self.identifier = identifier
+        self.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
+        self.selected = False
+
+        self.layout = QtWidgets.QVBoxLayout(self)
+        self.layout.setContentsMargins(15, 15, 15, 15)
+
+        self.title_lbl = QtWidgets.QLabel(title)
+        self.title_lbl.setStyleSheet("font-size: 14px; font-weight: bold; color: #555;")
+
+        self.value_lbl = QtWidgets.QLabel("-")
+        self.value_lbl.setStyleSheet("font-size: 28px; font-weight: bold; color: #333; margin-top: 5px;")
+
+        self.sub_lbl = QtWidgets.QLabel("Waiting for data...")
+        self.sub_lbl.setStyleSheet("font-size: 12px; color: #888; margin-top: 2px;")
+
+        self.layout.addWidget(self.title_lbl)
+        self.layout.addWidget(self.value_lbl)
+        self.layout.addWidget(self.sub_lbl)
+        self.layout.addStretch()
+
+        self.update_style()
+
+    def mousePressEvent(self, event):
+        self.clicked.emit(self.identifier)
+        super().mousePressEvent(event)
+
+    def set_selected(self, selected):
+        self.selected = selected
+        self.update_style()
+
+    def update_style(self):
+        if self.selected:
+            self.setStyleSheet("""
+                MetricCard {
+                    background-color: #EFF6FF;
+                    border: 2px solid #3B82F6;
+                    border-radius: 8px;
+                }
+                QLabel { background-color: transparent; }
+            """)
+        else:
+            self.setStyleSheet("""
+                MetricCard {
+                    background-color: #FFFFFF;
+                    border: 1px solid #E5E7EB;
+                    border-radius: 8px;
+                }
+                MetricCard:hover {
+                    background-color: #F9FAFB;
+                }
+                QLabel { background-color: transparent; }
+            """)
+
+    def update_data(self, value_text, sub_text, level="info"):
+        self.value_lbl.setText(value_text)
+        self.sub_lbl.setText(sub_text)
+
+        color = "#111827" # Default black
+        if level == "warn": color = "#F59E0B"
+        elif level == "error": color = "#EF4444"
+        elif level == "success": color = "#10B981"
+
+        self.value_lbl.setStyleSheet(f"font-size: 28px; font-weight: bold; color: {color}; margin-top: 5px;")
+
+
+class ProcessTableModel(QtCore.QAbstractTableModel):
+    """高性能进程数据模型"""
+    def __init__(self, processes=None, parent=None):
+        super().__init__(parent)
+        self._processes = processes or []
+        self._headers = [
+            "TYPE", "USER", "PID", "CPU%", "MEM%", "VSZ", "RSS", "TTY", "STAT", "START", "TIME", "CONTAINER", "PROCESS_NAME"
+        ]
+
+    def rowCount(self, parent=QtCore.QModelIndex()):
+        return len(self._processes)
+
+    def columnCount(self, parent=QtCore.QModelIndex()):
+        return len(self._headers)
+
+    def data(self, index, role=QtCore.Qt.ItemDataRole.DisplayRole):
+        if not index.isValid() or not (0 <= index.row() < len(self._processes)):
+            return None
+
+        p = self._processes[index.row()]
+        col = index.column()
+
+        if role == QtCore.Qt.ItemDataRole.DisplayRole:
+            if col == 0: return str(p.type)
+            elif col == 1: return str(p.user)
+            elif col == 2: return str(p.pid)
+            elif col == 3: return f"{p.cpu_percent:.1f}"
+            elif col == 4: return f"{p.mem_percent:.1f}"
+            elif col == 5: return str(p.vsz_kb)
+            elif col == 6: return str(p.rss_kb)
+            elif col == 7: return str(p.tty)
+            elif col == 8: return str(p.stat)
+            elif col == 9: return str(p.start_time)
+            elif col == 10: return str(p.cpu_time)
+            elif col == 11: return str(p.container)
+            elif col == 12: return str(p.process_name)
+
+        elif role == QtCore.Qt.ItemDataRole.TextAlignmentRole:
+            # 数值列右对齐
+            if col in (2, 3, 4, 5, 6):
+                return QtCore.Qt.AlignmentFlag.AlignRight | QtCore.Qt.AlignmentFlag.AlignVCenter
+            return QtCore.Qt.AlignmentFlag.AlignLeft | QtCore.Qt.AlignmentFlag.AlignVCenter
+
+        return None
+
+    def headerData(self, section, orientation, role=QtCore.Qt.ItemDataRole.DisplayRole):
+        if orientation == QtCore.Qt.Orientation.Horizontal and role == QtCore.Qt.ItemDataRole.DisplayRole:
+            return self._headers[section]
+        return None
+
+    def update_data(self, new_processes):
+        """全量更新数据，使用 resetModel 确保视图刷新"""
+        self.beginResetModel()
+        self._processes = new_processes
+        self.endResetModel()
+
+    def sort(self, column, order):
+        """支持排序"""
+        self.layoutAboutToBeChanged.emit()
+        try:
+            reverse = (order == QtCore.Qt.SortOrder.DescendingOrder)
+            if column == 2: # PID
+                self._processes.sort(key=lambda p: p.pid, reverse=reverse)
+            elif column == 3: # CPU
+                self._processes.sort(key=lambda p: p.cpu_percent, reverse=reverse)
+            elif column == 4: # MEM
+                self._processes.sort(key=lambda p: p.mem_percent, reverse=reverse)
+            elif column == 5: # VSZ
+                self._processes.sort(key=lambda p: p.vsz_kb, reverse=reverse)
+            elif column == 6: # RSS
+                self._processes.sort(key=lambda p: p.rss_kb, reverse=reverse)
+            else:
+                # 其他列按字符串排序
+                # 为了简单，这里只实现主要数值列的排序，或者全部转字符串排序
+                # 实际需求中 CPU/MEM 排序最重要
+                pass
+        except Exception as e:
+            print(f"Sort error: {e}")
+        finally:
+            self.layoutChanged.emit()
 
 
 class PerformanceView(QtWidgets.QWidget):
@@ -9,329 +162,440 @@ class PerformanceView(QtWidgets.QWidget):
         super().__init__(parent)
         self.model = model
         self.setWindowTitle("性能监控")
-        self.resize(1000, 700)
+        self.resize(1200, 800)
         # chart related members
         self.chart = None
         self.chart_view = None
-        self.cpu_series = None
-        self.mem_series = None
-        self.disk_usage_series = None
-        self.disk_read_series = None
-        self.disk_write_series = None
+        self.series_map = {} # identifier -> QLineSeries
         self.x_axis = None
         self.y_axis = None
-        self.y_axis_kb = None
-        self._sample_index = 0
-        # keep references for group labels (5 per row)
-        self.group_labels = []
+        self.current_metric = "cpu"
+        self.cards = []
         self.setup_ui()
 
     def setup_ui(self):
-        layout = QtWidgets.QVBoxLayout(self)
+        main_layout = QtWidgets.QVBoxLayout(self)
+
+        self.tabs = QtWidgets.QTabWidget()
+
+        # --- Metrics Tab ---
+        self.metrics_tab = QtWidgets.QWidget()
+        metrics_layout = QtWidgets.QVBoxLayout(self.metrics_tab)
+        metrics_layout.addWidget(self._build_metrics_controls())
+        metrics_layout.addWidget(self._build_metrics_content(), stretch=1)
+        self.tabs.addTab(self.metrics_tab, "性能监控")
+
+        # --- Process Tab ---
+        self.process_tab = QtWidgets.QWidget()
+        process_layout = QtWidgets.QVBoxLayout(self.process_tab)
+        process_layout.addWidget(self._build_process_controls())
+        process_layout.addWidget(self._build_process_group(), stretch=1)
+        self.tabs.addTab(self.process_tab, "进程监控")
+
+        main_layout.addWidget(self.tabs)
+
+        # Enable links in status labels
+        self.metrics_status_label.setOpenExternalLinks(True)
+        self.process_status_label.setOpenExternalLinks(True)
+
+    def _build_metrics_controls(self):
+        group = QtWidgets.QGroupBox("性能监控设置")
+        layout = QtWidgets.QHBoxLayout()
         layout.setSpacing(12)
-        layout.addWidget(self._build_control_group())
-        layout.addWidget(self._build_chart_group(), stretch=2)
-        layout.addWidget(self._build_process_group(), stretch=3)
 
-        # Enable links in status label
-        self.status_label.setOpenExternalLinks(True)
+        layout.addWidget(QtWidgets.QLabel("📊 监控周期:"))
+        self.metrics_cycle_combo = QtWidgets.QComboBox()
+        self.metrics_cycle_combo.addItems(["1s", "2s", "5s", "10s", "30s"])
+        self.metrics_cycle_combo.setCurrentText("2s")
+        layout.addWidget(self.metrics_cycle_combo)
 
-    def _build_control_group(self):
-        control_group = QtWidgets.QGroupBox("监控设置")
-        control_layout = QtWidgets.QHBoxLayout()
-        control_layout.setSpacing(12)
+        self.metrics_start_btn = ModernButton("开始", "#059669", "▶️")
+        self.metrics_stop_btn = ModernButton("结束", "#F59E0B", "⏹️")
+        self.metrics_stop_btn.setEnabled(False)
+        self.metrics_export_btn = ModernButton("导出数据", "#2563EB", "💾")
 
-        control_layout.addWidget(QtWidgets.QLabel("📊 监控周期:"))
-        self.cycle_combo = QtWidgets.QComboBox()
-        self.cycle_combo.addItems(["1秒", "2秒", "5秒", "10秒"])
-        self.cycle_combo.setCurrentText("2秒")
-        control_layout.addWidget(self.cycle_combo)
+        layout.addWidget(self.metrics_start_btn)
+        layout.addWidget(self.metrics_stop_btn)
+        layout.addWidget(self.metrics_export_btn)
 
-        self.export_btn = ModernButton("导出数据", "#2563EB", "💾")
-        self.start_btn = ModernButton("开始", "#059669", "▶️")
-        self.pause_btn = ModernButton("暂停", "#F59E0B", "⏸️")
-        self.pause_btn.setEnabled(False) # Initially disabled
-        self.reset_btn = ModernButton("重置", "#6B7280", "🔄")
-        control_layout.addWidget(self.start_btn)
-        control_layout.addWidget(self.pause_btn)
-        control_layout.addWidget(self.reset_btn)
-        control_layout.addWidget(self.export_btn)
+        self.metrics_status_label = QtWidgets.QLabel("未开始监控")
+        self.metrics_status_label.setStyleSheet("color: #6B7280;")
+        layout.addWidget(self.metrics_status_label)
+        layout.addStretch()
 
-        self.status_label = QtWidgets.QLabel("未开始监控")
-        self.status_label.setStyleSheet("color: #6B7280;")
-        control_layout.addWidget(self.status_label)
-        control_layout.addStretch()
+        group.setLayout(layout)
+        return group
 
-        control_group.setLayout(control_layout)
-        return control_group
+    def _build_process_controls(self):
+        group = QtWidgets.QGroupBox("进程监控设置")
+        layout = QtWidgets.QHBoxLayout()
+        layout.setSpacing(12)
 
-    def _build_chart_group(self):
-        chart_group = QtWidgets.QGroupBox("性能查询")
-        chart_layout = QtWidgets.QVBoxLayout()
+        layout.addWidget(QtWidgets.QLabel("📊 监控周期:"))
+        self.process_cycle_combo = QtWidgets.QComboBox()
+        self.process_cycle_combo.addItems(["1s", "2s", "5s", "10s", "30s"])
+        self.process_cycle_combo.setCurrentText("5s")
+        layout.addWidget(self.process_cycle_combo)
 
-        # Series Toggles
-        toggles_layout = QtWidgets.QHBoxLayout()
-        toggles_layout.setSpacing(15)
+        self.process_start_btn = ModernButton("开始", "#059669", "▶️")
+        self.process_stop_btn = ModernButton("结束", "#F59E0B", "⏹️")
+        self.process_stop_btn.setEnabled(False)
+        self.process_export_btn = ModernButton("导出数据", "#2563EB", "💾")
 
-        self.cb_cpu = QtWidgets.QCheckBox("CPU (%)")
-        self.cb_cpu.setChecked(True)
+        layout.addWidget(self.process_start_btn)
+        layout.addWidget(self.process_stop_btn)
+        layout.addWidget(self.process_export_btn)
 
-        self.cb_mem = QtWidgets.QCheckBox("Memory (%)")
-        self.cb_mem.setChecked(True)
+        self.process_status_label = QtWidgets.QLabel("未开始监控")
+        self.process_status_label.setStyleSheet("color: #6B7280;")
+        layout.addWidget(self.process_status_label)
+        layout.addStretch()
 
-        self.cb_disk_usage = QtWidgets.QCheckBox("Disk Usage (%)")
-        self.cb_disk_usage.setChecked(True)
-
-        self.cb_disk_read = QtWidgets.QCheckBox("Disk Read (KB)")
-        self.cb_disk_read.setChecked(True)
-
-        self.cb_disk_write = QtWidgets.QCheckBox("Disk Write (KB)")
-        self.cb_disk_write.setChecked(True)
-
-        for cb in [self.cb_cpu, self.cb_mem, self.cb_disk_usage, self.cb_disk_read, self.cb_disk_write]:
-            toggles_layout.addWidget(cb)
-        toggles_layout.addStretch()
-
-        chart_layout.addLayout(toggles_layout)
-
-        self.init_chart()
-
-        # Connect toggles
-        self.cb_cpu.toggled.connect(self.cpu_series.setVisible)
-        self.cb_mem.toggled.connect(self.mem_series.setVisible)
-        self.cb_disk_usage.toggled.connect(self.disk_usage_series.setVisible)
-        self.cb_disk_read.toggled.connect(self.disk_read_series.setVisible)
-        self.cb_disk_write.toggled.connect(self.disk_write_series.setVisible)
-
-        self.chart_view.setMinimumHeight(260)
-        chart_layout.addWidget(self.chart_view)
-        chart_group.setLayout(chart_layout)
-        return chart_group
+        group.setLayout(layout)
+        return group
 
     def _build_process_group(self):
-        process_group = QtWidgets.QGroupBox("进程查询")
-        proc_layout = QtWidgets.QVBoxLayout()
+        # process_group = QtWidgets.QGroupBox("进程查询") # Removed GroupBox
+        process_container = QtWidgets.QWidget()
+        proc_layout = QtWidgets.QVBoxLayout(process_container)
+        proc_layout.setContentsMargins(0, 0, 0, 0)
 
-        header_bar = QtWidgets.QHBoxLayout()
-        self.group_info_label = QtWidgets.QLabel("Group Info: ")
-        header_bar.addWidget(self.group_info_label)
-        header_bar.addStretch()
-        self.set_group_btn = ModernButton("Set Group Name", "#2563EB", "⚙")
-        header_bar.addWidget(self.set_group_btn)
-        proc_layout.addLayout(header_bar)
-
-        group_container = QtWidgets.QWidget()
-        self.group_grid = QtWidgets.QGridLayout(group_container)
-        self.group_grid.setContentsMargins(4, 0, 4, 0)
-        self.group_grid.setHorizontalSpacing(20)
-        self.group_grid.setVerticalSpacing(4)
-
-        self.group_labels = []
-        for row in range(2):
-            for col in range(5):
-                lbl = QtWidgets.QLabel("")
-                lbl.setTextFormat(QtCore.Qt.RichText)
-                lbl.setWordWrap(False)
-                lbl.setSizePolicy(QtWidgets.QSizePolicy.Expanding,
-                                   QtWidgets.QSizePolicy.Preferred)
-                self.group_grid.addWidget(lbl, row, col)
-                self.group_labels.append(lbl)
-
-        group_container.setFixedHeight(60)
-        proc_layout.addWidget(group_container)
-
-        bottom_bar = QtWidgets.QHBoxLayout()
-        self.process_title_label = QtWidgets.QLabel("Processes")
-        bottom_bar.addWidget(self.process_title_label)
-
-        # --- 新增控件 ---
-        bottom_bar.addSpacing(20)
-        bottom_bar.addWidget(QtWidgets.QLabel("📊 监控周期:"))
-        self.process_cycle_combo = QtWidgets.QComboBox()
-        self.process_cycle_combo.addItems(["1s", "2s", "5s", "10s"])
-        self.process_cycle_combo.setCurrentText("5s")
-        bottom_bar.addWidget(self.process_cycle_combo)
-
-        # ----------------
-
-        bottom_bar.addStretch()
+        # Search Bar Layout
+        search_bar_layout = QtWidgets.QHBoxLayout()
 
         self.search_edit = QtWidgets.QLineEdit()
         self.search_edit.setPlaceholderText("Search by user / PID / command / group ...")
-        self.search_edit.setMaximumWidth(260)
-        bottom_bar.addWidget(self.search_edit)
 
         self.search_btn = QtWidgets.QToolButton()
         self.search_btn.setText("🔍")
-        bottom_bar.addWidget(self.search_btn)
-        proc_layout.addLayout(bottom_bar)
 
-        self.process_table = QtWidgets.QTableWidget(0, 13)
-        self.process_table.setHorizontalHeaderLabels([
-            "TYPE", "USER", "PID", "CPU%", "MEM%", "VSZ", "RSS", "TTY", "STAT", "START", "TIME", "CONTAINER", "PROCESS_NAME"
-        ])
+        search_bar_layout.addWidget(self.search_edit)
+        search_bar_layout.addWidget(self.search_btn)
+
+        proc_layout.addLayout(search_bar_layout)
+
+        self.process_table = QtWidgets.QTableView()
+        self.process_model = ProcessTableModel()
+        self.process_table.setModel(self.process_model)
+
         self.process_table.verticalHeader().setVisible(False)
         self.process_table.setSortingEnabled(True)
         self.process_table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
         self.process_table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
+
         header = self.process_table.horizontalHeader()
-        # 让表头占满屏幕，最后一列自适应，其他列根据内容调整但有最小宽度
         header.setSectionResizeMode(QtWidgets.QHeaderView.Interactive)
         header.setStretchLastSection(True)
-        # 设置默认列宽，避免初始太窄
-        for i in range(12):
-             header.setSectionResizeMode(i, QtWidgets.QHeaderView.ResizeToContents)
+        # Initial resize to contents (optional, can be expensive if done frequently, but okay once)
+        # for i in range(12):
+        #      header.setSectionResizeMode(i, QtWidgets.QHeaderView.ResizeToContents)
 
         self.process_table.setHorizontalScrollMode(QtWidgets.QAbstractItemView.ScrollPerPixel)
         proc_layout.addWidget(self.process_table, 2)
 
-        process_group.setLayout(proc_layout)
-        return process_group
+        return process_container
+
+    def _build_metrics_content(self):
+        container = QtWidgets.QWidget()
+        layout = QtWidgets.QHBoxLayout(container)
+        layout.setContentsMargins(0, 10, 0, 0)
+        layout.setSpacing(20)
+
+        # Left Panel: Cards
+        left_panel = QtWidgets.QWidget()
+        left_panel.setMaximumWidth(220) # Limit width as requested
+        left_layout = QtWidgets.QVBoxLayout(left_panel)
+        left_layout.setContentsMargins(0, 0, 0, 0)
+        left_layout.setSpacing(10)
+
+        self.card_cpu = MetricCard("CPU (%)", "cpu")
+        self.card_mem = MetricCard("Memory (%)", "mem")
+        self.card_disk_usage = MetricCard("Disk Usage (%)", "disk_usage")
+        self.card_disk_read = MetricCard("Disk Read (KB)", "disk_read")
+        self.card_disk_write = MetricCard("Disk Write (KB)", "disk_write")
+
+        self.cards = [self.card_cpu, self.card_mem, self.card_disk_usage, self.card_disk_read, self.card_disk_write]
+        for card in self.cards:
+            left_layout.addWidget(card)
+            card.clicked.connect(self.on_card_clicked)
+
+        left_layout.addStretch()
+
+        # Right Panel: Chart
+        right_panel = QtWidgets.QWidget()
+        right_layout = QtWidgets.QVBoxLayout(right_panel)
+        right_layout.setContentsMargins(0, 0, 0, 0)
+
+        self.chart_title = QtWidgets.QLabel("CPU Usage (%)")
+        self.chart_title.setStyleSheet("font-size: 18px; font-weight: bold; color: #333; margin-bottom: 10px;")
+        right_layout.addWidget(self.chart_title)
+
+        self.init_chart()
+        right_layout.addWidget(self.chart_view)
+
+        layout.addWidget(left_panel, 1)
+        layout.addWidget(right_panel, 3)
+
+        # Default selection
+        self.on_card_clicked("cpu")
+
+        return container
 
     def init_chart(self):
-        """初始化性能曲线图（五条折线：CPU / 内存 / 磁盘使用率 / 磁盘读 / 磁盘写）。"""
+        """初始化性能曲线图"""
         self.chart = QChart()
-        self.chart.setTitle("System Performance")
+        self.chart.setBackgroundVisible(True)
+        self.chart.setBackgroundBrush(QtGui.QBrush(QtCore.Qt.white))
+        self.chart.layout().setContentsMargins(0, 0, 0, 0)
+        self.chart.legend().setVisible(False)
 
-        # 曲线
+        # Create Series
         self.cpu_series = QLineSeries()
         self.cpu_series.setName("CPU (%)")
-
         self.mem_series = QLineSeries()
         self.mem_series.setName("Memory (%)")
-
         self.disk_usage_series = QLineSeries()
         self.disk_usage_series.setName("Disk Usage (%)")
-
         self.disk_read_series = QLineSeries()
         self.disk_read_series.setName("Disk Read (KB)")
-
         self.disk_write_series = QLineSeries()
         self.disk_write_series.setName("Disk Write (KB)")
 
-        self.chart.addSeries(self.cpu_series)
-        self.chart.addSeries(self.mem_series)
-        self.chart.addSeries(self.disk_usage_series)
-        self.chart.addSeries(self.disk_read_series)
-        self.chart.addSeries(self.disk_write_series)
+        self.series_map = {
+            "cpu": self.cpu_series,
+            "mem": self.mem_series,
+            "disk_usage": self.disk_usage_series,
+            "disk_read": self.disk_read_series,
+            "disk_write": self.disk_write_series
+        }
 
-        # X 轴：时间（秒），0~60
+        # Area Series Map for shadows
+        self.area_series_map = {}
+
+        for key, series in self.series_map.items():
+            # Style the lines
+            pen = series.pen()
+            pen.setWidth(2)
+
+            # Set specific colors for each metric if desired, or use default theme colors
+            # For now, let's pick some nice colors
+            color_map = {
+                "cpu": QColor("#3B82F6"), # Blue
+                "mem": QColor("#8B5CF6"), # Purple
+                "disk_usage": QColor("#10B981"), # Green
+                "disk_read": QColor("#F59E0B"), # Orange
+                "disk_write": QColor("#EF4444") # Red
+            }
+            color = color_map.get(key, QColor("#3B82F6"))
+            pen.setColor(color)
+            series.setPen(pen)
+
+            self.chart.addSeries(series)
+
+            # Create Area Series for shadow effect
+            # We need a baseline series (y=0) for the area
+            # But QAreaSeries takes two line series. The lower one can be 0.
+            # However, dynamically updating QAreaSeries is tricky because we need to update the underlying line series.
+            # A common trick is to have a "lower" series that always has y=0 for the same x points.
+            # Let's try to implement this.
+
+            # For simplicity in dynamic updates, we might just use the line series for now.
+            # But user asked for "shadow color".
+            # To do this properly with QAreaSeries:
+            # 1. Create a lower_series that mirrors the x values of the main series but y is always 0.
+            # 2. Create QAreaSeries(main_series, lower_series).
+            # 3. Set brush with gradient or transparent color.
+
+            lower_series = QLineSeries()
+            area_series = QAreaSeries(series, lower_series)
+
+            # Gradient for the area
+            gradient = QLinearGradient(0, 0, 0, 1)
+            gradient.setCoordinateMode(QGradient.ObjectBoundingMode)
+            gradient.setColorAt(0.0, QColor(color.red(), color.green(), color.blue(), 100)) # Semi-transparent
+            gradient.setColorAt(1.0, QColor(color.red(), color.green(), color.blue(), 10))  # Very transparent
+
+            area_series.setBrush(gradient)
+            area_series.setPen(QtGui.QPen(QtCore.Qt.NoPen)) # No border for area
+
+            self.chart.addSeries(area_series)
+
+            # Store references
+            # We need to update lower_series when we update main series
+            # We can attach lower_series to the series object dynamically or store in a map
+            series.lower_series = lower_series
+            series.area_series = area_series
+
+            # Ensure area is behind line (addSeries order matters, but we added line first? No, area should be added first usually)
+            # Let's re-add line series to be on top
+            self.chart.removeSeries(series)
+            self.chart.addSeries(series)
+
+        # Axes
         self.x_axis = QValueAxis()
         self.x_axis.setRange(0, 60)
+        # User said: "横坐标原点是60s，从左往右边依次是60s...0s"
+        # Normal: Min->Max. Reverse: Max->Min.
+        # So Range(0, 60) with Reverse(True) -> 60 (Left) ... 0 (Right)
+        self.x_axis.setReverse(True)
         self.x_axis.setTickCount(7)
         self.x_axis.setLabelFormat("%d s")
+        self.chart.addAxis(self.x_axis, QtCore.Qt.AlignmentFlag.AlignBottom)
 
-        # Y 轴1：百分比 0-100
         self.y_axis = QValueAxis()
         self.y_axis.setRange(0, 100)
         self.y_axis.setTickCount(6)
-        self.y_axis.setLabelFormat("%d%%")
-        self.y_axis.setLabelsAngle(0)
+        self.y_axis.setLabelFormat("%d")
+        self.chart.addAxis(self.y_axis, QtCore.Qt.AlignmentFlag.AlignLeft)
 
-        # Y 轴2：KB
-        self.y_axis_kb = QValueAxis()
-        self.y_axis_kb.setRange(0, 1000) # Initial range, will auto-scale or fixed?
-        self.y_axis_kb.setLabelFormat("%d KB")
-        # self.y_axis_kb.setTitleText("Disk I/O (KB)")
-
-        self.chart.setMargins(QtCore.QMargins(60, 10, 60, 10))
-
-        self.chart.addAxis(self.x_axis, QtCore.Qt.AlignBottom)
-        self.chart.addAxis(self.y_axis, QtCore.Qt.AlignLeft)
-        self.chart.addAxis(self.y_axis_kb, QtCore.Qt.AlignRight)
-
-        for series in (self.cpu_series, self.mem_series, self.disk_usage_series):
+        for series in self.series_map.values():
             series.attachAxis(self.x_axis)
             series.attachAxis(self.y_axis)
-
-        for series in (self.disk_read_series, self.disk_write_series):
-            series.attachAxis(self.x_axis)
-            series.attachAxis(self.y_axis_kb)
-
-        self.chart.legend().setVisible(True)
-        self.chart.legend().setAlignment(QtCore.Qt.AlignBottom)
+            # Attach area series too
+            series.area_series.attachAxis(self.x_axis)
+            series.area_series.attachAxis(self.y_axis)
 
         self.chart_view = QChartView(self.chart)
-        self.chart_view.setRenderHint(QPainter.Antialiasing)
+        self.chart_view.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+    def on_card_clicked(self, identifier):
+        self.current_metric = identifier
+
+        # Update Cards Selection
+        for card in self.cards:
+            card.set_selected(card.identifier == identifier)
+
+        # Update Chart Title and Visibility
+        titles = {
+            "cpu": "CPU Usage (%)",
+            "mem": "Memory Usage (%)",
+            "disk_usage": "Disk Usage (%)",
+            "disk_read": "Disk Read Speed (KB/s)",
+            "disk_write": "Disk Write Speed (KB/s)"
+        }
+        self.chart_title.setText(titles.get(identifier, "Metric"))
+
+        # Show only selected series
+        for key, series in self.series_map.items():
+            is_visible = (key == identifier)
+            series.setVisible(is_visible)
+            series.area_series.setVisible(is_visible)
+
+        # Update Y Axis Range/Format
+        if identifier in ["cpu", "mem", "disk_usage"]:
+            self.y_axis.setRange(0, 100)
+            self.y_axis.setLabelFormat("%d%%")
+        else:
+            # For speed, we need dynamic range, but for now reset to a default or auto
+            # We will handle dynamic scaling in update_chart
+            self.y_axis.setRange(0, 1000)
+            self.y_axis.setLabelFormat("%d")
 
     def reset_chart(self):
         """清空所有曲线数据并重置坐标轴。"""
-        for series in (self.cpu_series, self.mem_series, self.disk_usage_series, self.disk_read_series, self.disk_write_series):
+        for series in self.series_map.values():
             series.clear()
+            series.lower_series.clear()
         self._sample_index = 0
+        # Reset X axis to default view
         self.x_axis.setRange(0, 60)
-        self.y_axis_kb.setRange(0, 1000)
+        if self.current_metric in ["disk_read", "disk_write"]:
+            self.y_axis.setRange(0, 1000)
 
     def update_chart(self, x_value: float, cpu: float, mem: float, disk_usage: float, disk_read_kb: float, disk_write_kb: float, max_points: int = 60):
-        """追加一个新的采样点到曲线中。"""
-        # x_value is now passed from controller (elapsed time)
+        """追加一个新的采样点到曲线中，并更新卡片。"""
 
-        self.cpu_series.append(x_value, cpu)
-        self.mem_series.append(x_value, mem)
-        self.disk_usage_series.append(x_value, disk_usage)
-        self.disk_read_series.append(x_value, disk_read_kb)
-        self.disk_write_series.append(x_value, disk_write_kb)
+        # ... (comments omitted) ...
 
-        # Auto-scale KB axis if needed
-        current_max_kb = max(disk_read_kb, disk_write_kb)
-        if current_max_kb > self.y_axis_kb.max():
-             self.y_axis_kb.setMax(current_max_kb * 1.2)
+        # 1. Update Cards (same as before)
+        cpu_level = "info"
+        if cpu > 80: cpu_level = "error"
+        elif cpu > 50: cpu_level = "warn"
+        self.card_cpu.update_data(f"{cpu:.1f}%", "Load", cpu_level)
 
-        # 控制最大点数
-        for series in (self.cpu_series, self.mem_series, self.disk_usage_series, self.disk_read_series, self.disk_write_series):
-            if series.count() > max_points:
-                remove_count = series.count() - max_points
-                for _ in range(remove_count):
-                    series.remove(0)
+        mem_level = "info"
+        if mem > 80: mem_level = "error"
+        elif mem > 50: mem_level = "warn"
+        self.card_mem.update_data(f"{mem:.1f}%", "Used", mem_level)
 
-        self.x_axis.setRange(0, 60)
+        du_level = "info"
+        if disk_usage > 80: du_level = "error"
+        elif disk_usage > 50: du_level = "warn"
+        self.card_disk_usage.update_data(f"{disk_usage:.1f}%", "Used", du_level)
 
-    def update_group_chart(self, group_stats):
-        """根据分组统计信息刷新 Group Info 文本列表（每行 5 个 label）。"""
-        self.group_info_label.setText("Group Info: ")
+        self.card_disk_read.update_data(f"{disk_read_kb:.0f}", "KB/s", "info")
+        self.card_disk_write.update_data(f"{disk_write_kb:.0f}", "KB/s", "info")
 
-        # 先清空所有 label 文本
-        for lbl in self.group_labels:
-            lbl.clear()
+        # 2. Manage Data Buffer
+        if not hasattr(self, 'data_buffer'):
+            self.data_buffer = []
 
-        if not group_stats:
-            if self.group_labels:
-                self.group_labels[0].setText("无分组数据")
-            return
+        current_time = x_value # This is actually elapsed time passed from controller
 
-        # 确保 label 数量足够
-        needed = len(group_stats)
-        if needed > len(self.group_labels):
-            start_index = len(self.group_labels)
-            extra = needed - len(self.group_labels)
-            for i in range(extra):
-                row = (start_index + i) // 5
-                col = (start_index + i) % 5
-                lbl = QtWidgets.QLabel("")
-                lbl.setTextFormat(QtCore.Qt.RichText)
-                lbl.setWordWrap(False)
-                lbl.setSizePolicy(QtWidgets.QSizePolicy.Expanding,
-                                   QtWidgets.QSizePolicy.Preferred)
-                self.group_grid.addWidget(lbl, row, col)
-                self.group_labels.append(lbl)
+        # Store tuple: (elapsed_time, cpu, mem, disk_usage, read, write)
+        self.data_buffer.append((current_time, cpu, mem, disk_usage, disk_read_kb, disk_write_kb))
 
-        # 填充数据：每行 5 个，name 加粗，CPU/Mem 百分比
-        for idx, stat in enumerate(group_stats):
-            text = f"<b>{stat.name}</b>:  CPU {stat.total_cpu_percent:.1f}%  | 内存 {stat.total_mem_percent:.1f}%"
-            self.group_labels[idx].setText(text)
+        # Remove old data (> 60s ago)
+        while self.data_buffer and (current_time - self.data_buffer[0][0] > 60):
+            self.data_buffer.pop(0)
 
-    def set_status(self, text: str, level: str = "info"):
-        """更新状态标签颜色和文本。
+        # 3. Re-plot Series
+        # We need to clear and replace points to create the "scrolling" effect where X represents "Time Ago"
+        # X axis range is fixed [0, 60] (reversed).
+        # Newest point (current_time) should be at X=0.
+        # Oldest point (current_time - 60) should be at X=60.
 
-        level: "info" | "warn" | "error"
-        """
-        color = {
+        # Prepare point lists
+        points_map = {k: [] for k in self.series_map.keys()}
+        lower_points_map = {k: [] for k in self.series_map.keys()} # For area series baseline
+
+        for entry in self.data_buffer:
+            t, c, m, du, dr, dw = entry
+            time_ago = current_time - t
+
+            points_map["cpu"].append(QtCore.QPointF(time_ago, c))
+            points_map["mem"].append(QtCore.QPointF(time_ago, m))
+            points_map["disk_usage"].append(QtCore.QPointF(time_ago, du))
+            points_map["disk_read"].append(QtCore.QPointF(time_ago, dr))
+            points_map["disk_write"].append(QtCore.QPointF(time_ago, dw))
+
+            # Lower points are always y=0
+            for k in points_map.keys():
+                lower_points_map[k].append(QtCore.QPointF(time_ago, 0))
+
+        # Update Series
+        for key, series in self.series_map.items():
+            series.replace(points_map[key])
+            series.lower_series.replace(lower_points_map[key])
+
+        # 4. Auto-scale Y Axis for speed metrics
+        if self.current_metric in ["disk_read", "disk_write"]:
+            current_val = disk_read_kb if self.current_metric == "disk_read" else disk_write_kb
+            if current_val > self.y_axis.max():
+                self.y_axis.setMax(current_val * 1.2)
+            elif self.y_axis.max() > 1000 and current_val < self.y_axis.max() * 0.5:
+                 pass
+
+
+    def set_metrics_status(self, text: str, level: str = "info"):
+        """更新性能监控状态标签颜色和文本。"""
+        color = self._get_status_color(level)
+        self.metrics_status_label.setText(text)
+        self.metrics_status_label.setStyleSheet(f"color: {color};")
+
+    def set_process_status(self, text: str, level: str = "info"):
+        """更新进程监控状态标签颜色和文本。"""
+        color = self._get_status_color(level)
+        self.process_status_label.setText(text)
+        self.process_status_label.setStyleSheet(f"color: {color};")
+
+    def _get_status_color(self, level: str) -> str:
+        return {
             "info": "#059669",   # 绿色
             "warn": "#F59E0B",   # 橙色
             "error": "#DC2626",  # 红色
         }.get(level, "#6B7280")
-        self.status_label.setText(text)
-        self.status_label.setStyleSheet(f"color: {color};")
+
 
     def update_process_table(self, processes):
         """刷新进程表格，仅更新行数据，不影响表头。"""
@@ -345,44 +609,5 @@ class PerformanceView(QtWidgets.QWidget):
             elif sort_by == "MEM%":
                 processes.sort(key=lambda x: x.mem_percent, reverse=True)
 
-        row_count = len(processes)
-        self.process_table.setRowCount(row_count)
-        self.process_table.setSortingEnabled(False) # 暂时禁用排序以提高性能
-
-        for row, p in enumerate(processes):
-            values = [
-                str(p.type),
-                str(p.user),
-                str(p.pid),
-                f"{p.cpu_percent:.1f}",
-                f"{p.mem_percent:.1f}",
-                str(p.vsz_kb),
-                str(p.rss_kb),
-                str(p.tty),
-                str(p.stat),
-                str(p.start_time),
-                str(p.cpu_time),
-                str(p.container),
-                str(p.process_name)
-            ]
-            for col, val in enumerate(values):
-                item = self.process_table.item(row, col)
-                if item is None:
-                    item = QtWidgets.QTableWidgetItem()
-                    self.process_table.setItem(row, col, item)
-
-                # 对于数值列，设置自定义数据以便正确排序（如果启用表格自带排序）
-                if col in (2, 3, 4, 5, 6): # PID, CPU, MEM, VSZ, RSS
-                    try:
-                        item.setData(QtCore.Qt.DisplayRole, float(val))
-                    except ValueError:
-                        item.setText(val)
-                else:
-                    item.setText(val)
-
-                if col in (2, 3, 4, 5, 6):
-                    item.setTextAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
-                else:
-                    item.setTextAlignment(QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter)
-
-        self.process_table.setSortingEnabled(True)
+        # 使用模型更新数据，极大提高性能
+        self.process_model.update_data(processes)

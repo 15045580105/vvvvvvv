@@ -3,9 +3,11 @@ from __future__ import annotations
 import threading
 from dataclasses import dataclass
 from typing import Dict, List, Tuple, Optional, Any, Callable
+import re
 
 from app.services.device_manage.device_service import DeviceService
-
+from app.services.diagnostic.dpt_service import DPTService
+import math
 
 class TopologyServiceError(Exception):
     """拓扑数据采集失败。"""
@@ -15,18 +17,16 @@ class TopologyServiceError(Exception):
 class TopologySnapshot:
     # 节点：名称、图标、状态、相对 X/Y 坐标
     nodes: List[Tuple[str, str, str, int, int]]
-    # 网络：名称、状态、带宽/负载信息
-    networks: List[Tuple[str, str, str]]
     # 车辆/整车信息区
-    vehicle_info: Dict[str, str]
+    vehicle_info: Dict[str, str] = None
     # 服务运行状态
-    service_status: Dict[str, str]
+    service_status: Dict[str, str] = None
     # 安全与证书信息
-    security_info: Dict[str, str]
+    security_info: Dict[str, str] = None
     # 网络管理/电源唤醒等
-    network_management: Dict[str, str]
+    network_management: Dict[str, str] = None
     # 存储信息
-    storage_info: Dict[str, str]
+    storage_info: Dict[str, str] = None
 
 
 class TopologyService:
@@ -39,10 +39,15 @@ class TopologyService:
 
     def __init__(self, device_service: Optional[DeviceService] = None) -> None:
         self._device_service = device_service
+        self._dpt_service = DPTService()
+        try:
+            self._dpt_service.load_from_file(r"D:\uidq9000\Downloads\dpt.json")
+        except Exception as e:
+            print(f"Failed to load DPT file: {e}")
 
-    def fetch_snapshot(self, device_info: Dict[str, Any] = None) -> TopologySnapshot:
+    def fetch_snapshot(self, log_callback: Optional[Callable[[str], None]] = None) -> TopologySnapshot:
         """采集整车拓扑概览。后续可接入 DoIP，目前在 use_dummy=True 时返回模拟数据。"""
-        return self._fetch_doip_snapshot(device_info)
+        return self._fetch_doip_snapshot(log_callback=log_callback)
 
     def fetch_vehicle_info(self, log_callback: Optional[Callable[[str], None]] = None) -> Dict[str, str]:
         """仅采集车辆信息"""
@@ -79,85 +84,159 @@ class TopologyService:
         """仅采集网络管理信息"""
         if log_callback: log_callback("开始采集网络管理信息...")
         pnc_mgmt = self._get_pnc_status(log_callback)
-        link_status = self._get_eth_link_status(log_callback)
         network_mgmt = {}
         network_mgmt.update(pnc_mgmt)
-        network_mgmt.update(link_status)
         if log_callback: log_callback("网络管理信息采集完成")
         return network_mgmt
 
-    def fetch_storage_info(self, device_info: Dict[str, Any] = None, log_callback: Optional[Callable[[str], None]] = None) -> Dict[str, str]:
+    def fetch_storage_info(self, log_callback: Optional[Callable[[str], None]] = None) -> Dict[str, str]:
         """仅采集存储信息"""
         if log_callback: log_callback("开始采集存储信息...")
         info = {
-            "a_core_storage": self._get_storage_info(device_info, log_callback),
-            "m_core_storage": self._get_version_info(device_info, log_callback),
+            "a_core_storage": self._get_storage_info(log_callback)
         }
         if log_callback: log_callback("存储信息采集完成")
         return info
 
-    def _fetch_doip_snapshot(self, device_info: Dict[str, Any] = None) -> TopologySnapshot:
+    def fetch_version_info(self, log_callback: Optional[Callable[[str], None]] = None) -> Dict[str, str]:
+        """仅采集版本信息"""
+        if log_callback: log_callback("开始采集版本信息...")
+        info = {
+            "m_core_storage": self._get_version_info(log_callback)
+        }
+        if log_callback: log_callback("版本信息采集完成")
+        return info
+
+    def _extract_node_name(self, key: str) -> str:
+        """从 DPT Key 中提取节点名称，并进行标准化修正"""
+        node_name = key
+
+        # 提取规则
+        # 1. "与...连接的以太网联接状态"
+        match = re.search(r"与(.+?)连接的以太网联接状态", key)
+        if match:
+            node_name = match.group(1).strip()
+        else:
+            # 2. "与...的以太网联接状态"
+            match = re.search(r"与(.+?)的以太网联接状态", key)
+            if match:
+                node_name = match.group(1).strip()
+            else:
+                # 3. "与...以太网联接状态"
+                match = re.search(r"与(.+?)以太网联接状态", key)
+                if match:
+                    node_name = match.group(1).strip()
+
+        # 特殊名称修正 (根据用户需求)
+        corrections = {
+            "GMAC0": "GMACO",
+            "ZCUL": "ZCULL",
+            "PFE_MAC2": "PFE_EMAC2",
+            "PCS/PAPA": "PCS/FAPA"
+        }
+        return corrections.get(node_name, node_name)
+
+    def _fetch_doip_snapshot(self, log_callback: Optional[Callable[[str], None]] = None) -> TopologySnapshot:
         """通过已建立的 DoIP 连接向 ECU 请求拓扑信息，并转换为 TopologySnapshot。"""
         if self._device_service is None:
             raise TopologyServiceError("未注入 DeviceService，无法通过 DoIP 采集拓扑")
         # 4. 以太网 link 状态（新增）：通过 22 BE1A 获取当前各节点 link up/down 信息
-        link_status = self._get_eth_link_status()
+        link_status = self._get_eth_link_status(log_callback=log_callback)
+        if log_callback:
+            log_callback(f"获取到的 Link Status Keys: {list(link_status.keys())}")
 
         # 1. 车辆信息
-        vin = self._get_vin()
-        vehicle_mode = self._get_vehicle_mode()
-        user_mode = self._get_user_mode()
-        factory_mode = self._get_factory_mode()
-        voltage = self._get_voltage()
-        vehicle_info = {
-            "vin": vin,
-            "vehicle_mode": vehicle_mode,
-            "user_mode": user_mode,
-            "factory_mode": factory_mode,
-            "voltage": voltage
-        }
+        # vin = self._get_vin(log_callback=log_callback)
+        # vehicle_mode = self._get_vehicle_mode(log_callback=log_callback)
+        # user_mode = self._get_user_mode(log_callback=log_callback)
+        # factory_mode = self._get_factory_mode(log_callback=log_callback)
+        # voltage = self._get_voltage(log_callback=log_callback)
+        # vehicle_info = {
+        #     "vin": vin,
+        #     "vehicle_mode": vehicle_mode,
+        #     "user_mode": user_mode,
+        #     "factory_mode": factory_mode,
+        #     "voltage": voltage
+        # }
+        #
+        # # 2. 服务状态 (SomeIP)
+        # service_status_raw = self._get_service_status(log_callback=log_callback)
+        # service_status = {"status_summary": service_status_raw}
+        #
+        # # 3. 信息安全
+        # cert_info = self._get_cert_info(log_callback=log_callback)
+        # key_slot = self._get_key_slot_status(log_callback=log_callback)
+        # cms_env = self._get_cms_env(log_callback=log_callback)
+        # security_info = {
+        #     "cert_info": cert_info,
+        #     "key_slot_status": key_slot,
+        #     "cms_env": cms_env
+        # }
+        #
+        #
+        # # 5. PNC 网络管理 (SomeIP)
+        # pnc_mgmt = self._get_pnc_status(log_callback=log_callback)
+        # # 将 link 状态合并进 network_management，便于统一在信息块里展示
+        # network_mgmt: Dict[str, str] = {}
+        # network_mgmt.update(pnc_mgmt)
+        # network_mgmt.update(link_status)
+        #
+        # # 6. 存储/版本信息 (SSH)
+        # storage_info_str = self._get_storage_info(log_callback=log_callback)
+        # version_info = self._get_version_info(log_callback=log_callback)
+        # storage_info = {
+        #     "a_core_storage": storage_info_str,
+        #     "m_core_storage": version_info,
+        # }
 
-        # 2. 服务状态 (SomeIP)
-        service_status_raw = self._get_service_status()
-        service_status = {"status_summary": service_status_raw}
+        # 拓扑节点构建
+        nodes = []
+        # 中心节点
+        nodes.append(("ETH Switch", "🌐", "online", 0, 0))
 
-        # 3. 信息安全
-        cert_info = self._get_cert_info()
-        key_slot = self._get_key_slot_status()
-        cms_env = self._get_cms_env()
-        security_info = {
-            "cert_info": cert_info,
-            "key_slot_status": key_slot,
-            "cms_env": cms_env
-        }
+        link_items = []
+        for key, value in link_status.items():
+            # 过滤出包含 "以太网联接状态" 的项
+            if "以太网联接状态" in key or "ETH_SWITCH" in key or "PFE_EMAC" in key:
+                # 使用专门的规则提取节点名称
+                node_name = self._extract_node_name(key)
 
+                # 状态映射: Link up -> 正常 (online), Link Down -> 离线 (offline)
+                status = "online" if "Link up" in value else "offline"
+                link_items.append((node_name, status))
 
-        # 5. PNC 网络管理 (SomeIP)
-        pnc_mgmt = self._get_pnc_status()
-        # 将 link 状态合并进 network_management，便于统一在信息块里展示
-        network_mgmt: Dict[str, str] = {}
-        network_mgmt.update(pnc_mgmt)
-        network_mgmt.update(link_status)
+        # 布局参数: 圆形布局
+        count = len(link_items)
+        radius = 300
+        angle_step = 360 / count if count > 0 else 0
 
-        # 6. 存储/版本信息 (SSH)
-        storage_info_str = self._get_storage_info(device_info)
-        version_info = self._get_version_info(device_info)
-        storage_info = {
-            "a_core_storage": storage_info_str,
-            "m_core_storage": version_info,
-        }
+        for i, (name, status) in enumerate(link_items):
+            angle_rad = math.radians(i * angle_step)
+            x = int(radius * math.cos(angle_rad))
+            y = int(radius * math.sin(angle_rad))
 
-        # 拓扑节点和网络结构目前仍使用 dummy
-        dummy = self._build_dummy_snapshot()
+            # 图标根据名称简单匹配
+            icon = "🔌"
+            if "GMACO" in name: icon = "🖥️"
+            elif "ZCU" in name: icon = "🧠"
+            elif "ADC" in name: icon = "🎛️"
+            elif "IDC" in name: icon = "🧠"
+            elif "TBOX" in name: icon = "📡"
+            elif "Lidar" in name or "雷达" in name: icon = "📡"
+            elif "CAM" in name or "IFC" in name: icon = "📷"
+
+            nodes.append((name, icon, status, x, y))
+
+        if log_callback:
+            log_callback(f"构建的拓扑节点 ({len(nodes)}个): {nodes}")
 
         return TopologySnapshot(
-            nodes=dummy.nodes,
-            networks=dummy.networks,
-            vehicle_info=vehicle_info,
-            service_status=service_status,
-            security_info=security_info,
-            network_management=network_mgmt,
-            storage_info=storage_info,
+            nodes=nodes,
+            vehicle_info={},
+            service_status={},
+            security_info={},
+            network_management={},
+            storage_info={},
         )
 
     # --- DoIP Helpers ---
@@ -171,90 +250,146 @@ class TopologyService:
         if log_callback: log_callback(f"UDS 读取失败或无响应: {rx.hex(' ').upper() if rx else 'None'}")
         return None
 
-    def _get_eth_link_status(self) -> Dict[str, str]:
+    def _get_eth_link_status(self, log_callback: Optional[Callable[[str], None]] = None) -> Dict[str, str]:
         """读取以太网各节点 link 状态（UDS 22 BE1A）。
-
-        返回一个 dict，用于填充 network_management，例如：
-        {
-            "eth_link_idc": "UP",
-            "eth_link_adc": "DOWN",
-            ...
-        }
-
-        具体 bit/字节解析需参考 DPT 表，这里提供一个占位解析：
-        - 若成功返回数据，则将��始 hex 串挂到 eth_link_raw 上，方便后续调试；
-        - 一旦协议细节明确，可在此根据位定义拆分到各节点。
         """
+        if log_callback: log_callback("-->读取以太网Link状态<--")
         result: Dict[str, str] = {}
-        # 使用 UDS 22 BE1A
         payload = bytes([0x22, 0xBE, 0x1A])
+        if log_callback: log_callback(f"发送 UDS 读取: {payload.hex(' ').upper()}")
         try:
             rx = self._device_service.send_doip_payload(payload, timeout=1.0)
         except Exception as e:
+            if log_callback: log_callback(f"读取失败: {e}")
             result["eth_link_raw"] = f"读取失败: {e}"
             return result
 
         if not rx or len(rx) < 3 or rx[0] != 0x62 or rx[1] != 0xBE or rx[2] != 0x1A:
+            if log_callback: log_callback(f"无有效响应: {rx.hex(' ').upper() if rx else 'None'}")
             result["eth_link_raw"] = "无有效响应"
             return result
 
         data = rx[3:]
+        if log_callback: log_callback(f"Link状态原始数据: {data.hex(' ').upper()}")
+
+        # 使用 DPTService 解析数据
+        if self._dpt_service.is_ready():
+            parsed_result = self._dpt_service.parse_bytes(data, did="BE1A")
+            if parsed_result:
+                if log_callback: log_callback(f"DPT解析结果: {parsed_result.fields}")
+                # 将解析结果转换为 dict
+                # parsed_result.fields 是一个 list，包含 DPTFieldValue 对象
+                # 我们需要遍历这个 list，提取 name 和 parsed_value
+                for field in parsed_result.fields:
+                    # 假设 DPTFieldValue 有 name 和 parsed_value 属性
+                    if hasattr(field, 'name') and hasattr(field, 'parsed_value'):
+                        result[field.name] = str(field.parsed_value)
+            else:
+                if log_callback: log_callback("DPT解析失败: 未找到匹配的解析规则")
+        else:
+            if log_callback: log_callback("DPT服务未就绪，无法解析数据")
+
         # 暂不清楚各节点对应 bit/byte 的精确含义，这里先挂原始 hex，方便 UI 或日志查看
         result["eth_link_raw"] = data.hex().upper()
+        if log_callback: log_callback(f"Link状态解析结果: {result}")
         return result
 
-    def _get_vin(self) -> str:
-        data = self._send_uds_read(0xF1, 0x90)
+    def _get_vin(self, log_callback: Optional[Callable[[str], None]] = None) -> str:
+        if log_callback: log_callback("-->读取VIN码<--")
+        data = self._send_uds_read(0xF1, 0x90, log_callback)
         if data:
+            if log_callback: log_callback(f"VIN原始数据: {data.hex(' ').upper()}")
             try:
-                return data.decode('ascii').strip()
+                result = data.decode('ascii').strip()
             except:
-                return data.hex()
+                result = data.hex()
+            if log_callback: log_callback(f"VIN解析结果: {result}")
+            return result
+        if log_callback: log_callback("VIN读取失败: 无数据")
         return "Unknown"
 
-    def _get_vehicle_mode(self) -> str:
-        data = self._send_uds_read(0x50, 0x01)
+    def _get_vehicle_mode(self, log_callback: Optional[Callable[[str], None]] = None) -> str:
+        if log_callback: log_callback("-->读取车辆模式<--")
+        data = self._send_uds_read(0x50, 0x01, log_callback)
         if data:
+            if log_callback: log_callback(f"车辆模式原始数据: {data.hex(' ').upper()}")
             mode = data[0] & 0x0F
             modes = {
                 0x00: "正常模式", 0x01: "生产模式", 0x02: "运输模式", 0x03: "展厅模式",
                 0x04: "碰撞模式", 0x05: "维修模式"
             }
-            return modes.get(mode, f"未知模式({mode})")
+            result = modes.get(mode, f"未知模式({mode})")
+            if log_callback: log_callback(f"车辆模式解析结果: {result}")
+            return result
+        if log_callback: log_callback("车辆模式读取失败: 无数据")
         return "Unknown"
 
-    def _get_factory_mode(self) -> str:
-        data = self._send_uds_read(0x01, 0x10)
+    def _get_factory_mode(self, log_callback: Optional[Callable[[str], None]] = None) -> str:
+        if log_callback: log_callback("-->读取工厂模式<--")
+        data = self._send_uds_read(0x01, 0x10, log_callback)
         if data:
+            if log_callback: log_callback(f"工厂模式原始数据: {data.hex(' ').upper()}")
             val = data[0]
             if 0x10 <= val <= 0xFF:
-                return "工厂模式"
-            return "非工厂模式"
+                result = "工厂模式"
+            else:
+                result = "非工厂模式"
+            if log_callback: log_callback(f"工厂模式解析结果: {result}")
+            return result
+        if log_callback: log_callback("工厂模式读取失败: 无数据")
         return "Unknown"
 
-    def _get_voltage(self) -> str:
-        data = self._send_uds_read(0x10, 0x00)
+    def _get_voltage(self, log_callback: Optional[Callable[[str], None]] = None) -> str:
+        if log_callback: log_callback("-->读取电压<--")
+        data = self._send_uds_read(0x10, 0x00, log_callback)
         if data:
+            if log_callback: log_callback(f"电压原始数据: {data.hex(' ').upper()}")
             # 假设是 raw hex 或者某种编码，这里直接转 hex 显示
-            return f"{int.from_bytes(data, 'big')} mV" # 假设单位 mV，具体需确认
+            result = f"{int.from_bytes(data, 'big')} mV" # 假设单位 mV，具体需确认
+            if log_callback: log_callback(f"电压解析结果: {result}")
+            return result
+        if log_callback: log_callback("电压读取失败: 无数据")
         return "Unknown"
 
-    def _get_cert_info(self) -> str:
+    def _get_cert_info(self, log_callback: Optional[Callable[[str], None]] = None) -> str:
+        if log_callback: log_callback("-->读取证书信息<--")
         # 31 01 BE E8 (Routine Control)
         # 需要 Security Access，这里尝试直接发送，如果失败则返回提示
         payload = bytes([0x31, 0x01, 0xBE, 0xE8])
-        rx = self._device_service.send_doip_payload(payload, timeout=2.0)
-        if rx and rx[0] == 0x71:
-            return "读取成功: " + rx[4:].hex() # 假设格式
+
+        routine = bytes.fromhex("31 01 BE E9")
+        self._device_service.execute_secure_routine(routine, sec_level=0x21)
+
+        # rx = self._device_service.send_doip_payload(payload, timeout=2.0)
+        # if rx and rx[0] == 0x71:
+        #     if log_callback: log_callback(f"收到 UDS 响应: {rx.hex(' ').upper()}")
+        #     result = "读取成功: " + rx[4:].hex() # 假设格式
+        #     if log_callback: log_callback(f"证书信息解析结果: {result}")
+        #     return result
+        # if log_callback: log_callback(f"UDS 例程失败或无响应: {rx.hex(' ').upper() if rx else 'None'}")
         return "读取失败(可能需要解锁)"
 
-    def _get_key_slot_status(self) -> str:
-        data = self._send_uds_read(0xBE, 0x2C)
-        return data.hex() if data else "Unknown"
+    def _get_key_slot_status(self, log_callback: Optional[Callable[[str], None]] = None) -> str:
+        if log_callback: log_callback("-->读取密钥槽状态<--")
+        data = self._send_uds_read(0xBE, 0x2C, log_callback)
+        if data:
+            if log_callback: log_callback(f"密钥槽��态原始数据: {data.hex(' ').upper()}")
+            result = data.hex()
+            if log_callback: log_callback(f"密钥槽状态解析结果: {result}")
+            return result
+        if log_callback: log_callback("密钥槽状态读取失败: 无数据")
+        return "Unknown"
 
-    def _get_cms_env(self) -> str:
-        data = self._send_uds_read(0xBE, 0x2D)
-        return data.hex() if data else "Unknown"
+    def _get_cms_env(self, log_callback: Optional[Callable[[str], None]] = None) -> str:
+        if log_callback: log_callback("-->读取CMS环境<--")
+        data = self._send_uds_read(0xBE, 0x2D, log_callback)
+        if data:
+            if log_callback: log_callback(f"CMS环境原始数据: {data.hex(' ').upper()}")
+            result = data.hex()
+            if log_callback: log_callback(f"CMS环境解析结果: {result}")
+            return result
+        if log_callback: log_callback("CMS环境读取失败: 无数据")
+        return "Unknown"
 
     # --- SomeIP Helpers ---
     def _someip_request_sync(self, service, method, payload=b'', timeout=2.0) -> Optional[Any]:
@@ -291,7 +426,7 @@ class TopologyService:
 
         return result
 
-    def _get_user_mode(self) -> str:
+    def _get_user_mode(self, log_callback: Optional[Callable[[str], None]] = None) -> str:
         # Service 0x1055, Event 0x9001.
         # 这是一个 Event，通常需要 Subscribe。
         # 这里简化为尝试等待 Event，如果 client 已经 subscribe 了。
@@ -303,13 +438,13 @@ class TopologyService:
         #     return "监听中..."
         return "SomeIP Client未就绪"
 
-    def _get_service_status(self) -> str:
+    def _get_service_status(self, log_callback: Optional[Callable[[str], None]] = None) -> str:
         # 10FA, 0003
         # 这是一个 Method Call
         # 需要 target IP。
         return "获取中..." # 需完善 SomeIP 通信机制
 
-    def _get_pnc_status(self) -> Dict[str, str]:
+    def _get_pnc_status(self, log_callback: Optional[Callable[[str], None]] = None) -> Dict[str, str]:
         # 多个 Notifier，需要 Subscribe
         return {
             "power_wake_source": "Unknown",
@@ -318,8 +453,7 @@ class TopologyService:
         }
 
     # --- SSH Helpers ---
-    def _get_storage_info(self, device_info: Dict[str, Any], log_callback: Optional[Callable[[str], None]] = None) -> str:
-        # if not device_info: return "无设备信息"
+    def _get_storage_info(self, log_callback: Optional[Callable[[str], None]] = None) -> str:
         cmd = "df -h"
         if log_callback: log_callback(f"发送 SSH 指令: {cmd}")
 
@@ -342,8 +476,7 @@ class TopologyService:
         if log_callback: log_callback(f"SSH 指令失败 or Empty")
         return "Error: Empty response"
 
-    def _get_version_info(self, device_info: Dict[str, Any], log_callback: Optional[Callable[[str], None]] = None) -> str:
-        # if not device_info: return "无设备信息"
+    def _get_version_info(self, log_callback: Optional[Callable[[str], None]] = None) -> str:
         cmd = "get_ccu_all_version"
         if log_callback: log_callback(f"发送 SSH 指令: {cmd}")
         out = self._device_service.get_ssh_client().execute_command(cmd)
@@ -418,7 +551,7 @@ class TopologyService:
             if log_callback: log_callback("SSH未连接")
             return False
 
-        cmd = f"ping -c 2 {ip}"
+        cmd = f"ping -c 10 -i 0.1 {ip}"
         if log_callback: log_callback(f"发送 SSH 指令: {cmd}")
 
         out = ssh_client.execute_command(cmd)
@@ -456,14 +589,7 @@ class TopologyService:
             ("ADC MCU", "🔌", "正常", 350, 0),
             ("激光雷达", "📡", "正常", 0, -200),
         ]
-        networks = [
-            ("电源管理网络", "正常", "2.1 KB/s"),
-            ("PNC网络", "正常", "5.8 KB/s"),
-            ("RT1外网报文", "正常", "1.2 KB/s"),
-            ("RT2外网报文", "正常", "0.8 KB/s"),
-            ("A核应用网络", "正常", "12.5 KB/s"),
-            ("OBD-CAN网络", "正常", "0.3 KB/s"),
-        ]
+
         vehicle_info = {
             "vin": "LJ8A12345CCU67890",
             "vehicle_mode": "测试模式",
@@ -501,7 +627,6 @@ class TopologyService:
         }
         return TopologySnapshot(
             nodes=nodes,
-            networks=networks,
             vehicle_info=vehicle_info,
             service_status=service_status,
             security_info=security_info,

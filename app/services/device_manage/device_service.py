@@ -369,7 +369,7 @@ class DeviceService(QObject):
         self.execute_secure_routine(routine, sec_level=0x21)
 
 
-    def execute_secure_routine(self, routine_command: bytes, sec_level: int = 0x21, log_callback: Optional[Callable[[str], None]] = None) -> bool:
+    def execute_secure_routine(self, routine_command: bytes, sec_level: int = 0x21, log_callback: Optional[Callable[[str], None]] = None) -> bool | bytes:
         """
         执行带安全访问的 UDS 例程序列:
         1. 10 03 (Extended Session)
@@ -379,6 +379,7 @@ class DeviceService(QObject):
         :param routine_command: 例程指令 bytes
         :param sec_level: 安全访问级别
         :param log_callback: 日志回调函数，接受一个字符串参数。如果提供，则日志通过此回调输出；否则通过 self.log_signal 发出。
+        :return: 成功返回 响应数据(bytes)，失败返回 False。注意：非空 bytes 在 bool 上下文中为 True，兼容旧逻辑。
         """
         # 定义内部日志函数
         def _log(msg: str):
@@ -444,4 +445,4 @@ class DeviceService(QObject):
             _log(f"例程控制失败: {rx_routine.hex(' ').upper() if rx_routine else '无响应'}")
             return False
         _log(f"例程控制成功: {rx_routine.hex(' ').upper()}")
-        return True
+        return rx_routine

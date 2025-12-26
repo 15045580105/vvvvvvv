@@ -61,6 +61,15 @@ class TopologyView(BaseView):
     def update_storage_info(self, info: dict):
         self.topology_widget.update_storage_info(info)
 
+    def update_version_info(self, info: dict):
+        self.topology_widget.update_version_info(info)
+
+    def set_loading(self, loading: bool):
+        """设置加载状态"""
+        if hasattr(self, 'refresh_btn'):
+            self.refresh_btn.setEnabled(not loading)
+            self.refresh_btn.setText("刷新中..." if loading else "刷新拓扑")
+
     def append_log(self, text: str):
         self.log_view.append(text)
 

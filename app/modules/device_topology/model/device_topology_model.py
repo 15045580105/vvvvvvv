@@ -5,7 +5,6 @@ from app.services.device_manage.topology_service import TopologyService, Topolog
 class TopologyModel(BaseModel):
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.networks = []
         self.nodes = []
         self.vehicle_info = {}
         self.service_status = {}
@@ -20,12 +19,11 @@ class TopologyModel(BaseModel):
         snapshot: TopologySnapshot = self._service.fetch_snapshot()
         self._snapshot = snapshot
         self.nodes = snapshot.nodes
-        self.networks = snapshot.networks
-        self.vehicle_info = snapshot.vehicle_info
-        self.service_status = snapshot.service_status
-        self.security_info = snapshot.security_info
-        self.network_mgmt = snapshot.network_management
-        self.storage_info = snapshot.storage_info
+        self.vehicle_info = snapshot.vehicle_info or {}
+        self.service_status = snapshot.service_status or {}
+        self.security_info = snapshot.security_info or {}
+        self.network_mgmt = snapshot.network_management or {}
+        self.storage_info = snapshot.storage_info or {}
         self.dataChanged.emit()
 
     def info_blocks_payload(self) -> dict:
