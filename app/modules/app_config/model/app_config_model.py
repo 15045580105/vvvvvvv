@@ -74,17 +74,21 @@ class AppConfigModel(BaseModel):
             "routing_type": "0x00",
             "routing_request": True,
             "network_interface": 0,
-            "tcp_use_any": False,
-            "udp_broadcast": False,
-            "physical_addr": "0x004F",
-            "functional_addr": "0x07DF"
+            "target_phy_addr": "0x004F",
+            "target_fun_addr": "0x07DF",
+            "target_addr_mode": 1
         }
 
     def reset_diag_layer_settings(self):
         self.diag_layer_settings = {
             "s3_client_time": "3000",
             "s3_server_time": "5000",
-            "dll_path": "D:/GAC客户提供/GAC_CCU_SA.dll"
+            "dll_path": "D:/GAC客户提供/GAC_CCU_SA.dll",
+            "physical_addr": "0x004F",
+            "functional_addr": "0x07DF",
+            "ecu_config_path": "",
+            "target_ecu_name": "",
+            "diag_addr_mode": 1
         }
 
     def reset_domain_update_settings(self):

@@ -2,7 +2,8 @@ from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout,
                              QTreeWidget, QTreeWidgetItem, QStackedWidget,
                              QLabel, QComboBox, QLineEdit, QCheckBox, QPushButton,
                              QGroupBox, QFormLayout, QGridLayout, QSplitter,
-                             QMessageBox, QFileDialog)
+                             QMessageBox, QFileDialog, QListWidget, QListWidgetItem,
+                             QRadioButton, QButtonGroup)
 from PyQt5.QtCore import Qt, QRegExp, pyqtSignal
 from PyQt5.QtGui import QRegExpValidator, QFont, QIntValidator
 from app.common.ui.style import APP_STYLE
@@ -79,60 +80,36 @@ class DoIPSettingsPage(QWidget):
         self._load_network_interfaces()
         tool_layout.addRow("Network interface:", self.network_combo)
 
-        # TCP Use Any
-        self.tcp_check = QCheckBox("Use Any")
-        tool_layout.addRow("TCP:", self.tcp_check)
+        # Target Logical Addresses
+        # Physical
+        phy_layout = QHBoxLayout()
+        self.phy_addr_edit = QLineEdit("0x004F")
+        self.phy_addr_edit.setMaximumWidth(150)
+        hex_validator = QRegExpValidator(QRegExp("0x[0-9A-Fa-f]{1,4}"))
+        self.phy_addr_edit.setValidator(hex_validator)
+        self.phy_radio = QRadioButton("Use")
+        self.phy_radio.setChecked(True)
+        phy_layout.addWidget(self.phy_addr_edit)
+        phy_layout.addWidget(self.phy_radio)
+        tool_layout.addRow("Logical address(physical):", phy_layout)
 
-        # UDP Broadcast To All
-        self.udp_check = QCheckBox("Broadcast To All")
-        tool_layout.addRow("UDP:", self.udp_check)
+        # Functional
+        fun_layout = QHBoxLayout()
+        self.fun_addr_edit = QLineEdit("0x07DF")
+        self.fun_addr_edit.setMaximumWidth(150)
+        self.fun_addr_edit.setValidator(hex_validator)
+        self.fun_radio = QRadioButton("Use")
+        fun_layout.addWidget(self.fun_addr_edit)
+        fun_layout.addWidget(self.fun_radio)
+        tool_layout.addRow("Logical address(functional):", fun_layout)
+
+        # Group them
+        self.addr_group = QButtonGroup(self)
+        self.addr_group.addButton(self.phy_radio, 1)
+        self.addr_group.addButton(self.fun_radio, 2)
 
         tool_group.setLayout(tool_layout)
         main_layout.addWidget(tool_group)
-
-        # ECU目标设置组
-        ecu_group = self._create_group_box("ECU (Target)", "#e74c3c")
-
-        ecu_layout = QFormLayout()
-        ecu_layout.setSpacing(12)
-
-        # 物理逻辑地址
-        self.physical_addr_edit = QLineEdit("0x004F")
-        self.physical_addr_edit.setMaximumWidth(150)
-        self.physical_addr_edit.setValidator(hex_validator)
-        ecu_layout.addRow("Logical address(physical):", self.physical_addr_edit)
-
-        # 功能逻辑地址
-        self.functional_addr_edit = QLineEdit("0x07DF")
-        self.functional_addr_edit.setMaximumWidth(150)
-        self.functional_addr_edit.setValidator(hex_validator)
-        ecu_layout.addRow("Logical address(functional):", self.functional_addr_edit)
-
-        # CCU/TBOX/ADC/IDC状态标签
-        status_layout = QHBoxLayout()
-        status_layout.setSpacing(20)
-
-        self.ccu_label = QLabel("CCU")
-        self.ccu_label.setStyleSheet("color: #95a5a6; font-weight: bold;")
-        status_layout.addWidget(self.ccu_label)
-
-        self.tbox_label = QLabel("TBOX")
-        self.tbox_label.setStyleSheet("color: #95a5a6; font-weight: bold;")
-        status_layout.addWidget(self.tbox_label)
-
-        self.adc_label = QLabel("ADC")
-        self.adc_label.setStyleSheet("color: #95a5a6; font-weight: bold;")
-        status_layout.addWidget(self.adc_label)
-
-        self.idc_label = QLabel("IDC")
-        self.idc_label.setStyleSheet("color: #95a5a6; font-weight: bold;")
-        status_layout.addWidget(self.idc_label)
-
-        status_layout.addStretch()
-        ecu_layout.addRow("Status:", status_layout)
-
-        ecu_group.setLayout(ecu_layout)
-        main_layout.addWidget(ecu_group)
 
         main_layout.addStretch()
         self.setLayout(main_layout)
@@ -206,10 +183,14 @@ class DoIPSettingsPage(QWidget):
         else:
             self.network_combo.setCurrentIndex(settings.get("network_interface", 0))
 
-        self.tcp_check.setChecked(settings.get("tcp_use_any", False))
-        self.udp_check.setChecked(settings.get("udp_broadcast", False))
-        self.physical_addr_edit.setText(settings.get("physical_addr", "0x004F"))
-        self.functional_addr_edit.setText(settings.get("functional_addr", "0x07DF"))
+        self.phy_addr_edit.setText(settings.get("target_phy_addr", "0x004F"))
+        self.fun_addr_edit.setText(settings.get("target_fun_addr", "0x07DF"))
+
+        selected_mode = settings.get("target_addr_mode", 1) # 1=Phy, 2=Fun
+        if selected_mode == 2:
+            self.fun_radio.setChecked(True)
+        else:
+            self.phy_radio.setChecked(True)
 
     def save_settings(self):
         """保存设置"""
@@ -220,10 +201,9 @@ class DoIPSettingsPage(QWidget):
             "routing_request": self.routing_request_check.isChecked(),
             "network_interface": self.network_combo.currentIndex(),
             "network_interface_ip": self.network_combo.currentData(),
-            "tcp_use_any": self.tcp_check.isChecked(),
-            "udp_broadcast": self.udp_check.isChecked(),
-            "physical_addr": self.physical_addr_edit.text(),
-            "functional_addr": self.functional_addr_edit.text()
+            "target_phy_addr": self.phy_addr_edit.text(),
+            "target_fun_addr": self.fun_addr_edit.text(),
+            "target_addr_mode": self.addr_group.checkedId()
         }
         self.save_signal.emit(settings)
 
@@ -231,11 +211,33 @@ class DoIPSettingsPage(QWidget):
         """重置为默认值"""
         self.reset_signal.emit()
 
+    def _get_button_style(self, bg_color, hover_color, pressed_color):
+        """获取按钮样式"""
+        return f"""
+            QPushButton {{
+                background-color: {bg_color};
+                color: white;
+                border: none;
+                padding: 6px 12px;
+                border-radius: 4px;
+                font-weight: 600;
+                font-family: "Segoe UI", "Microsoft YaHei";
+            }}
+            QPushButton:hover {{
+                background-color: {hover_color};
+            }}
+            QPushButton:pressed {{
+                background-color: {pressed_color};
+            }}
+        """
+
+
 
 class DiagnosticLayerSettingsPage(QWidget):
     """Diagnostic Layer设置页面"""
     save_signal = pyqtSignal(dict)
     reset_signal = pyqtSignal()
+    ecu_file_changed_signal = pyqtSignal(str)
 
     def __init__(self):
         super().__init__()
@@ -255,6 +257,59 @@ class DiagnosticLayerSettingsPage(QWidget):
         title_label.setFont(title_font)
         title_label.setStyleSheet("color: #2c3e50;")
         main_layout.addWidget(title_label)
+
+        # ECU目标设置组
+        ecu_group = self._create_group_box("ECU (Target)", "#e74c3c")
+
+        ecu_layout = QFormLayout()
+        ecu_layout.setSpacing(12)
+
+        # ECU Config File
+        file_layout = QHBoxLayout()
+        self.ecu_file_edit = QLineEdit()
+        self.ecu_file_edit.setReadOnly(True)
+        self.browse_ecu_btn = QPushButton("Browse")
+        self.browse_ecu_btn.setStyleSheet(self._get_button_style("#3498db", "#5dade2", "#2980b9"))
+        self.browse_ecu_btn.clicked.connect(self.browse_ecu_file)
+        file_layout.addWidget(self.ecu_file_edit)
+        file_layout.addWidget(self.browse_ecu_btn)
+        ecu_layout.addRow("ECU Config File:", file_layout)
+
+        # Target ECU
+        self.target_ecu_combo = QComboBox()
+        self.target_ecu_combo.currentIndexChanged.connect(self.on_target_ecu_changed)
+        ecu_layout.addRow("Target ECU:", self.target_ecu_combo)
+
+        hex_validator = QRegExpValidator(QRegExp("0x[0-9A-Fa-f]{1,4}"))
+
+        # 物理逻辑地址
+        phy_layout = QHBoxLayout()
+        self.physical_addr_edit = QLineEdit("0x004F")
+        self.physical_addr_edit.setMaximumWidth(150)
+        self.physical_addr_edit.setValidator(hex_validator)
+        self.phy_radio = QRadioButton("Use")
+        self.phy_radio.setChecked(True)
+        phy_layout.addWidget(self.physical_addr_edit)
+        phy_layout.addWidget(self.phy_radio)
+        ecu_layout.addRow("Logical address(physical):", phy_layout)
+
+        # 功能逻辑地址
+        fun_layout = QHBoxLayout()
+        self.functional_addr_edit = QLineEdit("0x07DF")
+        self.functional_addr_edit.setMaximumWidth(150)
+        self.functional_addr_edit.setValidator(hex_validator)
+        self.fun_radio = QRadioButton("Use")
+        fun_layout.addWidget(self.functional_addr_edit)
+        fun_layout.addWidget(self.fun_radio)
+        ecu_layout.addRow("Logical address(functional):", fun_layout)
+
+        self.addr_group = QButtonGroup(self)
+        self.addr_group.addButton(self.phy_radio, 1)
+        self.addr_group.addButton(self.fun_radio, 2)
+
+
+        ecu_group.setLayout(ecu_layout)
+        main_layout.addWidget(ecu_group)
 
         # S3时间参数组
         s3_group = self._create_group_box("S3 Timing Parameters", "#3498db")
@@ -362,11 +417,10 @@ class DiagnosticLayerSettingsPage(QWidget):
                 background-color: {bg_color};
                 color: white;
                 border: none;
-                padding: 8px 16px;
-                border-radius: 6px;
+                padding: 6px 12px;
+                border-radius: 4px;
                 font-weight: 600;
                 font-family: "Segoe UI", "Microsoft YaHei";
-                font-size: 9.5pt;
             }}
             QPushButton:hover {{
                 background-color: {hover_color};
@@ -387,18 +441,82 @@ class DiagnosticLayerSettingsPage(QWidget):
         if file_path:
             self.dll_path_edit.setText(file_path)
 
+    def browse_ecu_file(self):
+        """浏览ECU配置文件"""
+        file_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Select ECU Config",
+            "",
+            "JSON Files (*.json);;All Files (*.*)"
+        )
+        if file_path:
+            self.ecu_file_edit.setText(file_path)
+            self.ecu_file_changed_signal.emit(file_path)
+
+    def on_target_ecu_changed(self, index):
+        """ECU选择变更"""
+        data = self.target_ecu_combo.currentData()
+        if isinstance(data, dict):
+            # Assuming data contains 'physical_addr' and 'functional_addr'
+            # If not, fallback to what we have
+            if 'physical_addr' in data:
+                self.physical_addr_edit.setText(data['physical_addr'])
+            elif 'address' in data: # Fallback for simple format
+                self.physical_addr_edit.setText(data['address'])
+
+            if 'functional_addr' in data:
+                self.functional_addr_edit.setText(data['functional_addr'])
+        elif isinstance(data, str):
+             self.physical_addr_edit.setText(data)
+
+    def update_ecu_combo(self, ecu_data):
+        """更新ECU下拉框"""
+        self.target_ecu_combo.blockSignals(True)
+        self.target_ecu_combo.clear()
+
+        if isinstance(ecu_data, dict):
+            for name, info in ecu_data.items():
+                self.target_ecu_combo.addItem(name, info)
+        elif isinstance(ecu_data, list):
+             for item in ecu_data:
+                 if isinstance(item, dict) and "name" in item:
+                     self.target_ecu_combo.addItem(item["name"], item)
+
+        self.target_ecu_combo.blockSignals(False)
+
     def update_ui(self, settings):
         """更新界面显示"""
         self.s3_client_edit.setText(settings.get("s3_client_time", "3000"))
         self.s3_server_edit.setText(settings.get("s3_server_time", "5000"))
         self.dll_path_edit.setText(settings.get("dll_path", ""))
+        self.physical_addr_edit.setText(settings.get("physical_addr", "0x004F"))
+        self.functional_addr_edit.setText(settings.get("functional_addr", "0x07DF"))
+        self.ecu_file_edit.setText(settings.get("ecu_config_path", ""))
+
+        # Restore selected ECU if possible
+        target_ecu = settings.get("target_ecu_name")
+        if target_ecu:
+            index = self.target_ecu_combo.findText(target_ecu)
+            if index >= 0:
+                self.target_ecu_combo.setCurrentIndex(index)
+
+        selected_mode = settings.get("diag_addr_mode", 1) # 1=Phy, 2=Fun
+        if selected_mode == 2:
+            self.fun_radio.setChecked(True)
+        else:
+            self.phy_radio.setChecked(True)
 
     def save_settings(self):
         """保存设置"""
         settings = {
             "s3_client_time": self.s3_client_edit.text(),
             "s3_server_time": self.s3_server_edit.text(),
-            "dll_path": self.dll_path_edit.text()
+            "dll_path": self.dll_path_edit.text(),
+            "physical_addr": self.physical_addr_edit.text(),
+            "functional_addr": self.functional_addr_edit.text(),
+            "ecu_config_path": self.ecu_file_edit.text(),
+            "target_ecu_name": self.target_ecu_combo.currentText(),
+            "diag_addr_mode": self.addr_group.checkedId()
         }
         self.save_signal.emit(settings)
 
@@ -790,11 +908,10 @@ class SettingsWindow(QWidget):
                 background-color: {bg_color};
                 color: white;
                 border: none;
-                padding: 8px 16px;
-                border-radius: 6px;
+                padding: 6px 12px;
+                border-radius: 4px;
                 font-weight: 600;
                 font-family: "Segoe UI", "Microsoft YaHei";
-                font-size: 9.5pt;
             }}
             QPushButton:hover {{
                 background-color: {hover_color};

@@ -147,6 +147,10 @@ class DeviceService(QObject):
 
         # 从 AppConfig 获取 DoIP 配置
         doip_settings = self._config_service.doip_settings
+        diag_layer_settings = self._config_service.diag_layer_settings
+
+        # Use device IP
+        ip = device.get("ip") or ""
 
         # 协议版本转换: 0 -> 0x02 (DoIP V2), 1 -> 0x03 (DoIP V3/Other)
         # 注意：界面上 Index 0 是 V2, Index 1 是 V1(但用户要求传3)
@@ -158,7 +162,14 @@ class DeviceService(QObject):
 
         client_logical_address = int(doip_settings.get("logical_addr", "0x0E80"), 16)
         routing_type = int(doip_settings.get("routing_type", "0x00"), 16)
-        ecu_logical_address = int(doip_settings.get("physical_addr", "0x004F"), 16)
+
+        # Determine ECU logical address based on selected mode in DoIP settings
+        # 1 = Physical, 2 = Functional
+        target_addr_mode = doip_settings.get("target_addr_mode", 1)
+        if target_addr_mode == 2:
+            ecu_logical_address = int(doip_settings.get("target_fun_addr", "0x07DF"), 16)
+        else:
+            ecu_logical_address = int(doip_settings.get("target_phy_addr", "0x004F"), 16)
 
         # ECU 逻辑地址及本机逻辑地址可按需从 device 中扩展配置，这里使用 DoIPClientHandler 默认值
         self.log_signal.emit(f"正在通过DoIP连接设备 {ip}:{tcp_port}...")
@@ -171,9 +182,9 @@ class DeviceService(QObject):
             self._doip_handler = DoIPClientHandler()
 
         # 处理网卡选择
-        target_ip = doip_settings.get("network_interface_ip")
-        if target_ip:
-            self._doip_handler.select_network_interface(target_ip)
+        network_interface_ip = doip_settings.get("network_interface_ip")
+        if network_interface_ip:
+            self._doip_handler.select_network_interface(network_interface_ip)
         else:
             # Fallback to index logic if IP not found (e.g. old config)
             interface_index = int(doip_settings.get("network_interface", 0))

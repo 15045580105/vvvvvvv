@@ -6,8 +6,10 @@
 @Department：PTV_AT
 """
 import sys
+import json
+import os
 
-from PyQt5.QtWidgets import QApplication
+from PyQt5.QtWidgets import QApplication, QFileDialog, QMessageBox
 
 from app.core.base_controller import BaseController
 from app.modules.app_config.model.app_config_model import AppConfigModel
@@ -26,6 +28,7 @@ class AppConfigController(BaseController):
 
         self.view.diag_layer_page.save_signal.connect(self.save_diag_layer_settings)
         self.view.diag_layer_page.reset_signal.connect(self.reset_diag_layer_settings)
+        self.view.diag_layer_page.ecu_file_changed_signal.connect(self.on_ecu_file_changed)
 
         self.view.domain_update_page.save_signal.connect(self.save_domain_update_settings)
         self.view.domain_update_page.reset_signal.connect(self.reset_domain_update_settings)
@@ -39,6 +42,12 @@ class AppConfigController(BaseController):
     def on_model_changed(self):
         """Update view when model changes"""
         self.view.doip_page.update_ui(self.model.doip_settings)
+
+        # Load ECU config if path exists
+        ecu_config_path = self.model.diag_layer_settings.get("ecu_config_path")
+        if ecu_config_path and os.path.exists(ecu_config_path):
+            self.load_ecu_config(ecu_config_path)
+
         self.view.diag_layer_page.update_ui(self.model.diag_layer_settings)
         self.view.domain_update_page.update_ui(self.model.domain_update_settings)
         self.view.app_log_page.update_ui(self.model.app_log_settings)
@@ -53,19 +62,48 @@ class AppConfigController(BaseController):
         self.model.save_diag_layer_settings(settings)
 
     def reset_diag_layer_settings(self):
-        self.model.reset_diag_layer_defaults()
+        self.model.reset_diag_layer_settings()
 
     def save_domain_update_settings(self, settings):
         self.model.save_domain_update_settings(settings)
 
     def reset_domain_update_settings(self):
-        self.model.reset_domain_update_defaults()
+        self.model.reset_domain_update_settings()
 
     def save_app_log_settings(self, settings):
         self.model.save_app_log_settings(settings)
 
     def reset_app_log_settings(self):
-        self.model.reset_app_log_defaults()
+        self.model.reset_app_log_settings()
+
+    def on_ecu_file_changed(self, file_path):
+        if file_path and os.path.exists(file_path):
+            self.load_ecu_config(file_path)
+            # Save path to settings
+            settings = self.model.diag_layer_settings
+            settings["ecu_config_path"] = file_path
+            self.model.save_diag_layer_settings(settings)
+
+    def load_ecu_config(self, file_path):
+        try:
+            with open(file_path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+                # Validate data format if needed, assuming dict {name: address} or list
+                ecu_map = {}
+                if isinstance(data, dict):
+                    ecu_map = data
+                elif isinstance(data, list):
+                    for item in data:
+                        if isinstance(item, dict) and "name" in item:
+                            # Store full item if possible, or just address
+                            # The view expects dict {name: info} or list of dicts
+                            # Let's pass the raw data or processed map
+                            # If item has 'address', use it. If it has 'physical_addr', use it.
+                            ecu_map[item["name"]] = item
+
+                self.view.diag_layer_page.update_ecu_combo(ecu_map)
+        except Exception as e:
+            QMessageBox.warning(self.view, "Error", f"Failed to load ECU config: {e}")
 
 def main():
     app = QApplication(sys.argv)

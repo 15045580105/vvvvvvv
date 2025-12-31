@@ -33,14 +33,15 @@ class AppConfigurationService(BaseService):
                 "routing_request": True,
                 "network_interface": 0,
                 "tcp_use_any": False,
-                "udp_broadcast": False,
-                "physical_addr": "0x004F",
-                "functional_addr": "0x07DF"
+                "udp_broadcast": False
             },
             "diag_layer": {
                 "s3_client_time": "3000",
                 "s3_server_time": "5000",
-                "dll_path": ""
+                "dll_path": "",
+                "physical_addr": "0x004F",
+                "functional_addr": "0x07DF",
+                "ecu_config_path": ""
             },
             "domain_update": {
                 "success_delay": "20",
