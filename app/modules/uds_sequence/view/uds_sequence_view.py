@@ -1,4 +1,6 @@
-from PyQt5 import QtWidgets, QtCore
+import json
+from datetime import datetime
+from PyQt5 import QtWidgets, QtCore, QtGui
 from PyQt5.QtCore import Qt, pyqtSignal
 from PyQt5.QtGui import QStandardItemModel, QStandardItem
 
@@ -319,7 +321,7 @@ class UDSSequenceView(QtWidgets.QWidget):
 
         main_splitter.addWidget(log_group)
 
-        main_splitter.setStretchFactor(0, 3)
+        main_splitter.setStretchFactor(0, 2)
         main_splitter.setStretchFactor(1, 1)
 
         layout.addWidget(main_splitter)
@@ -862,7 +864,8 @@ class UDSSequenceView(QtWidgets.QWidget):
         return self.response_edit.toPlainText().strip()
 
     def log_message(self, message: str):
-        self.exec_log.append(message)
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")
+        self.exec_log.append(f"[{timestamp}] {message}")
 
     # --- Internal slots to emit signals ---
     def _on_send_clicked_internal(self):

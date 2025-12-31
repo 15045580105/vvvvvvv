@@ -1,17 +1,31 @@
 import os
+import sys
+import struct
 import subprocess
 import winreg
+import tempfile
 from typing import Optional, Tuple
 
 class SecurityAccessHelper:
     @staticmethod
-    def calculate_key(level: int, seed: bytes, dll_path: str = r"D:\GAC客户提供\GAC_CCU_SA.dll") -> Tuple[Optional[bytes], str]:
+    def calculate_key(level: int, seed: bytes, dll_path: str = None) -> Tuple[Optional[bytes], str]:
         """
         使用 32 位 Python 子进程调用 DLL 计算安全密钥。
         Returns:
             (key_bytes, error_message)
         """
-        shim_script = os.path.join(os.path.dirname(__file__), "security_access_shim.py")
+        if not dll_path:
+            try:
+                from app.services.configuration.config_service import AppConfigurationService
+                config_service = AppConfigurationService()
+                dll_path = config_service.diag_layer_settings.get("dll_path", "")
+            except Exception:
+                pass
+
+        if not dll_path:
+            return None, "错误: 未配置 DLL 路径"
+
+        shim_script = SecurityAccessHelper._create_shim_script()
 
         # 尝试寻找 32 位 Python
         python_32bit = SecurityAccessHelper._find_32bit_python()
@@ -63,7 +77,42 @@ class SecurityAccessHelper:
     def _find_32bit_python() -> Optional[str]:
         """尝试查找系统中安装的 32 位 Python 解释器路径。"""
 
-        # 1. 尝试通过 py launcher 查找 (py -0 --list)
+        # 0. 检查当前进程是否为 32 位
+        if struct.calcsize("P") * 8 == 32:
+            return sys.executable
+
+        # 1. 优先查找打包环境或当前目录下附带的 32 位 Python 环境
+        search_roots = []
+        if getattr(sys, 'frozen', False):
+            search_roots.append(os.path.dirname(sys.executable))
+            if hasattr(sys, '_MEIPASS'):
+                search_roots.append(sys._MEIPASS)
+        else:
+            search_roots.append(os.getcwd())
+            try:
+                search_roots.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../..")))
+            except Exception:
+                pass
+
+        for root in search_roots:
+            # 检查常见路径
+            for rel in ["python32/python.exe", "runtime32/python.exe", "tools/python32/python.exe"]:
+                p = os.path.join(root, rel)
+                if os.path.exists(p):
+                    return p
+            # 扫描包含 python 和 32 的文件夹
+            try:
+                if os.path.exists(root):
+                    for item in os.listdir(root):
+                        full_path = os.path.join(root, item)
+                        if os.path.isdir(full_path) and "python" in item.lower() and "32" in item.lower():
+                            p = os.path.join(full_path, "python.exe")
+                            if os.path.exists(p):
+                                return p
+            except Exception:
+                pass
+
+        # 2. 尝试通过 py launcher 查找 (py -0 --list)
         try:
             result = subprocess.run(["py", "-0", "--list"], capture_output=True, text=True)
             if result.returncode == 0:
@@ -129,3 +178,145 @@ class SecurityAccessHelper:
 
         return None
 
+    @staticmethod
+    def _create_shim_script() -> str:
+        """
+        在临时目录创建 shim 脚本文件，并返回其路径。
+        用于解决打包后找不到原始 .py 文件的问题。
+        """
+        content = SecurityAccessHelper._get_shim_script_content()
+        tmp_dir = tempfile.gettempdir()
+        shim_path = os.path.join(tmp_dir, "vcc_security_access_shim.py")
+
+        try:
+            with open(shim_path, "w", encoding="utf-8", newline="\n") as f:
+                f.write(content)
+        except Exception:
+            # 如果写入失败（例如权限问题），尝试用随机文件名
+            fd, shim_path = tempfile.mkstemp(suffix=".py", prefix="vcc_shim_", text=True)
+            with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as f:
+                f.write(content)
+
+        return shim_path
+
+    @staticmethod
+    def _get_shim_script_content() -> str:
+        return r"""
+import sys
+import ctypes
+import os
+
+def main():
+    if len(sys.argv) < 4:
+        print(f"Usage: {sys.argv[0]} <dll_path> <level> <seed_hex> [variant]", file=sys.stderr)
+        sys.exit(1)
+
+    dll_path = sys.argv[1]
+    try:
+        level = int(sys.argv[2])
+    except ValueError:
+        print("Error: Level must be an integer", file=sys.stderr)
+        sys.exit(1)
+
+    seed_hex = sys.argv[3].replace(" ", "")
+    variant = sys.argv[4] if len(sys.argv) > 4 else ""
+
+    if not os.path.exists(dll_path):
+        print(f"错误: DLL 未找到: {dll_path}")
+        sys.exit(1)
+
+    libs = []
+    try:
+        libs.append(("CDLL", ctypes.CDLL(dll_path)))
+    except Exception as e:
+        pass
+
+    try:
+        libs.append(("WinDLL", ctypes.WinDLL(dll_path)))
+    except Exception as e:
+        pass
+
+    if not libs:
+        print("Error: Could not load DLL with CDLL or WinDLL", file=sys.stderr)
+        sys.exit(1)
+
+    func = None
+    func_name = ""
+    loaded_lib_type = ""
+
+    candidates = ["GenerateKeyEx", "VbtSecurityAccess_GenerateKey", "GenerateKeyExOpt", "GenerateKey"]
+
+    for lib_type, lib in libs:
+        for name in candidates:
+            if hasattr(lib, name):
+                func = getattr(lib, name)
+                func_name = name
+                loaded_lib_type = lib_type
+                break
+        if func:
+            break
+
+    if not func:
+        print(f"错误: 在 DLL 中未找到密钥生成函数。已尝试: {candidates}")
+        sys.exit(1)
+
+    try:
+        seed_bytes = bytes.fromhex(seed_hex)
+    except ValueError:
+        print("错误: 无效的种子十六进制字符串")
+        sys.exit(1)
+
+    seed_len = len(seed_bytes)
+    seed_array = (ctypes.c_ubyte * seed_len)(*seed_bytes)
+
+    max_key_len = 32
+    key_array = (ctypes.c_ubyte * max_key_len)()
+    actual_key_len = ctypes.c_uint(0)
+
+    variant_bytes = variant.encode('ascii')
+
+    func.argtypes = [
+        ctypes.POINTER(ctypes.c_ubyte),
+        ctypes.c_uint,
+        ctypes.c_uint,
+        ctypes.c_char_p,
+        ctypes.POINTER(ctypes.c_ubyte),
+        ctypes.c_uint,
+        ctypes.POINTER(ctypes.c_uint)
+    ]
+    func.restype = ctypes.c_uint
+
+    try:
+        ret = func(
+            seed_array,
+            seed_len,
+            level,
+            variant_bytes,
+            key_array,
+            max_key_len,
+            ctypes.byref(actual_key_len)
+        )
+
+        key_len = actual_key_len.value
+        if key_len == 0:
+             if ret != 0:
+                 print(f"错误: DLL 函数返回 {ret} 且密钥长度为 0")
+                 sys.exit(1)
+             else:
+                 pass
+
+        if key_len > max_key_len:
+             print(f"错误: 密钥长度 {key_len} 超过缓冲区")
+             sys.exit(1)
+
+        key_bytes = bytes(key_array[:key_len])
+        print(f"KEY:{key_bytes.hex().upper()}")
+        sys.exit(0)
+
+    except Exception as e:
+        print(f"错误: 执行函数异常: {e}")
+        sys.exit(1)
+
+if __name__ == "__main__":
+    main()
+"""

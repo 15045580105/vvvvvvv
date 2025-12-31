@@ -269,54 +269,18 @@ class DIDView(BaseView):
 
         main_layout.addLayout(ctl)
 
-        # ECU 初始化面板容器 (初始隐藏)
-        self.ecu_panel = QtWidgets.QWidget()
-        self.ecu_panel.setVisible(False)
-        # 设置初始高度为0，用于动画
-        self.ecu_panel.setFixedHeight(0)
+        # Splitter for resizable log window
+        self.splitter = QtWidgets.QSplitter(Qt.Vertical)
+        main_layout.addWidget(self.splitter)
 
-        ecu_layout = QtWidgets.QVBoxLayout(self.ecu_panel)
-        ecu_layout.setContentsMargins(0, 0, 0, 0)
-        ecu_layout.setSpacing(0)
+        # 使用 QStackedWidget 来切换 DID 表格和 ECU 初始化界面
+        self.stack = QtWidgets.QStackedWidget()
+        self.splitter.addWidget(self.stack)
 
-        # ECU View
-        self.ecu_init_view = ECUInitView()
-        # 给 ECU View 一个最小高度，确保内容不被压缩太厉害
-        self.ecu_init_view.setMinimumHeight(200)
-        ecu_layout.addWidget(self.ecu_init_view)
-
-        # 收起按钮栏
-        collapse_bar = QtWidgets.QWidget()
-        collapse_bar.setFixedHeight(20)
-        collapse_bar.setStyleSheet("background-color: #f0f0f0; border-top: 1px solid #dcdcdc; border-bottom: 1px solid #dcdcdc;")
-        collapse_layout = QtWidgets.QHBoxLayout(collapse_bar)
-        collapse_layout.setContentsMargins(0, 0, 0, 0)
-        collapse_layout.setSpacing(0)
-
-        self.collapse_btn = QtWidgets.QPushButton("▲")
-        self.collapse_btn.setFixedSize(40, 20)
-        self.collapse_btn.setCursor(Qt.PointingHandCursor)
-        self.collapse_btn.setStyleSheet("""
-            QPushButton {
-                border: none;
-                background-color: transparent;
-                color: #666;
-                font-weight: bold;
-            }
-            QPushButton:hover {
-                background-color: #e0e0e0;
-                color: #333;
-            }
-        """)
-        self.collapse_btn.clicked.connect(self.toggle_ecu_init_panel)
-        collapse_layout.addWidget(self.collapse_btn)
-
-        ecu_layout.addWidget(collapse_bar)
-
-        main_layout.addWidget(self.ecu_panel)
-
-        # 中间区域：DID 表格
-        table_container = QtWidgets.QVBoxLayout()
+        # --- 页面 1: DID 表格 ---
+        table_widget = QtWidgets.QWidget()
+        table_container = QtWidgets.QVBoxLayout(table_widget)
+        table_container.setContentsMargins(0, 0, 0, 0)
         table_container.setSpacing(4)
 
         # DID 表格
@@ -377,12 +341,11 @@ class DIDView(BaseView):
         )
 
         table_container.addWidget(self.table)
+        self.stack.addWidget(table_widget) # Index 0
 
-        # 提高中部区域的最小高度，避免按钮和表格被压扁
-        table_widget = QtWidgets.QWidget()
-        table_widget.setLayout(table_container)
-        table_widget.setMinimumHeight(260)
-        main_layout.addWidget(table_widget, 2)  # 上部约 2/3
+        # --- 页面 2: ECU 初始化界面 ---
+        self.ecu_init_view = ECUInitView()
+        self.stack.addWidget(self.ecu_init_view) # Index 1
 
         # 底部区域：仅保留请求/响应原始数据，占 1/3
         raw_group = QtWidgets.QGroupBox("请求/响应原始数据")
@@ -393,7 +356,10 @@ class DIDView(BaseView):
         self.raw_text.setFont(font)
         self.raw_text.setReadOnly(True)
         raw_layout.addWidget(self.raw_text)
-        main_layout.addWidget(raw_group, 1)
+
+        self.splitter.addWidget(raw_group)
+        self.splitter.setStretchFactor(0, 3)
+        self.splitter.setStretchFactor(1, 1)
 
         # 信号转发（仅界面层）
         self.dpt_import_btn.clicked.connect(self.dpt_import_requested.emit)
@@ -414,32 +380,17 @@ class DIDView(BaseView):
         QtCore.QTimer.singleShot(0, lambda: self._apply_column_widths(force=True))
 
     def toggle_ecu_init_panel(self):
-        """切换 ECU 初始化面板的显示/隐藏状态（带动画）。"""
-        if self.ecu_panel.isVisible():
-            # 收起动画
-            self.animation = QtCore.QPropertyAnimation(self.ecu_panel, b"maximumHeight")
-            self.animation.setDuration(300)
-            self.animation.setStartValue(self.ecu_panel.height())
-            self.animation.setEndValue(0)
-            self.animation.setEasingCurve(QtCore.QEasingCurve.InOutQuad)
-            self.animation.finished.connect(lambda: self.ecu_panel.setVisible(False))
-            self.animation.start()
+        """切换 ECU 初始化面板的显示/隐藏状态（切换 Stack 页面）。"""
+        if self.stack.currentIndex() == 0:
+            self.stack.setCurrentIndex(1)
+            self.ecu_init_btn.setText("返回DID列表")
+            self.ecu_init_btn.color = QtGui.QColor("#6B7280") # Gray for back
+            self.ecu_init_btn.update_style()
         else:
-            # 展开动画
-            self.ecu_panel.setVisible(True)
-            # 移除之前的最大高度限制以允许测量
-            self.ecu_panel.setMaximumHeight(16777215) # QWIDGETSIZE_MAX
-            # 计算建议高度 (或者使用固定高度)
-            target_height = 300 # 或者 self.ecu_init_view.sizeHint().height() + 30
-
-            self.animation = QtCore.QPropertyAnimation(self.ecu_panel, b"maximumHeight")
-            self.animation.setDuration(300)
-            self.animation.setStartValue(0)
-            self.animation.setEndValue(target_height)
-            self.animation.setEasingCurve(QtCore.QEasingCurve.InOutQuad)
-            # 动画结束后，固定高度或保持最大高度
-            self.animation.finished.connect(lambda: self.ecu_panel.setFixedHeight(target_height))
-            self.animation.start()
+            self.stack.setCurrentIndex(0)
+            self.ecu_init_btn.setText("ECU初始化")
+            self.ecu_init_btn.color = QtGui.QColor("#8B5CF6") # Original purple
+            self.ecu_init_btn.update_style()
 
     def resizeEvent(self, event):
         super().resizeEvent(event)

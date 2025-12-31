@@ -40,7 +40,7 @@ class AppConfigurationService(BaseService):
             "diag_layer": {
                 "s3_client_time": "3000",
                 "s3_server_time": "5000",
-                "dll_path": "D:/GAC客户提供/GAC_CCU_SA.dll"
+                "dll_path": ""
             },
             "domain_update": {
                 "success_delay": "20",

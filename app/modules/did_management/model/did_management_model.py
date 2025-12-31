@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 from typing import List, Optional
+from datetime import datetime
 
 from app.core.base_model import BaseModel
 
@@ -70,7 +71,8 @@ class DIDModel(BaseModel):
     def _append_raw_line(self, prefix: str, payload: Optional[str]) -> None:
         """向原始日志追加一行并更新 raw_data。"""
         text = payload.strip() if isinstance(payload, str) else payload
-        self.raw_log.append(f"{prefix}: {text or '-'}")
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")
+        self.raw_log.append(f"[{timestamp}] {prefix}: {text or '-'}")
         self.raw_data = "\n".join(self.raw_log)
 
     def apply_update(

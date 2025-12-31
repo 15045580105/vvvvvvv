@@ -296,7 +296,7 @@ class DiagnosticLayerSettingsPage(QWidget):
         # Seed & Key DLL路径
         dll_path_layout = QHBoxLayout()
 
-        self.dll_path_edit = QLineEdit("D:/GAC客户提供/GAC_CCU_SA.dll")
+        self.dll_path_edit = QLineEdit("")
         self.dll_path_edit.setReadOnly(True)
         self.dll_path_edit.setMinimumWidth(300)
         dll_path_layout.addWidget(self.dll_path_edit)
@@ -391,7 +391,7 @@ class DiagnosticLayerSettingsPage(QWidget):
         """更新界面显示"""
         self.s3_client_edit.setText(settings.get("s3_client_time", "3000"))
         self.s3_server_edit.setText(settings.get("s3_server_time", "5000"))
-        self.dll_path_edit.setText(settings.get("dll_path", "D:/GAC客户提供/GAC_CCU_SA.dll"))
+        self.dll_path_edit.setText(settings.get("dll_path", ""))
 
     def save_settings(self):
         """保存设置"""
