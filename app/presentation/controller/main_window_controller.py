@@ -10,7 +10,6 @@ from app.presentation.model.main_window_model import MainModel
 from app.presentation.views.main_window_view import MainView
 from app.services.system.performance_status_service import PerformanceStatusService
 from app.modules.device_management.models.device_model import DeviceModel
-from app.modules.device_management.controller.device_management_controller import DeviceController
 
 logger = logging.getLogger(__name__)
 
@@ -24,8 +23,11 @@ class MainController(BaseController):
         self.model: MainModel = MainModel()
         self.view: MainView = MainView()
         super().__init__(self.model, self.view)
-        self._page_text_to_key = PAGE_TEXT_TO_KEY
+        self._page_text_to_key = dict(PAGE_TEXT_TO_KEY)
+        for reg_name, tab_name, _ in TAB_PAGES:
+            self._page_text_to_key[tab_name] = reg_name
         self._dialog_keys = {name for name, *_ in DIALOG_PAGES}
+        self._controller_factory = {}
         self._search_timer: Optional[QtCore.QTimer] = None
         self._pending_search_text: str = ""
         self._search_result_shown: bool = False
@@ -44,6 +46,18 @@ class MainController(BaseController):
         self.view.workspace.tabCloseRequested.connect(self.close_tab)
         self._build_pages()
 
+        # Connect welcome widget signal
+        self.view.welcome_widget.action_clicked.connect(self.on_welcome_action_clicked)
+
+        # Ensure welcome page is shown initially
+        self.view.central_stack.setCurrentIndex(0)
+
+    def on_welcome_action_clicked(self, display_text: str) -> None:
+        # Simulate nav item click
+        fake_item = QtWidgets.QTreeWidgetItem([display_text])
+        fake_item.setData(0, Qt.UserRole, "function")
+        self.on_nav_item_clicked(fake_item, 0)
+
     # ----------------- 搜索相关初始化 -----------------
     def _init_search(self) -> None:
         self.view.search_edit.textChanged.connect(self.on_search_text_changed)
@@ -54,14 +68,16 @@ class MainController(BaseController):
         self._search_timer.setSingleShot(True)
         self._search_timer.setInterval(self.SEARCH_DEBOUNCE_MS)
         self._search_timer.timeout.connect(self._do_search)
-        QtWidgets.QApplication.instance().focusChanged.connect(self.on_focus_changed)
+        app = QtWidgets.QApplication.instance()
+        if app:
+            app.focusChanged.connect(self.on_focus_changed)
 
     # ----------------- 导航相关初始化 -----------------
     def _init_navigation(self) -> None:
         self._build_navigation()
         self.view.nav_tree.itemClicked.connect(self.on_nav_item_clicked)
         # 统一接收页面切换信号（例如设备管理发出的switch_page）
-        device_ctrl = self.model.get(PageConfig.PAGE_DEVICE)
+        device_ctrl = self._get_or_create_controller(PageConfig.PAGE_DEVICE)
         if device_ctrl is not None and hasattr(device_ctrl, 'switch_page'):
             device_ctrl.switch_page.connect(self.handle_switch_page_request)
 
@@ -75,10 +91,11 @@ class MainController(BaseController):
         idx = self._find_tab_index_by_text(target_tab)
         if idx is not None:
             self.view.workspace.setCurrentIndex(idx)
+            self.view.central_stack.setCurrentIndex(1)
         else:
             # 2. 若不存在，则根据显示文本反查注册key，再通过TAB_PAGES拿到controller，新建tab
             page_key = self._page_text_to_key.get(target_tab)
-            controller = self.model.get(page_key) if page_key else None
+            controller = self._get_or_create_controller(page_key) if page_key else None
             if controller and hasattr(controller, 'get_view'):
                 self._open_tab_for_controller(controller, target_tab)
             # 再次获取 index
@@ -87,12 +104,12 @@ class MainController(BaseController):
                 return
         # 3. 将payload透传给对应controller（如果其实现了 handle_switch_payload 接口）
         page_key = self._page_text_to_key.get(target_tab)
-        controller = self.model.get(page_key) if page_key else None
+        controller = self._get_or_create_controller(page_key) if page_key else None
         if controller and hasattr(controller, 'handle_switch_payload'):
             controller.handle_switch_payload(payload)
 
     def _init_device_metrics_source(self) -> None:
-        controller = self.model.get(PageConfig.PAGE_DEVICE)
+        controller = self._get_or_create_controller(PageConfig.PAGE_DEVICE)
         device_model = getattr(controller, "model", None)
         if isinstance(device_model, DeviceModel):
             self._performance_service.set_device_model(device_model)
@@ -107,26 +124,50 @@ class MainController(BaseController):
 
     # ----------------- 页面与Tab构建 -----------------
     def _build_pages(self) -> None:
+        # 仅注册工厂，不实例化，实现懒加载
         for reg_name, tab_name, ctrl_cls in TAB_PAGES:
-            ctrl = self._safe_instantiate(ctrl_cls)
-            if ctrl is not None:
-                self.model.register(reg_name, ctrl)
-                try:
-                    view_widget = getattr(ctrl, 'get_view', None)
-                    if callable(view_widget):
-                        self.view.workspace.addTab(view_widget(), tab_name)
-                except Exception:
-                    logger.exception(f"Add tab failed: {reg_name}")
+            self._controller_factory[reg_name] = ctrl_cls
+
         for reg_name, ctrl_cls in DIALOG_PAGES:
-            ctrl = self._safe_instantiate(ctrl_cls)
-            if ctrl is not None:
-                self.model.register(reg_name, ctrl)
+            self._controller_factory[reg_name] = ctrl_cls
+
+    def _get_or_create_controller(self, reg_key: str) -> Optional[object]:
+        # 1. Check if already exists
+        ctrl = self.model.get(reg_key)
+        if ctrl:
+            return ctrl
+
+        # 2. Find class
+        ctrl_cls = self._controller_factory.get(reg_key)
+        if not ctrl_cls:
+            return None
+
+        # 3. Instantiate
+        ctrl = self._safe_instantiate(ctrl_cls)
+        if ctrl:
+            self.model.register(reg_key, ctrl)
+            # Ensure view is hidden initially if it's a QWidget and not added to tab yet
+            if hasattr(ctrl, 'view') and isinstance(ctrl.view, QtWidgets.QWidget):
+                ctrl.view.hide()
+
+        return ctrl
 
     def _safe_instantiate(self, ctrl_cls: Type) -> Optional[object]:
         try:
             # 尝试注入 DeviceService，如果目标 Controller 支持接收 device_service 参数
             # 1. 先获取全局唯一的 DeviceController 实例（它持有 DeviceService）
             device_ctrl = self.model.get(PageConfig.PAGE_DEVICE)
+
+            # 如果当前不是在创建 DeviceController，且 DeviceController 还没创建，尝试创建它
+            device_cls = self._controller_factory.get(PageConfig.PAGE_DEVICE)
+            if not device_ctrl and device_cls and ctrl_cls != device_cls:
+                 # Recursively create DeviceController
+                 device_ctrl = self._safe_instantiate(device_cls)
+                 if device_ctrl:
+                     self.model.register(PageConfig.PAGE_DEVICE, device_ctrl)
+                     if hasattr(device_ctrl, 'view') and isinstance(device_ctrl.view, QtWidgets.QWidget):
+                         device_ctrl.view.hide()
+
             device_service = None
             if device_ctrl and hasattr(device_ctrl, 'device_service'):
                 device_service = device_ctrl.device_service
@@ -173,7 +214,7 @@ class MainController(BaseController):
             return
         display_text = item.text(0)
         reg_key = self._page_text_to_key.get(display_text)
-        controller = self.model.get(reg_key) if reg_key else None
+        controller = self._get_or_create_controller(reg_key) if reg_key else None
         if reg_key in self._dialog_keys and controller is not None:
             try:
                 controller.show_dialog()
@@ -183,6 +224,7 @@ class MainController(BaseController):
         idx = self._find_tab_index_by_text(display_text)
         if idx is not None:
             self.view.workspace.setCurrentIndex(idx)
+            self.view.central_stack.setCurrentIndex(1)
             return
         if controller and hasattr(controller, "get_view"):
             self._open_tab_for_controller(controller, display_text)
@@ -199,13 +241,16 @@ class MainController(BaseController):
             if callable(view_widget):
                 self.view.workspace.addTab(view_widget(), display_text)
                 self.view.workspace.setCurrentIndex(self.view.workspace.count() - 1)
+                # Switch to workspace view
+                self.view.central_stack.setCurrentIndex(1)
         except Exception:
             logger.exception(f"Open tab failed: {display_text}")
 
     # ----------------- Tab管理 -----------------
     def close_tab(self, index: int) -> None:
-        if self.view.workspace.count() > 1:
-            self.view.workspace.removeTab(index)
+        self.view.workspace.removeTab(index)
+        if self.view.workspace.count() == 0:
+            self.view.central_stack.setCurrentIndex(0)
 
     # ----------------- 搜索逻辑 -----------------
     def on_search_text_changed(self, text: str) -> None:

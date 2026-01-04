@@ -1,4 +1,5 @@
 import sys
+
 from PyQt5 import QtGui, QtWidgets
 from PyQt5.QtCore import Qt, QSize, QPointF, QPropertyAnimation, QEasingCurve, QRectF, QPoint, pyqtSignal
 from PyQt5.QtGui import QPainter, QPen, QBrush, QColor, QFont, QFontMetrics
@@ -7,6 +8,7 @@ from PyQt5.QtWidgets import (
     QGraphicsItem, QHBoxLayout, QPushButton, QLabel, QFrame, QScrollArea,
     QGridLayout, QFormLayout
 )
+
 from app.modules.device_topology.view.network_status import NetworkStatusPanel
 
 
@@ -29,7 +31,7 @@ class TopologyNode:
         self.connection_note = connection_note
         self.status = "online"  # 默认在线
         self.position = QPoint(0, 0)  # 节点位置
-        self.size = QSize(140, 70)  # 节点大小
+        self.size = QSize(160, 80)  # 节点大小
 
     @property
     def color(self):
@@ -88,7 +90,7 @@ class NodeGraphicsItem(QGraphicsItem):
 
         # 绘制文字
         painter.setPen(Qt.white)
-        name_font = QFont("Segoe UI", 10, QFont.Bold)
+        name_font = QFont("Segoe UI", 12, QFont.Bold)
         painter.setFont(name_font)
 
         # 节点名称可能有多行，居中绘制
@@ -96,7 +98,7 @@ class NodeGraphicsItem(QGraphicsItem):
         painter.drawText(text_rect, Qt.AlignCenter | Qt.TextWordWrap, self.node.node_name)
 
         if not self.is_main:
-            status_font = QFont("Segoe UI", 8)
+            status_font = QFont("Segoe UI", 9)
             painter.setFont(status_font)
             status_rect = QRectF(rect.left(), rect.bottom() - 22, rect.width(), 20)
 
@@ -127,7 +129,7 @@ class ConnectionLabelItem(QGraphicsItem):
     def __init__(self, text, center_point):
         super().__init__()
         self.text = text
-        self.font = QFont("Segoe UI", 8)
+        self.font = QFont("Segoe UI", 9)
         metrics = QFontMetrics(self.font)
         width = max(80, metrics.horizontalAdvance(self.text) + 16)
         height = metrics.height() + 8
@@ -168,11 +170,11 @@ class TopologyWidget(QGraphicsView):
         self.node_items = {}
         self.connection_items = []
 
-        self.node_spacing = 180
-        self.vertical_gap = 250
-        self.padding = 100
-        self.top_margin = 180
-        self.bottom_margin = 350
+        self.node_spacing = 220
+        self.vertical_gap = 120
+        self.padding = 50
+        self.top_margin = 100
+        self.bottom_margin = 150
 
         self._current_scale = 1.0
         self._min_scale = 0.3
@@ -469,7 +471,8 @@ class TopologyWidget(QGraphicsView):
         """调整工具栏大小和位置"""
         super().resizeEvent(event)
         # 工具栏宽度比视图小20px（左右各10px边距）
-        self.toolbar.setGeometry(10, 10, self.viewport().width() - 20, 46)
+        if hasattr(self, 'toolbar'):
+            self.toolbar.setGeometry(10, 10, self.viewport().width() - 20, 46)
 
     def init_nodes(self, node_data):
         self.scene.clear()
@@ -491,8 +494,7 @@ class TopologyWidget(QGraphicsView):
             self.main_node = TopologyNode(0, name, "")
             self.main_node.status = status
         else:
-            # 回退旧格式或默认
-            self.main_node = TopologyNode(0, "主交换���\nMAIN SWITCH", "")
+            self.main_node = TopologyNode(0, "主交换机\nMAIN SWITCH", "")
 
         self.main_node_item = NodeGraphicsItem(self.main_node, is_main=True)
         self.scene.addItem(self.main_node_item)
@@ -524,7 +526,7 @@ class TopologyWidget(QGraphicsView):
             self.node_items[node_id] = item
             self.scene.addItem(item)
 
-        # 关键：初始化节点后���须重新布局
+        # 关键：初始化节点后必须重新布局
         self.layout_nodes()
 
     def layout_nodes(self):
@@ -536,7 +538,8 @@ class TopologyWidget(QGraphicsView):
         self.main_node_item.set_size(main_size)
 
         center_x = 0.0
-        main_node_y = self.top_margin + main_size.height() / 2 + 60  # 为工具栏留空间
+        # 主节点垂直居中，让场景矩形自适应
+        main_node_y = 0
         self.main_node_item.setPos(center_x, main_node_y)
 
         child_count = len(self.child_nodes)
@@ -544,29 +547,69 @@ class TopologyWidget(QGraphicsView):
             self._update_scene_rect()
             return
 
+        # 逻辑优化：超过10个节点才分两排
+        if child_count >= 10:
+            top_count = child_count // 2
+            bottom_count = child_count - top_count
+        else:
+            top_count = 0
+            bottom_count = child_count
+
+        top_nodes = self.child_nodes[:top_count]
+        bottom_nodes = self.child_nodes[top_count:]
+
         child_width = self.child_nodes[0].size.width()
-        total_child_width = (child_count - 1) * self.node_spacing + child_width
-        start_x = center_x - total_child_width / 2 + child_width / 2
-        child_y = main_node_y + self.vertical_gap
 
         main_left = center_x - main_size.width() / 2
         main_right = center_x + main_size.width() / 2
+        main_top_y = main_node_y - main_size.height() / 2
         main_bottom_y = main_node_y + main_size.height() / 2
 
-        for index, node in enumerate(self.child_nodes):
-            child_center_x = start_x + index * self.node_spacing
-            if child_center_x < main_left + self.padding:
-                connection_x = main_left + self.padding
-            elif child_center_x > main_right - self.padding:
-                connection_x = main_right - self.padding
-            else:
-                connection_x = child_center_x
+        # 布局上方节点
+        if top_count > 0:
+            total_top_width = (top_count - 1) * self.node_spacing + child_width
+            start_x_top = center_x - total_top_width / 2 + child_width / 2
+            top_y = main_node_y - self.vertical_gap
 
-            item = self.node_items[node.node_id]
-            item.setPos(child_center_x, child_y)
+            for index, node in enumerate(top_nodes):
+                child_center_x = start_x_top + index * self.node_spacing
 
-            node_top_y = child_y - node.size.height() / 2
-            self._add_connection(connection_x, main_bottom_y, node_top_y, node.connection_note)
+                # 计算连接点X坐标
+                if child_center_x < main_left + self.padding:
+                    connection_x = main_left + self.padding
+                elif child_center_x > main_right - self.padding:
+                    connection_x = main_right - self.padding
+                else:
+                    connection_x = child_center_x
+
+                item = self.node_items[node.node_id]
+                item.setPos(child_center_x, top_y)
+
+                node_bottom_y = top_y + node.size.height() / 2
+                self._add_connection(connection_x, main_top_y, node_bottom_y, node.connection_note)
+
+        # 布局下方节点
+        if bottom_count > 0:
+            total_bottom_width = (bottom_count - 1) * self.node_spacing + child_width
+            start_x_bottom = center_x - total_bottom_width / 2 + child_width / 2
+            bottom_y = main_node_y + self.vertical_gap
+
+            for index, node in enumerate(bottom_nodes):
+                child_center_x = start_x_bottom + index * self.node_spacing
+
+                # 计算连接点X坐标
+                if child_center_x < main_left + self.padding:
+                    connection_x = main_left + self.padding
+                elif child_center_x > main_right - self.padding:
+                    connection_x = main_right - self.padding
+                else:
+                    connection_x = child_center_x
+
+                item = self.node_items[node.node_id]
+                item.setPos(child_center_x, bottom_y)
+
+                node_top_y = bottom_y - node.size.height() / 2
+                self._add_connection(connection_x, main_bottom_y, node_top_y, node.connection_note)
 
         self._update_scene_rect()
         self.centerOn(self.main_node_item)
@@ -605,7 +648,17 @@ class TopologyWidget(QGraphicsView):
         if child_count == 0:
             return QSize(500, 80)
 
-        total_child_width = (child_count - 1) * self.node_spacing + self.child_nodes[0].size.width()
+        # 逻辑优化：超过10个节点才分两排
+        if child_count >= 10:
+            top_count = child_count // 2
+            bottom_count = child_count - top_count
+        else:
+            top_count = 0
+            bottom_count = child_count
+
+        max_row_count = max(top_count, bottom_count)
+
+        total_child_width = (max_row_count - 1) * self.node_spacing + self.child_nodes[0].size.width()
         main_width = total_child_width + 2 * self.padding
         min_width = 600
         main_width = max(main_width, min_width)
@@ -1030,6 +1083,44 @@ def main():
     window = SimpleTopologyWindow()
     window.show()
     sys.exit(app.exec_())
+
+
+class CanLinTopologyWidget(TopologyWidget):
+    """CAN/LIN 网络拓扑图部件，不包含顶部信息栏"""
+
+    def _init_transparent_toolbar(self):
+        # 重写此方法，不初始化顶部工具栏
+        pass
+
+
+class CanLinTopologyWindow(QWidget):
+    """CAN/LIN 网络拓扑图窗口"""
+
+    def __init__(self):
+        super().__init__()
+        self.init_ui()
+
+    def init_ui(self):
+        # 构造节点数据
+        # 主节点 LLCE
+        # 格式: (name, icon, status, x, y)
+        node_data = [
+            ("LLCE", "", "online", 0, 0)
+        ]
+
+        # 子节点 LIN1, LIN2
+        node_data.append(("LIN1", "", "online", 0, 0))
+        node_data.append(("LIN2", "", "online", 0, 0))
+
+        # 子节点 CANFD1 ~ CANFD13
+        for i in range(1, 14):
+            node_data.append((f"CANFD{i}", "", "online", 0, 0))
+
+        self.topology = CanLinTopologyWidget(node_data)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(self.topology)
 
 
 if __name__ == "__main__":

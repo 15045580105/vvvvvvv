@@ -2,6 +2,7 @@ from PyQt5 import QtWidgets, QtCore
 from PyQt5.QtCore import Qt
 
 from app.modules.app_config.controller.app_config_controller import AppConfigController
+from app.presentation.views.welcome_view import WelcomeWidget
 
 class MainView(QtWidgets.QMainWindow):
     def __init__(self, parent=None):
@@ -47,11 +48,23 @@ class MainView(QtWidgets.QMainWindow):
         self.nav_tree.setRootIsDecorated(True)
         self.nav_dock.setWidget(self.nav_tree)
         self.addDockWidget(QtCore.Qt.LeftDockWidgetArea, self.nav_dock)
+
+        # Central Stacked Widget
+        self.central_stack = QtWidgets.QStackedWidget()
+
+        # 1. Welcome Page
+        self.welcome_widget = WelcomeWidget()
+        self.central_stack.addWidget(self.welcome_widget)
+
+        # 2. Workspace (Tab Widget)
         self.workspace = QtWidgets.QTabWidget()
         self.workspace.setTabsClosable(True)
         self.workspace.setUsesScrollButtons(True)
         self.workspace.tabBar().setElideMode(QtCore.Qt.ElideNone)
-        self.setCentralWidget(self.workspace)
+        self.central_stack.addWidget(self.workspace)
+
+        self.setCentralWidget(self.central_stack)
+
         self.status_bar = QtWidgets.QStatusBar()
         self.status_bar.addPermanentWidget(QtWidgets.QLabel("DoIP: ✅ 在线"))
         self.status_bar.addPermanentWidget(QtWidgets.QLabel("SSH: ✅ 已连接"))

@@ -1,6 +1,9 @@
+import ctypes
 import sys
+import os
 
 from PyQt5 import QtWidgets, QtCore
+from PyQt5.QtGui import QIcon
 
 from app.common.utils.license_manager import is_activated
 from app.presentation.controller.main_window_controller import MainController
@@ -10,10 +13,32 @@ from app.presentation.controller.main_window_controller import MainController
 if __name__ == "__main__":
     QtWidgets.QApplication.setAttribute(QtCore.Qt.AA_EnableHighDpiScaling)
     QtWidgets.QApplication.setAttribute(QtCore.Qt.AA_UseHighDpiPixmaps)
+    ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("myappid")
     app = QtWidgets.QApplication(sys.argv)
     app.setApplicationName("车载诊断工具")
     app.setOrganizationName("Automotive Diagnostics")
     app.setApplicationDisplayName("车载诊断工具平台 v1.0")
+
+    # 设置应用和任务栏图标（更健壮的查找：尝试多个常见位置并回退到仓库搜索）
+    project_root = os.path.dirname(__file__)
+    icon_path = os.path.join(project_root, 'resources', 'images', 'vcc_logo.png')
+    # 备用位置（实际项目中图标位于 app/resources/images）
+    if not os.path.exists(icon_path):
+        alt = os.path.join(project_root, 'app', 'resources', 'images', 'vcc_logo.png')
+        if os.path.exists(alt):
+            icon_path = alt
+        else:
+            # 在仓库中搜索第一个匹配的文件
+            for root, dirs, files in os.walk(project_root):
+                if 'vcc_logo.png' in files:
+                    icon_path = os.path.join(root, 'vcc_logo.png')
+                    break
+    try:
+        if os.path.exists(icon_path):
+            app.setWindowIcon(QIcon(icon_path))
+    except Exception:
+        # 如果路径无效或图标无法加载，则忽略，应用仍可正常启动
+        pass
 
     # 如未激活，则在主界面上方弹出激活窗口
     if not is_activated():
@@ -31,6 +56,13 @@ if __name__ == "__main__":
     app.aboutToQuit.connect(controller.on_close)
 
     main_view = controller.get_view()
+    # 确保主窗口也显示相同图标（部分平台需要在窗口上设置）
+    try:
+        if os.path.exists(icon_path):
+            main_view.setWindowIcon(QIcon(icon_path))
+    except Exception:
+        pass
+
     main_view.showMaximized()
 
     sys.exit(app.exec_())

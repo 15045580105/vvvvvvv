@@ -1,19 +1,17 @@
-from typing import Dict, Any, Tuple
-from typing import List, Dict, Any, Tuple, Callable, Optional
 import time
+import warnings
+from typing import Dict, Any, Callable, Optional
 
 from PyQt5.QtCore import QObject, pyqtSignal
 from paramiko.ssh_exception import AuthenticationException, SSHException
 
 from app.common.communication.clients.Doip_Client import DoIPClientHandler
 from app.common.communication.clients.Someip_Client import SomeIPClient
-from app.modules.device_management.models.device_model import CONNECTING, DISCONNECTED, CONNECT_FAILED, ONLINE
 from app.common.communication.clients.ssh_client import SSHClient
 from app.common.utils.security_access_helper import SecurityAccessHelper
+from app.core.dependency_injection import di_container
 from app.modules.device_management.models.device_model import CONNECTING, DISCONNECTED, CONNECT_FAILED
 from app.services.configuration.config_service import AppConfigurationService
-from app.core.dependency_injection import di_container
-import warnings
 
 # Suppress the SIP/PyQt deprecation about sipPyTypeDict() which is raised from the
 # underlying extension module. This is a runtime DeprecationWarning originating

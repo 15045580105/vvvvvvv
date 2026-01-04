@@ -2,7 +2,7 @@
 from PyQt5 import QtWidgets
 
 from app.common.ui.widgets import ModernButton
-from app.modules.device_topology.view.topology_widget import SimpleTopologyWindow
+from app.modules.device_topology.view.topology_widget import SimpleTopologyWindow, CanLinTopologyWindow
 from app.presentation.views.base_view import BaseView
 
 
@@ -22,11 +22,17 @@ class TopologyView(BaseView):
         btn_layout.addWidget(self.refresh_btn)
         topo_layout.addLayout(btn_layout)
 
+        self.tab_widget = QtWidgets.QTabWidget()
+
         self.graphics = SimpleTopologyWindow()
         # 获取内部的 TopologyWidget 实例以便后续调用更新方法
         self.topology_widget = self.graphics.topology
+        self.tab_widget.addTab(self.graphics, "以太网拓扑")
 
-        topo_layout.addWidget(self.graphics)
+        self.graphics_can_lin = CanLinTopologyWindow()
+        self.tab_widget.addTab(self.graphics_can_lin, "CAN/LIN网络拓扑")
+
+        topo_layout.addWidget(self.tab_widget)
         topo_group.setLayout(topo_layout)
 
         layout.addWidget(topo_group, 3)
