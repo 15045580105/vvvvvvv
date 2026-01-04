@@ -19,17 +19,23 @@ QTabWidget::pane { border: 1px solid #E5E7EB; background-color: #FFFFFF; border-
 QTabBar::tab {
     background-color: #F3F4F6;
     color: #6B7280;
-    padding: 10px 18px;
-    margin: 4px 2px;
+    padding: 12px 20px 12px 20px;
+    margin: 2px 2px;
     border: 1px solid #E5E7EB;
     border-radius: 6px;
-    font-weight: 500;
+    font:200;
 }
-QTabBar::tab:selected { background-color: #3B82F6; color: white; border: 1px solid #3B82F6; font-weight: 600; }
+QTabBar::tab:selected { 
+    background-color: #3B82F6; 
+    color: white; 
+    border: 1px solid #3B82F6; 
+    padding: 12px 20px 12px 20px;
+    margin: 2px 2px; 
+    font:400;
+}
 QTabBar::close-button {
     subcontrol-position: right;
     subcontrol-origin: padding;
-    right: 5px;
 }
 QTabBar::close-button:hover {
     background: #d3d3d3;
