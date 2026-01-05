@@ -29,21 +29,6 @@ class DTCView(BaseView):
         top_layout.setSpacing(0)
         self.splitter.addWidget(self.top_widget)
 
-        # 1. Top Navigation Tabs (Fault Info / Freeze Frame Info)
-        self.nav_bar = QtWidgets.QFrame()
-        self.nav_bar.setStyleSheet("background-color: #F8FAFC; border-bottom: 1px solid #E2E8F0;")
-        self.nav_bar.setFixedHeight(50)
-        nav_layout = QtWidgets.QHBoxLayout(self.nav_bar)
-        nav_layout.setContentsMargins(20, 0, 20, 0)
-        nav_layout.setSpacing(20)
-
-        self.btn_fault_info = self._create_nav_button("故障信息", True)
-        self.btn_freeze_info = self._create_nav_button("冻结帧信息", False)
-
-        nav_layout.addWidget(self.btn_fault_info)
-        nav_layout.addWidget(self.btn_freeze_info)
-        nav_layout.addStretch()
-
         # Global Action Buttons
         self.read_btn = ModernButton("读取故障码", "#3B82F6")
         self.read_btn.setMinimumWidth(100)
@@ -65,28 +50,28 @@ class DTCView(BaseView):
             QPushButton:pressed { background-color: #E2E8F0; }
         """)
 
-        nav_layout.addWidget(self.read_btn)
-        nav_layout.addWidget(self.clear_btn)
-
-        top_layout.addWidget(self.nav_bar)
-
-        # 2. Content Stack
-        self.stack = QtWidgets.QStackedWidget()
-        top_layout.addWidget(self.stack)
+        # Tab Widget
+        self.tab_widget = QtWidgets.QTabWidget()
+        top_layout.addWidget(self.tab_widget)
 
         # --- Page 1: Fault List ---
         self.page_faults = QtWidgets.QWidget()
         self.setup_fault_page(self.page_faults)
-        self.stack.addWidget(self.page_faults)
+        self.tab_widget.addTab(self.page_faults, "故障信息")
 
         # --- Page 2: Freeze Frame ---
         self.page_freeze = QtWidgets.QWidget()
         self.setup_freeze_page(self.page_freeze)
-        self.stack.addWidget(self.page_freeze)
+        self.tab_widget.addTab(self.page_freeze, "冻结帧信息")
 
-        # Connect Nav Buttons
-        self.btn_fault_info.clicked.connect(lambda: self.switch_tab(0))
-        self.btn_freeze_info.clicked.connect(lambda: self.switch_tab(1))
+        # Corner Buttons
+        corner_widget = QtWidgets.QWidget()
+        corner_layout = QtWidgets.QHBoxLayout(corner_widget)
+        corner_layout.setContentsMargins(0, 5, 10, 5)
+        corner_layout.setSpacing(10)
+        corner_layout.addWidget(self.read_btn)
+        corner_layout.addWidget(self.clear_btn)
+        self.tab_widget.setCornerWidget(corner_widget, QtCore.Qt.TopRightCorner)
 
         # Connect Actions
         self.read_btn.clicked.connect(self.on_read_dtcs)
@@ -99,7 +84,6 @@ class DTCView(BaseView):
         self.log_edit = QtWidgets.QPlainTextEdit()
         self.log_edit.setReadOnly(True)
         self.log_edit.setMaximumBlockCount(500)
-        self.log_edit.setStyleSheet("font-family:Consolas; font-size:12px;")
         self.log_edit.setMinimumHeight(100)
         log_layout.addWidget(self.log_edit)
 
@@ -107,37 +91,6 @@ class DTCView(BaseView):
         self.splitter.setStretchFactor(0, 2)
         self.splitter.setStretchFactor(1, 1)
 
-    def _create_nav_button(self, text, active=False):
-        btn = QtWidgets.QPushButton(text)
-        btn.setCheckable(True)
-        btn.setChecked(active)
-        btn.setFixedHeight(48)
-        btn.setCursor(QtCore.Qt.PointingHandCursor)
-        btn.setStyleSheet("""
-            QPushButton {
-                border: none;
-                background: transparent;
-                font-size: 15px;
-                color: #64748B;
-                border-bottom: 3px solid transparent;
-                padding: 0 10px;
-                font-family: "Microsoft YaHei";
-            }
-            QPushButton:checked {
-                color: #3B82F6;
-                border-bottom: 3px solid #3B82F6;
-                font-weight: bold;
-            }
-            QPushButton:hover:!checked {
-                color: #475569;
-            }
-        """)
-        return btn
-
-    def switch_tab(self, index):
-        self.stack.setCurrentIndex(index)
-        self.btn_fault_info.setChecked(index == 0)
-        self.btn_freeze_info.setChecked(index == 1)
 
     def setup_fault_page(self, parent):
         layout = QtWidgets.QVBoxLayout(parent)
@@ -202,25 +155,6 @@ class DTCView(BaseView):
         self.fault_table.horizontalHeader().setSectionResizeMode(QtWidgets.QHeaderView.Stretch)
         self.fault_table.setShowGrid(False)
         self.fault_table.setFrameShape(QtWidgets.QFrame.NoFrame)
-        self.fault_table.setStyleSheet("""
-            QTableWidget { 
-                background-color: white; 
-                border: 1px solid #E2E8F0; 
-                border-radius: 4px;
-            }
-            QHeaderView::section { 
-                background-color: #F1F5F9; 
-                border: none; 
-                border-bottom: 1px solid #E2E8F0;
-                padding: 12px; 
-                font-weight: bold;
-                color: #475569;
-            }
-            QTableWidget::item {
-                padding: 8px;
-                border-bottom: 1px solid #F1F5F9;
-            }
-        """)
         layout.addWidget(self.fault_table)
 
         # Pagination
@@ -311,25 +245,6 @@ class DTCView(BaseView):
 
         self.freeze_table.setShowGrid(True)
         self.freeze_table.setFrameShape(QtWidgets.QFrame.NoFrame)
-        self.freeze_table.setStyleSheet("""
-            QTableWidget { 
-                background-color: white; 
-                border: 1px solid #E2E8F0; 
-                border-radius: 4px;
-                gridline-color: #F1F5F9;
-            }
-            QHeaderView::section { 
-                background-color: #F1F5F9; 
-                border: none; 
-                border-bottom: 1px solid #E2E8F0;
-                padding: 12px; 
-                font-weight: bold;
-                color: #475569;
-            }
-            QTableWidget::item {
-                padding: 8px;
-            }
-        """)
 
         layout.addWidget(self.freeze_table)
 
@@ -404,7 +319,6 @@ class DTCView(BaseView):
 
             btn = QtWidgets.QPushButton("读取冻结帧")
             btn.setCursor(QtCore.Qt.PointingHandCursor)
-            btn.setStyleSheet("border: none; color: #3B82F6; font-weight: bold; text-decoration: underline;")
             btn.setProperty("row", r)
             btn.clicked.connect(self.on_click_freeze_btn)
 
@@ -535,4 +449,4 @@ class DTCView(BaseView):
             if success:
                 # Switch to freeze tab and show mock data
                 # In real app, controller would call populate_freeze_frame
-                self.switch_tab(1)
+                self.tab_widget.setCurrentIndex(1)

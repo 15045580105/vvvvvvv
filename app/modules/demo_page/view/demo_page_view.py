@@ -19,7 +19,6 @@ from PyQt5.QtWidgets import (
 )
 
 from app.common.ui.modern_widgets import MessageToast
-from app.common.ui.style import MODERN_STYLESHEET
 
 
 class ControlGalleryWidget(QWidget):
@@ -939,7 +938,8 @@ for num in fibonacci(10):
         # 不再设置全局样式，因为用户可能有自己的样式
 
         # 可选：应用 Bootstrap 风格的样式
-        self.apply_bootstrap_like_styles()
+        #self.apply_bootstrap_like_styles()
+        pass
 
     def apply_bootstrap_like_styles(self):
         """应用类似 Bootstrap 的样式"""
