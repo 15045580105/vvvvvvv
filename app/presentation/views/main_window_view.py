@@ -17,6 +17,14 @@ class MainView(QtWidgets.QMainWindow):
         self.toolbar.setIconSize(QtCore.QSize(20,20))
         self.toolbar.setMovable(False)
         self.addToolBar(self.toolbar)
+
+        self.toggle_nav_btn = QtWidgets.QToolButton()
+        self.toggle_nav_btn.setText("☰")
+        self.toggle_nav_btn.setToolTip("显示/隐藏功能导航")
+        self.toggle_nav_btn.setCheckable(True)
+        self.toggle_nav_btn.setChecked(True)
+        self.toolbar.addWidget(self.toggle_nav_btn)
+
         self.search_edit = QtWidgets.QLineEdit()
         self.search_edit.setPlaceholderText("🔍 搜索功能...")
         self.search_edit.setMaximumWidth(280)
@@ -43,11 +51,15 @@ class MainView(QtWidgets.QMainWindow):
         # self.auth_label.setStyleSheet("color: #10B981; font-weight: 600; padding: 6px 12px; background-color: #ECFDF5; border-radius: 6px; border: 1px solid #D1FAE5;")
         # self.toolbar.addWidget(self.auth_label)
         self.nav_dock = QtWidgets.QDockWidget("功能导航", self)
+        self.nav_dock.setFeatures(QtWidgets.QDockWidget.DockWidgetMovable | QtWidgets.QDockWidget.DockWidgetFloatable)
         self.nav_tree = QtWidgets.QTreeWidget()
         self.nav_tree.setHeaderHidden(True)
         self.nav_tree.setRootIsDecorated(True)
         self.nav_dock.setWidget(self.nav_tree)
         self.addDockWidget(QtCore.Qt.LeftDockWidgetArea, self.nav_dock)
+
+        self.toggle_nav_btn.clicked.connect(self.nav_dock.setVisible)
+        self.nav_dock.visibilityChanged.connect(self.toggle_nav_btn.setChecked)
 
         # Central Stacked Widget
         self.central_stack = QtWidgets.QStackedWidget()
