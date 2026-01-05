@@ -5,6 +5,7 @@ from app.modules.app_config.controller.app_config_controller import AppConfigCon
 from app.presentation.views.welcome_view import WelcomeWidget
 
 class MainView(QtWidgets.QMainWindow):
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.settings_controller = None
@@ -73,6 +74,9 @@ class MainView(QtWidgets.QMainWindow):
         self.workspace.setTabsClosable(True)
         self.workspace.setUsesScrollButtons(True)
         self.workspace.tabBar().setElideMode(QtCore.Qt.ElideNone)
+
+        self.workspace.tabBar().setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
+
         self.central_stack.addWidget(self.workspace)
 
         self.setCentralWidget(self.central_stack)
@@ -97,6 +101,7 @@ class MainView(QtWidgets.QMainWindow):
                 child_item.setText(0, child)
                 child_item.setData(0, Qt.UserRole, "function")
         self.nav_tree.expandAll()
+
 
     def show_search_results(self, items, pos=None):
         self.search_result_list.clear()

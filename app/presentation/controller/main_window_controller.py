@@ -44,6 +44,7 @@ class MainController(BaseController):
     def _init_ui(self) -> None:
         self.view.setStyleSheet(APP_STYLE)
         self.view.workspace.tabCloseRequested.connect(self.close_tab)
+        self.view.workspace.tabBar().customContextMenuRequested.connect(self.on_tab_context_menu)
         self._build_pages()
 
         # Connect welcome widget signal
@@ -247,10 +248,41 @@ class MainController(BaseController):
             logger.exception(f"Open tab failed: {display_text}")
 
     # ----------------- Tab管理 -----------------
+    def on_tab_context_menu(self, point: QtCore.QPoint) -> None:
+        tab_bar = self.view.workspace.tabBar()
+        index = tab_bar.tabAt(point)
+        if index < 0:
+            return
+
+        menu = QtWidgets.QMenu(self.view)
+        action_close_current = menu.addAction("关闭当前")
+        action_close_others = menu.addAction("关闭其他")
+        action_close_all = menu.addAction("关闭所有")
+
+        action = menu.exec_(tab_bar.mapToGlobal(point))
+
+        if action == action_close_current:
+            self.close_tab(index)
+        elif action == action_close_others:
+            self.close_other_tabs(index)
+        elif action == action_close_all:
+            self.close_all_tabs()
+
     def close_tab(self, index: int) -> None:
         self.view.workspace.removeTab(index)
         if self.view.workspace.count() == 0:
             self.view.central_stack.setCurrentIndex(0)
+
+    def close_other_tabs(self, index: int) -> None:
+        widget_to_keep = self.view.workspace.widget(index)
+        for i in range(self.view.workspace.count() - 1, -1, -1):
+            if self.view.workspace.widget(i) != widget_to_keep:
+                self.view.workspace.removeTab(i)
+        self.view.workspace.setCurrentWidget(widget_to_keep)
+
+    def close_all_tabs(self) -> None:
+        self.view.workspace.clear()
+        self.view.central_stack.setCurrentIndex(0)
 
     # ----------------- 搜索逻辑 -----------------
     def on_search_text_changed(self, text: str) -> None:
