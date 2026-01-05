@@ -3,6 +3,7 @@ from PyQt5.QtCore import Qt
 
 from app.modules.app_config.controller.app_config_controller import AppConfigController
 from app.presentation.views.welcome_view import WelcomeWidget
+from app.common.ui.guide_overlay import GuideOverlay
 
 class MainView(QtWidgets.QMainWindow):
 
@@ -41,6 +42,15 @@ class MainView(QtWidgets.QMainWindow):
         self.settings_btn.setCursor(QtCore.Qt.PointingHandCursor)
         self.toolbar.addWidget(self.settings_btn)
         self.settings_btn.clicked.connect(self.show_settings_dialog)
+
+        self.guide_btn = QtWidgets.QToolButton()
+        self.guide_btn.setText("新手引导")
+        self.guide_btn.setToolTip("查看功能指引")
+        self.guide_btn.setAutoRaise(True)
+        self.guide_btn.setCursor(QtCore.Qt.PointingHandCursor)
+        self.toolbar.addWidget(self.guide_btn)
+        self.guide_btn.clicked.connect(self.start_guide)
+
         # 搜索结果下拉列表
         self.search_result_list = QtWidgets.QListWidget()
         self.search_result_list.setWindowFlags(QtCore.Qt.Popup)
@@ -142,3 +152,16 @@ class MainView(QtWidgets.QMainWindow):
         self.settings_controller.view.show()
         self.settings_controller.view.raise_()
         self.settings_controller.view.activateWindow()
+
+    def start_guide(self):
+        if not hasattr(self, 'guide_overlay'):
+            self.guide_overlay = GuideOverlay(self)
+
+        self.guide_overlay.steps = [] # Clear previous steps
+        self.guide_overlay.add_step(self.toggle_nav_btn, "导航切换", "点击此按钮可以展开或收起左侧的功能导航栏，为您提供更大的工作空间。")
+        self.guide_overlay.add_step(self.search_edit, "全局搜索", "在这里输入关键词，可以快速查找并定位到您需要的功能模块。")
+        self.guide_overlay.add_step(self.nav_dock, "功能导航", "这里列出了所有的功能模块，您可以点击展开查看详细的功能列表。")
+        self.guide_overlay.add_step(self.workspace, "工作区域", "所有的功能页面都将在这里显示，支持多标签页操作，方便您同时处理多个任务。")
+        self.guide_overlay.add_step(self.settings_btn, "系统设置", "在这里可以配置软件的各项参数，包括连接设置、主题偏好等。")
+
+        self.guide_overlay.start()
