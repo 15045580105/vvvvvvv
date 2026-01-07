@@ -6,6 +6,7 @@
 
 import sys
 
+from PyQt5 import QtWidgets
 from PyQt5.QtCore import Qt, QTimer, QDateTime, QDate, QTime
 from PyQt5.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QFormLayout,
@@ -14,11 +15,12 @@ from PyQt5.QtWidgets import (
     QProgressBar, QComboBox, QFontComboBox, QListWidget, QTreeWidget,
     QTableWidget, QTableWidgetItem, QDateEdit, QTimeEdit, QDateTimeEdit,
     QCalendarWidget, QScrollArea, QSplitter, QFrame, QTabWidget, QButtonGroup,
-    QLCDNumber, QMessageBox, QInputDialog, QColorDialog, QFontDialog, QWizard,
+    QLCDNumber, QMessageBox, QColorDialog, QFontDialog, QWizard,
     QWizardPage, QFileDialog, QScrollBar, QSizeGrip, QTreeWidgetItem
 )
 
-from app.common.ui.modern_widgets import MessageToast
+from app.common.ui.modern_widgets import MessageToast, ModernConfirmDialog, ModernAboutDialog, ModernInputDialog
+from app.common.ui.widgets import CheckableComboBox
 
 
 class ControlGalleryWidget(QWidget):
@@ -151,6 +153,19 @@ class ControlGalleryWidget(QWidget):
         lineedit_layout.addRow("只读:", line_edit4)
         lineedit_layout.addRow("禁用:", line_edit5)
         lineedit_layout.addRow("可编辑组合框:", combo_box)
+
+        self.checkable_combo = CheckableComboBox()
+        self.checkable_combo.addItems(["Apple", "Banana", "Orange", "Grape", "Mango"])
+
+        # 演示用：添加操作按钮
+        chk_layout = QHBoxLayout()
+        btn_get = QPushButton("获取选中项")
+        btn_get.clicked.connect(lambda: QtWidgets.QMessageBox.information(self, "选中项", str(self.checkable_combo.getCheckedItems())))
+
+        chk_layout.addWidget(self.checkable_combo)
+        chk_layout.addWidget(btn_get)
+
+        lineedit_layout.addRow("多选下拉框:", chk_layout)
         group_lineedit.setLayout(lineedit_layout)
         grid.addWidget(group_lineedit, 1, 0, 1, 2)
 
@@ -1222,7 +1237,7 @@ for num in fibonacci(10):
         self.dialog_result_label.setText("关闭了信息消息框")
 
     def show_input_dialog(self):
-        text, ok = QInputDialog.getText(self, "输入对话框", "请输入您的姓名:")
+        text, ok = ModernInputDialog.get_text(self, "输入对话框", "请输入您的姓名:")
         if ok:
             self.dialog_result_label.setText(f"您输入了: {text}")
         else:
@@ -1252,7 +1267,8 @@ for num in fibonacci(10):
             self.dialog_result_label.setText("未选择字体")
 
     def show_about_dialog(self):
-        QMessageBox.about(self, "关于", "PyQt5 全控件样式展示 Widget\n版本: 1.0\n基于 QWidget 的纯控件展示")
+        dialog = ModernAboutDialog(self, "关于", "PyQt5 全控件样式展示 Widget\n版本: 1.0\n基于 QWidget 的纯控件展示")
+        dialog.exec_()
         self.dialog_result_label.setText("关闭了关于对话框")
 
     def show_critical_dialog(self):
@@ -1260,11 +1276,13 @@ for num in fibonacci(10):
         self.dialog_result_label.setText("关闭了错误对话框")
 
     def show_question_dialog(self):
-        reply = QMessageBox.question(self, "确认", "确定要继续执行此操作吗？", QMessageBox.Yes | QMessageBox.No)
-        if reply == QMessageBox.Yes:
-            self.dialog_result_label.setText("选择: 是")
+        reply = ModernConfirmDialog(self, "确认", f"确定要继续执行此操作吗？", confirm_text="确认",
+                                     is_danger=True)
+        if reply.exec_() != QtWidgets.QDialog.Accepted:
+            self.dialog_result_label.setText("选择: 取消")
         else:
-            self.dialog_result_label.setText("选择: 否")
+            self.dialog_result_label.setText("选择: 确认")
+
 
     def show_warning_dialog(self):
         MessageToast(self).show_toast("这是一个警告消息！\n请注意相关事项。", 1)

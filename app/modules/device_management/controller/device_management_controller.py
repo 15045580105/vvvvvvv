@@ -1,7 +1,7 @@
 from PyQt5 import QtWidgets
-from PyQt5.QtCore import QThread, pyqtSignal,QThread
+from PyQt5.QtCore import QThread, pyqtSignal
 
-from app.common.ui.modern_widgets import MessageToast
+from app.common.ui.modern_widgets import MessageToast, ModernConfirmDialog
 from app.core.base_controller import BaseController
 from app.core.dependency_injection import di_container
 from app.modules.device_management.models.device_model import DeviceModel, OFFLINE, ONLINE, DISCONNECTED
@@ -279,8 +279,8 @@ class DeviceController(BaseController):
 
         # 二次确认
         name = self._device_repr(index)
-        ret = QtWidgets.QMessageBox.question(self.view, "确认删除", f"确定要删除设备 {name} 吗？", QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No)
-        if ret != QtWidgets.QMessageBox.Yes:
+        dialog = ModernConfirmDialog(self.view, "确认删除", f"确定要删除设备 {name} 吗？", confirm_text="删除", is_danger=True)
+        if dialog.exec_() != QtWidgets.QDialog.Accepted:
             return
 
         self.model.delete_device(index)
