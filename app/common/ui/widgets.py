@@ -151,9 +151,14 @@ class LoadingSpinner(QtWidgets.QWidget):
 class CheckableComboBox(QtWidgets.QComboBox):
     def __init__(self, parent=None):
         super(CheckableComboBox, self).__init__(parent)
+        self.setView(QtWidgets.QListView())
+        self.view().window().setWindowFlags(QtCore.Qt.Popup | QtCore.Qt.FramelessWindowHint | QtCore.Qt.NoDropShadowWindowHint)
+        self.view().window().setAttribute(QtCore.Qt.WA_TranslucentBackground)
+
         self.setEditable(True)
         self.lineEdit().setReadOnly(True)
         self.lineEdit().setPlaceholderText("请选择选项...")
+        self.lineEdit().setCursor(QT_CURSOR_POINTING)
 
         self.model = QtGui.QStandardItemModel(self)
         self.setModel(self.model)
@@ -168,6 +173,9 @@ class CheckableComboBox(QtWidgets.QComboBox):
         self.selectAllItem.setFlags(QtCore.Qt.ItemIsEnabled | QtCore.Qt.ItemIsUserCheckable)
         self.selectAllItem.setData(QtCore.Qt.Unchecked, QtCore.Qt.CheckStateRole)
         self.model.appendRow(self.selectAllItem)
+
+        self.setCurrentIndex(-1)
+        self.lineEdit().setText("")
 
     def onItemChanged(self, item):
         if self._is_updating:
@@ -224,6 +232,7 @@ class CheckableComboBox(QtWidgets.QComboBox):
         item.setFlags(QtCore.Qt.ItemIsEnabled | QtCore.Qt.ItemIsUserCheckable)
         item.setData(QtCore.Qt.Unchecked, QtCore.Qt.CheckStateRole)
         self.model.appendRow(item)
+        self.updateText()
 
     def addItems(self, texts):
         for text in texts:
@@ -248,18 +257,9 @@ class CheckableComboBox(QtWidgets.QComboBox):
                 if index.isValid():
                     item = self.model.itemFromIndex(index)
                     if item.flags() & QtCore.Qt.ItemIsUserCheckable:
-                        style = self.view().style()
-                        opt = QtWidgets.QStyleOptionViewItem()
-                        opt.rect = self.view().visualRect(index)
-                        opt.features |= QtWidgets.QStyleOptionViewItem.HasCheckIndicator
-                        opt.widget = self.view()
-
-                        checkRect = style.subElementRect(QtWidgets.QStyle.SE_ItemViewItemCheckIndicator, opt, self.view())
-
-                        if not checkRect.contains(event.pos()):
-                            if item.checkState() == QtCore.Qt.Checked:
-                                item.setCheckState(QtCore.Qt.Unchecked)
-                            else:
-                                item.setCheckState(QtCore.Qt.Checked)
-                            return True
+                        if item.checkState() == QtCore.Qt.Checked:
+                            item.setCheckState(QtCore.Qt.Unchecked)
+                        else:
+                            item.setCheckState(QtCore.Qt.Checked)
+                        return True
         return super(CheckableComboBox, self).eventFilter(widget, event)
