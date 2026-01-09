@@ -7,3 +7,4 @@ class FileTransferModel(BaseModel):
         self.local_path = "C:/Diagnostics/Logs"
         self.remote_filter = ""
         self.tasks = []
+

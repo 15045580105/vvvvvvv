@@ -98,6 +98,13 @@ class FileTransferView(BaseView):
         remote_layout = QtWidgets.QVBoxLayout()
 
         remote_header = QtWidgets.QHBoxLayout()
+
+        # 新增设备选择
+        remote_header.addWidget(QtWidgets.QLabel("💻 设备:"))
+        self.device_combo = QtWidgets.QComboBox()
+        self.device_combo.setMinimumWidth(150)
+        remote_header.addWidget(self.device_combo)
+
         remote_header.addWidget(QtWidgets.QLabel("🔍 搜索:"))
         self.remote_filter = QtWidgets.QLineEdit()
         self.remote_filter.setPlaceholderText("APPID或路径...")
