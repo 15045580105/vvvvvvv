@@ -3,32 +3,7 @@ from app.modules.device_topology.model.device_topology_model import TopologyMode
 from app.modules.device_topology.view.device_topology_view import TopologyView
 from app.services.device_manage.device_service import DeviceService
 from app.services.device_manage.topology_service import TopologyService
-from PyQt5 import QtCore
-import subprocess
-import os
-import time
-from app.common.utils.security_access_helper import SecurityAccessHelper
-
-
-class Worker(QtCore.QThread):
-    log_signal = QtCore.pyqtSignal(str)
-    result_signal = QtCore.pyqtSignal(object)
-
-    def __init__(self, func, *args, **kwargs):
-        super().__init__()
-        self.func = func
-        self.args = args
-        self.kwargs = kwargs
-
-    def run(self):
-        # 注入 log_callback
-        self.kwargs['log_callback'] = self.log_signal.emit
-        try:
-            result = self.func(*self.args, **self.kwargs)
-            self.result_signal.emit(result)
-        except Exception as e:
-            self.log_signal.emit(f"执行异常: {e}")
-            self.result_signal.emit(None)
+from app.common.utils.worker import Worker
 
 
 class TopologyController(BaseController):
@@ -326,8 +301,19 @@ class TopologyController(BaseController):
 
     def refresh(self):
         """刷新拓扑数据"""
+        current_index = self.view.tab_widget.currentIndex()
+
+        if current_index == 0:
+            self._refresh_ethernet_topology()
+        elif current_index == 1:
+            self._refresh_can_lin_topology()
+        else:
+            self.view.append_log("未知标签页，无法刷新")
+
+    def _refresh_ethernet_topology(self):
+        """刷新以太网拓扑"""
         self.view.set_loading(True)
-        self.view.append_log("正在刷新拓扑数据...")
+        self.view.append_log("正在刷新以太网拓扑数据...")
 
         def task(log_callback):
             try:
@@ -335,6 +321,8 @@ class TopologyController(BaseController):
                 return self.topology_service.fetch_snapshot(log_callback=log_callback)
             except Exception as e:
                 log_callback(f"刷新失败: {e}")
+                import traceback
+                traceback.print_exc()
                 return None
 
         worker = Worker(task)
@@ -359,9 +347,9 @@ class TopologyController(BaseController):
                 # self.view.update_network_mgmt(snapshot.network_management)
                 # self.view.update_storage_info(snapshot.storage_info)
 
-                self.view.append_log("拓扑刷新完成")
+                self.view.append_log("以太网拓扑刷新完成")
             else:
-                self.view.append_log("拓扑刷新失败或无数据")
+                self.view.append_log("以太网拓扑刷新失败或无数据")
 
             if worker in self._workers:
                 self._workers.remove(worker)
@@ -370,6 +358,40 @@ class TopologyController(BaseController):
         self._workers.append(worker)
         worker.start()
 
+    def _refresh_can_lin_topology(self):
+        """刷新 CAN/LIN 拓扑"""
+        self.view.set_loading(True)
+        self.view.append_log("正在刷新 CAN/LIN 拓扑数据...")
+
+        def task(log_callback):
+            try:
+                # 调用 TopologyService 中的 fetch_can_lin_snapshot
+                return self.topology_service.fetch_can_lin_snapshot(log_callback=log_callback)
+            except Exception as e:
+                log_callback(f"CAN/LIN 刷新失败: {e}")
+                import traceback
+                traceback.print_exc()
+                return None
+
+        worker = Worker(task)
+        worker.log_signal.connect(self.view.append_log)
+
+        def on_finished(result):
+            self.view.set_loading(False)
+            if result:
+                self.view.append_log("CAN/LIN 拓扑刷新完成")
+                # 更新拓扑图节点
+                if hasattr(self.view, 'graphics_can_lin') and hasattr(self.view.graphics_can_lin, 'topology'):
+                    self.view.graphics_can_lin.topology.init_nodes(result)
+            else:
+                self.view.append_log("CAN/LIN 拓扑刷新失败或无数据")
+
+            if worker in self._workers:
+                self._workers.remove(worker)
+
+        worker.result_signal.connect(on_finished)
+        self._workers.append(worker)
+        worker.start()
 
     def get_view(self):
         return self.view

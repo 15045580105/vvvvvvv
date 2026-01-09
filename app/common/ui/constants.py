@@ -14,6 +14,7 @@ from app.modules.uds_sequence.controller.uds_sequence_controller import UDSSeque
 from app.modules.clock_management.controller.clock_management_controller import ClockManagementController
 from app.modules.bus_data_management.controller.bus_data_download_controller import BusDataDownloadController
 from app.modules.data_format_converter.controller.data_format_converter_controller import DataFormatConverterController
+from app.modules.common_config.controller.common_config_controller import CommonConfigController
 
 class PageConfig:
     """页面配置管理类，封装所有页面相关的常量和配置。"""
@@ -39,6 +40,8 @@ class PageConfig:
     EMOJI_BUS_DATA_DOWNLOAD = "📡"
     # 新增：数据格式转换 emoji
     EMOJI_DATA_CONVERTER = "🧩"
+    # 新增：常用配置 emoji
+    EMOJI_COMMON_CONFIG = "🔧"
 
     # 页面注册名常量
     PAGE_DEVICE = "设备管理"
@@ -49,6 +52,7 @@ class PageConfig:
     PAGE_BUS_DATA_DOWNLOAD = "总线数据下载"
     PAGE_FILE_TRANSFER = "文件传输中心"
     PAGE_LOG_CONFIG = "日志配置"
+    PAGE_COMMON_CONFIG = "常用配置"
     PAGE_UPGRADE = "设备升级"
     PAGE_SCRIPT = "脚本执行"
     PAGE_PERFORMANCE = "性能监控"
@@ -75,6 +79,7 @@ class PageConfig:
     PAGE_BUS_DATA_DOWNLOAD_DISPLAY = f"{EMOJI_BUS_DATA_DOWNLOAD} {PAGE_BUS_DATA_DOWNLOAD}"
     PAGE_FILE_TRANSFER_DISPLAY = f"{EMOJI_FILE_TRANSFER} {PAGE_FILE_TRANSFER}"
     PAGE_LOG_CONFIG_DISPLAY = f"{EMOJI_LOG_CONFIG} {PAGE_LOG_CONFIG}"
+    PAGE_COMMON_CONFIG_DISPLAY = f"{EMOJI_COMMON_CONFIG} {PAGE_COMMON_CONFIG}"
     PAGE_UPGRADE_DISPLAY = f"{EMOJI_UPGRADE} {PAGE_UPGRADE}"
     PAGE_SCRIPT_DISPLAY = f"{EMOJI_SCRIPT} {PAGE_SCRIPT}"
     PAGE_PERFORMANCE_DISPLAY = f"{EMOJI_PERFORMANCE} {PAGE_PERFORMANCE}"
@@ -96,6 +101,7 @@ class PageConfig:
     BUS_DATA_DOWNLOAD_TAB_NAME = PAGE_BUS_DATA_DOWNLOAD_DISPLAY
     DEVICE_UPGRADE_TAB_NAME = PAGE_UPGRADE_DISPLAY
     LOG_CONFIG_TAB_NAME = PAGE_LOG_CONFIG_DISPLAY
+    COMMON_CONFIG_TAB_NAME = PAGE_COMMON_CONFIG_DISPLAY
     SCRIPT_EXEC_TAB_NAME = PAGE_SCRIPT_DISPLAY
     CLOCK_MANAGEMENT_TAB_NAME = PAGE_CLOCK_DISPLAY
     DATA_CONVERTER_TAB_NAME = PAGE_DATA_CONVERTER_DISPLAY
@@ -112,6 +118,7 @@ class PageConfig:
         (PAGE_DATA_CONVERTER, PAGE_DATA_CONVERTER_DISPLAY, DataFormatConverterController, PAGE_TYPE_TAB),
         (PAGE_FILE_TRANSFER, PAGE_FILE_TRANSFER_DISPLAY, FileTransferController, PAGE_TYPE_TAB),
         (PAGE_LOG_CONFIG, PAGE_LOG_CONFIG_DISPLAY, LogConfigController, PAGE_TYPE_TAB),
+        (PAGE_COMMON_CONFIG, PAGE_COMMON_CONFIG_DISPLAY, CommonConfigController, PAGE_TYPE_TAB),
         (PAGE_UPGRADE, PAGE_UPGRADE_DISPLAY, UpgradeController, PAGE_TYPE_TAB),
         (PAGE_SCRIPT, PAGE_SCRIPT_DISPLAY, ScriptExecController, PAGE_TYPE_TAB),
         (PAGE_PERFORMANCE, PAGE_PERFORMANCE_DISPLAY, PerformanceController, PAGE_TYPE_TAB),
@@ -136,7 +143,7 @@ class PageConfig:
             PAGE_DATA_CONVERTER_DISPLAY,
         ]},
         NAV_GROUP_UPGRADE: {"children": [PAGE_UPGRADE_DISPLAY]},
-        NAV_GROUP_CONFIG: {"children": [PAGE_LOG_CONFIG_DISPLAY]},
+        NAV_GROUP_CONFIG: {"children": [PAGE_LOG_CONFIG_DISPLAY, PAGE_COMMON_CONFIG_DISPLAY]},
         NAV_GROUP_ADV: {"children": [PAGE_SCRIPT_DISPLAY]},
         NAV_GROUP_DEMO: {"children": [PAGE_DEMO_DISPLAY]},
     }

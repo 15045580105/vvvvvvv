@@ -1,6 +1,7 @@
 import paramiko
 import re
 from typing import List, Dict, Any
+import time
 
 
 class ProcessMonitor:
@@ -188,21 +189,26 @@ def main():
     )
 
     try:
-        # 获取进程信息
-        processes = monitor.get_processes()
+        for i in range(5):
+            print(f"\n{'='*20} 第 {i+1}/5 次采集 {'='*20}")
+            # 获取进程信息
+            processes = monitor.get_processes()
 
-        # 显示结果
-        print("找到的进程信息：")
-        monitor.display_processes(processes)
+            # 显示结果
+            print("找到的进程信息：")
+            monitor.display_processes(processes)
 
-        # 分类统计
-        type1_count = sum(1 for p in processes if p['type'] == 'type1')
-        type2_count = sum(1 for p in processes if p['type'] == 'type2')
+            # 分类统计
+            type1_count = sum(1 for p in processes if p['type'] == 'type1')
+            type2_count = sum(1 for p in processes if p['type'] == 'type2')
 
-        print(f"\n统计信息：")
-        print(f"第一类进程（路径以/containers/开头）: {type1_count} 个")
-        print(f"第二类进程（特定命令格式）: {type2_count} 个")
-        print(f"总计: {len(processes)} 个")
+            print(f"\n统计信息：")
+            print(f"第一类进程（路径以/containers/开头）: {type1_count} 个")
+            print(f"第二类进程（特定命令格式）: {type2_count} 个")
+            print(f"总计: {len(processes)} 个")
+
+            if i < 4:
+                time.sleep(1)
 
         # 可选：保存到JSON文件
         # if processes:

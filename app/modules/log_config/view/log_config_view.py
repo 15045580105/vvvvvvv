@@ -1,61 +1,102 @@
-from PyQt5 import QtWidgets, QtCore
+from PyQt5 import QtWidgets, QtCore, QtGui
+import warnings
 
-from app.common.ui.widgets import ModernButton
+# 忽略 PyQt5/sip 在 Python 3.11+ 下的 DeprecationWarning
+warnings.filterwarnings("ignore", category=DeprecationWarning, message=".*sipPyTypeDict.*")
+
+from app.common.ui.widgets import ModernButton, MultiSelectComboBox
 from app.presentation.views.base_view import BaseView
+from app.common.ui.modern_widgets import MessageToast
 
 
 class LogConfigView(BaseView):
+    modify_requested = QtCore.pyqtSignal(int)
+
     def setup_ui(self):
-        layout = QtWidgets.QVBoxLayout(self)
+        # 使用 TabWidget 布局
+        main_layout = QtWidgets.QVBoxLayout(self)
+        main_layout.setContentsMargins(10, 10, 10, 10)
+        main_layout.setSpacing(10)
+
+        self.tab_widget = QtWidgets.QTabWidget()
+        # 移除局部样式，使用全局样式
+        main_layout.addWidget(self.tab_widget)
+
+        # 初始化三个标签页
+        self._init_ecu_tab()
+        self._init_app_tab()
+        self._init_restore_tab()
+
+    def _init_ecu_tab(self):
+        self.ecu_tab = QtWidgets.QWidget()
+        layout = QtWidgets.QVBoxLayout(self.ecu_tab)
         layout.setSpacing(16)
+        layout.setContentsMargins(20, 20, 20, 20)
 
-        # ECU configuration group
-        ecu_group = QtWidgets.QGroupBox("ECU配置")
-        ecu_layout = QtWidgets.QGridLayout()
-        ecu_layout.setHorizontalSpacing(12)
-        ecu_layout.setVerticalSpacing(8)
+        # 控制区域
+        controls_layout = QtWidgets.QGridLayout()
+        controls_layout.setHorizontalSpacing(12)
+        controls_layout.setVerticalSpacing(12)
 
-        # Row 1: ECU select
-        ecu_layout.addWidget(QtWidgets.QLabel("请选择ECU"), 0, 0)
-        self.ecu_select_combo = QtWidgets.QComboBox()
-        self.ecu_select_combo.setMinimumWidth(160)
-        # Default ECU list, can be updated by controller
+        # Row 0: ECU select
+        controls_layout.addWidget(QtWidgets.QLabel("请选择ECU:"), 0, 0)
+        self.ecu_select_combo = MultiSelectComboBox()
+        self.ecu_select_combo.setMinimumWidth(250)
         self.ecu_select_combo.addItems(["CCUA", "CCU0", "CCU1"])
-        ecu_layout.addWidget(self.ecu_select_combo, 0, 1)
+        controls_layout.addWidget(self.ecu_select_combo, 0, 1)
 
-        # Row 2: Log level select + execute button
-        ecu_layout.addWidget(QtWidgets.QLabel("请选择日志等级"), 1, 0)
+        # Row 1: Log level select
+        controls_layout.addWidget(QtWidgets.QLabel("请选择日志等级:"), 1, 0)
         self.ecu_log_level_combo = QtWidgets.QComboBox()
-        self.ecu_log_level_combo.setMinimumWidth(160)
+        self.ecu_log_level_combo.setMinimumWidth(250)
         self.ecu_log_level_combo.addItems(["OFF", "FATAL", "ERROR", "WARN", "INFO", "DEBUG", "VERBOSE"])
-        ecu_layout.addWidget(self.ecu_log_level_combo, 1, 1)
+        controls_layout.addWidget(self.ecu_log_level_combo, 1, 1)
 
-        self.ecu_execute_btn = ModernButton("执行", "#3B82F6", "✔")
-        ecu_layout.addWidget(self.ecu_execute_btn, 1, 2)
+        # Row 2: Execute button
+        self.ecu_execute_btn = ModernButton("执行配置", "#3B82F6", "✔")
+        self.ecu_execute_btn.setFixedWidth(120)
+        controls_layout.addWidget(self.ecu_execute_btn, 2, 1, QtCore.Qt.AlignmentFlag.AlignLeft)
 
-        ecu_layout.setColumnStretch(3, 1)
-        ecu_group.setLayout(ecu_layout)
-        layout.addWidget(ecu_group)
+        controls_layout.setColumnStretch(2, 1)
+        layout.addLayout(controls_layout)
 
-        # APP configuration group
-        app_group = QtWidgets.QGroupBox("APP配置")
-        app_layout = QtWidgets.QVBoxLayout()
+        layout.addStretch()
 
-        # Filter row
+        # 操作日志区
+        log_group = QtWidgets.QGroupBox("操作日志")
+        log_layout = QtWidgets.QVBoxLayout()
+        log_layout.setContentsMargins(10, 20, 10, 10)  # 调整边距以适应 GroupBox 标题
+        self.ecu_log_text = QtWidgets.QTextEdit()
+        self.ecu_log_text.setReadOnly(True)
+        self.ecu_log_text.setPlaceholderText("这里显示用户的操作日志...")
+        # 移除局部样式，使用全局样式以保持一致
+        log_layout.addWidget(self.ecu_log_text)
+        log_group.setLayout(log_layout)
+        layout.addWidget(log_group, stretch=1)
+
+        self.tab_widget.addTab(self.ecu_tab, "ECU配置")
+
+    def _init_app_tab(self):
+        self.app_tab = QtWidgets.QWidget()
+        layout = QtWidgets.QVBoxLayout(self.app_tab)
+        layout.setSpacing(10)
+        layout.setContentsMargins(10, 10, 10, 10)
+
+        # 筛选行
         filter_layout = QtWidgets.QHBoxLayout()
-        filter_layout.addWidget(QtWidgets.QLabel("ECUID"))
+        filter_layout.addWidget(QtWidgets.QLabel("ECUID:"))
         self.app_filter_ecu_combo = QtWidgets.QComboBox()
-        self.app_filter_ecu_combo.setMinimumWidth(120)
+        self.app_filter_ecu_combo.setMinimumWidth(100)
         filter_layout.addWidget(self.app_filter_ecu_combo)
 
-        filter_layout.addWidget(QtWidgets.QLabel("APPID"))
+        filter_layout.addWidget(QtWidgets.QLabel("APPID:"))
         self.app_filter_appid_combo = QtWidgets.QComboBox()
-        self.app_filter_appid_combo.setMinimumWidth(120)
+        self.app_filter_appid_combo.setMinimumWidth(100)
         filter_layout.addWidget(self.app_filter_appid_combo)
 
-        filter_layout.addWidget(QtWidgets.QLabel("LOGLevel"))
+        filter_layout.addWidget(QtWidgets.QLabel("LOGLevel:"))
         self.app_filter_loglevel_combo = QtWidgets.QComboBox()
-        self.app_filter_loglevel_combo.setMinimumWidth(120)
+        self.app_filter_loglevel_combo.setMinimumWidth(100)
         self.app_filter_loglevel_combo.addItems(["", "OFF", "FATAL", "ERROR", "WARN", "INFO", "DEBUG", "VERBOSE"])
         filter_layout.addWidget(self.app_filter_loglevel_combo)
 
@@ -66,7 +107,7 @@ class LogConfigView(BaseView):
         self.app_refresh_btn = ModernButton("更新", "#0EA5E9", "🔄")
         filter_layout.addWidget(self.app_refresh_btn)
 
-        app_layout.addLayout(filter_layout)
+        layout.addLayout(filter_layout)
 
         # APP table
         self.app_table = QtWidgets.QTableWidget(0, 9)
@@ -77,7 +118,6 @@ class LogConfigView(BaseView):
         self.app_table.setAlternatingRowColors(True)
         self.app_table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
         self.app_table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
-        # 设置表格默认行高
         self.app_table.verticalHeader().setDefaultSectionSize(40)
 
         header = self.app_table.horizontalHeader()
@@ -91,12 +131,11 @@ class LogConfigView(BaseView):
         header.setSectionResizeMode(7, QtWidgets.QHeaderView.ResizeToContents)
         header.setSectionResizeMode(8, QtWidgets.QHeaderView.ResizeToContents)
 
-        app_layout.addWidget(self.app_table)
+        layout.addWidget(self.app_table, stretch=2)
 
-        # Bottom controls: pagination + page size + log operations
+        # 底部控制: 分页 + 页码 + 导出/删除
         bottom_layout = QtWidgets.QHBoxLayout()
 
-        # Pagination controls
         self.prev_page_btn = ModernButton("上一页", "#6B7280", "←")
         bottom_layout.addWidget(self.prev_page_btn)
         self.page_info_label = QtWidgets.QLabel("第 1 / 1 页")
@@ -106,7 +145,6 @@ class LogConfigView(BaseView):
 
         bottom_layout.addStretch()
 
-        # Page size selector
         page_size_layout = QtWidgets.QHBoxLayout()
         page_size_layout.addWidget(QtWidgets.QLabel("每页显示"))
         self.page_size_combo = QtWidgets.QComboBox()
@@ -115,7 +153,8 @@ class LogConfigView(BaseView):
         page_size_layout.addWidget(QtWidgets.QLabel("条"))
         bottom_layout.addLayout(page_size_layout)
 
-        # Log operation buttons
+        bottom_layout.addSpacing(20)
+
         self.export_logs_btn = ModernButton("导出日志", "#10B981", "⬇")
         bottom_layout.addWidget(self.export_logs_btn)
         self.delete_selected_btn = ModernButton("删除选中", "#EF4444", "🗑")
@@ -123,26 +162,95 @@ class LogConfigView(BaseView):
         self.refresh_logs_btn = ModernButton("刷新", "#0EA5E9", "🔄")
         bottom_layout.addWidget(self.refresh_logs_btn)
 
-        app_layout.addLayout(bottom_layout)
-        app_group.setLayout(app_layout)
-        layout.addWidget(app_group)
+        layout.addLayout(bottom_layout)
 
+        # 操作日志区
+        log_group = QtWidgets.QGroupBox("操作日志")
+        log_layout = QtWidgets.QVBoxLayout()
+        log_layout.setContentsMargins(10, 20, 10, 10)
+        self.app_log_text = QtWidgets.QTextEdit()
+        self.app_log_text.setReadOnly(True)
+        self.app_log_text.setPlaceholderText("这里显示用户的操作日志...")
+        self.app_log_text.setMaximumHeight(150) # 保留高度限制，避免挤压表格
+        log_layout.addWidget(self.app_log_text)
+        log_group.setLayout(log_layout)
+        layout.addWidget(log_group)
 
-        # Keep restore group as-is for now
-        restore_group = QtWidgets.QGroupBox("恢复默认配置")
-        restore_layout = QtWidgets.QHBoxLayout()
-        restore_layout.setSpacing(15)
-        self.restore_ccua = QtWidgets.QCheckBox("恢复CCUA默认")
-        self.restore_ccu0 = QtWidgets.QCheckBox("恢复CCU0默认")
-        self.restore_ccu1 = QtWidgets.QCheckBox("恢复CCU1默认")
-        self.delete_logs = QtWidgets.QCheckBox("删除日志文件")
+        self.tab_widget.addTab(self.app_tab, "APP配置")
+
+    def _init_restore_tab(self):
+        self.restore_tab = QtWidgets.QWidget()
+        layout = QtWidgets.QVBoxLayout(self.restore_tab)
+        layout.setSpacing(20)
+        layout.setContentsMargins(30, 30, 30, 30)
+
+        options_group = QtWidgets.QWidget()
+        options_layout = QtWidgets.QVBoxLayout(options_group)
+        options_layout.setSpacing(15)
+
+        self.restore_ccua = QtWidgets.QCheckBox("恢复CCUA默认配置")
+        self.restore_ccu0 = QtWidgets.QCheckBox("恢复CCU0默认配置")
+        self.restore_ccu1 = QtWidgets.QCheckBox("恢复CCU1默认配置")
+        self.delete_logs = QtWidgets.QCheckBox("同时删除所有日志文件")
+
+        # 加大字体
+        font = self.restore_ccua.font()
+        font.setPointSize(10)
         for chk in [self.restore_ccua, self.restore_ccu0, self.restore_ccu1, self.delete_logs]:
-            restore_layout.addWidget(chk)
-        restore_layout.addStretch()
-        self.restore_btn = ModernButton("执行恢复", "#EF4444", "⚠️")
-        restore_layout.addWidget(self.restore_btn)
-        restore_group.setLayout(restore_layout)
-        layout.addWidget(restore_group)
+            chk.setFont(font)
+            options_layout.addWidget(chk)
+
+        layout.addWidget(options_group)
+
+        btn_layout = QtWidgets.QHBoxLayout()
+        self.restore_btn = ModernButton("执行恢复操作", "#EF4444", "⚠️")
+        self.restore_btn.setMinimumWidth(150)
+        btn_layout.addWidget(self.restore_btn)
+        btn_layout.addStretch()
+        layout.addLayout(btn_layout)
+
+        layout.addStretch()
+
+        # 操作日志区
+        log_group = QtWidgets.QGroupBox("操作日志")
+        log_layout = QtWidgets.QVBoxLayout()
+        log_layout.setContentsMargins(10, 20, 10, 10)
+        self.restore_log_text = QtWidgets.QTextEdit()
+        self.restore_log_text.setReadOnly(True)
+        self.restore_log_text.setPlaceholderText("这里显示用户的操作日志...")
+        log_layout.addWidget(self.restore_log_text)
+        log_group.setLayout(log_layout)
+        layout.addWidget(log_group, stretch=1)
+
+        self.tab_widget.addTab(self.restore_tab, "恢复默认配置")
+
+    def append_log(self, message: str):
+        """向所有日志窗口添加日志"""
+        timestamp = QtCore.QDateTime.currentDateTime().toString("yyyy-MM-dd HH:mm:ss")
+        log_msg = f"[{timestamp}] {message}"
+
+        # 滚动到底部
+        for text_edit in [self.ecu_log_text, self.app_log_text, self.restore_log_text]:
+            text_edit.append(log_msg)
+            cursor = text_edit.textCursor()
+            cursor.movePosition(QtGui.QTextCursor.End)
+            text_edit.setTextCursor(cursor)
+
+    def show_message(self, message, type="info"):
+        """重写 show_message 以同时记录到日志"""
+        # super().show_message(message, type) # 移除弹框
+        self.append_log(f"[{type.upper()}] {message}")
+
+        # 使用 Toast 提示
+        msg_type = 2 # info
+        if type == "success":
+            msg_type = 0
+        elif type == "error":
+            msg_type = 1
+        elif type == "warning":
+            msg_type = 1 # warning 也用红色或自定义
+
+        MessageToast(self).show_toast(message, msg_type)
 
     def populate(self, apps):
         """Populate the APP table.
@@ -208,4 +316,5 @@ class LogConfigView(BaseView):
 
             # Column 8: 操作 - modify button placeholder (can be connected in controller)
             modify_btn = ModernButton("修改", "#3B82F6", "✎")
+            modify_btn.clicked.connect(lambda _, r=i: self.modify_requested.emit(r))
             self.app_table.setCellWidget(i, 8, modify_btn)

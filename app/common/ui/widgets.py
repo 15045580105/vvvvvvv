@@ -263,3 +263,197 @@ class CheckableComboBox(QtWidgets.QComboBox):
                             item.setCheckState(QtCore.Qt.Checked)
                         return True
         return super(CheckableComboBox, self).eventFilter(widget, event)
+
+
+class TagWidget(QtWidgets.QFrame):
+    removed = QtCore.pyqtSignal(str)
+
+    def __init__(self, text, parent=None):
+        super().__init__(parent)
+        self.text = text
+        layout = QtWidgets.QHBoxLayout(self)
+        layout.setContentsMargins(4, 2, 4, 2)
+        layout.setSpacing(4)
+
+        self.setStyleSheet("""
+            TagWidget {
+                background-color: #E0E7FF;
+                border-radius: 4px;
+                border: 1px solid #C7D2FE;
+            }
+        """)
+
+        label = QtWidgets.QLabel(text)
+        label.setStyleSheet("color: #3730A3; font-weight: 500;")
+        layout.addWidget(label)
+
+        close_btn = QtWidgets.QPushButton("×")
+        close_btn.setFixedSize(16, 16)
+        close_btn.setCursor(QT_CURSOR_POINTING)
+        close_btn.setStyleSheet("""
+            QPushButton {
+                border: none;
+                color: #6B7280;
+                font-weight: bold;
+                background: transparent;
+                padding-bottom: 2px;
+            }
+            QPushButton:hover {
+                color: #EF4444;
+            }
+        """)
+        close_btn.clicked.connect(lambda: self.removed.emit(self.text))
+        layout.addWidget(close_btn)
+
+class MultiSelectComboBox(QtWidgets.QWidget):
+    selectionChanged = QtCore.pyqtSignal(list)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.items = []
+        self.selected_items = []
+
+        # 使用水平布局，模拟一个输入框
+        self.layout = QtWidgets.QHBoxLayout(self)
+        self.layout.setContentsMargins(0, 0, 0, 0)
+        self.layout.setSpacing(0)
+
+        # 主容器，包含标签和下拉箭头
+        self.container = QtWidgets.QFrame()
+        self.container.setObjectName("MultiSelectContainer")
+        self.container.setStyleSheet("""
+            #MultiSelectContainer {
+                background-color: white;
+                border: 1px solid #D1D5DB;
+                border-radius: 4px;
+            }
+        """)
+        self.container_layout = QtWidgets.QHBoxLayout(self.container)
+        self.container_layout.setContentsMargins(2, 2, 2, 2)
+        self.container_layout.setSpacing(4)
+
+        # 标签区域
+        self.tags_widget = QtWidgets.QWidget()
+        self.tags_layout = QtWidgets.QHBoxLayout(self.tags_widget)
+        self.tags_layout.setContentsMargins(0, 0, 0, 0)
+        self.tags_layout.setSpacing(4)
+        self.container_layout.addWidget(self.tags_widget)
+
+        # 占位符文本（当没有选择时显示）
+        self.placeholder_label = QtWidgets.QLabel("请选择...")
+        self.placeholder_label.setStyleSheet("color: #9CA3AF;")
+        self.container_layout.addWidget(self.placeholder_label)
+
+        self.container_layout.addStretch()
+
+        # 下拉按钮（模拟 ComboBox 的箭头）
+        self.arrow_btn = QtWidgets.QPushButton("▼")
+        self.arrow_btn.setFixedSize(20, 20)
+        self.arrow_btn.setCursor(QT_CURSOR_POINTING)
+        self.arrow_btn.setStyleSheet("""
+            QPushButton {
+                border: none;
+                color: #6B7280;
+                background: transparent;
+                font-size: 10px;
+            }
+        """)
+        self.arrow_btn.clicked.connect(self._show_popup)
+        self.container_layout.addWidget(self.arrow_btn)
+
+        self.layout.addWidget(self.container)
+
+        # 弹出菜单
+        self.popup_menu = QtWidgets.QMenu(self)
+        self.popup_menu.setStyleSheet("""
+            QMenu {
+                background-color: white;
+                border: 1px solid #D1D5DB;
+                border-radius: 4px;
+                padding: 4px;
+            }
+            QMenu::item {
+                padding: 6px 24px;
+                border-radius: 2px;
+            }
+            QMenu::item:selected {
+                background-color: #F3F4F6;
+                color: #111827;
+            }
+        """)
+
+    def addItems(self, items):
+        self.items = items
+        self._update_popup_menu()
+
+    def _update_popup_menu(self):
+        self.popup_menu.clear()
+        for item in self.items:
+            if item not in self.selected_items:
+                action = self.popup_menu.addAction(item)
+                action.triggered.connect(lambda checked, txt=item: self._on_item_selected(txt))
+
+        if not self.items or len(self.selected_items) == len(self.items):
+             disabled_action = self.popup_menu.addAction("无更多选项")
+             disabled_action.setEnabled(False)
+
+    def _show_popup(self):
+        self._update_popup_menu()
+        # 在容器下方显示菜单
+        pos = self.mapToGlobal(self.container.geometry().bottomLeft())
+        self.popup_menu.setMinimumWidth(self.container.width())
+        self.popup_menu.exec_(pos)
+
+    def _on_item_selected(self, text):
+        if text in self.selected_items:
+            return
+
+        self.selected_items.append(text)
+        self._add_tag(text)
+        self._update_placeholder()
+        self.selectionChanged.emit(self.selected_items)
+
+    def _add_tag(self, text):
+        tag = TagWidget(text)
+        tag.removed.connect(self._on_tag_removed)
+        self.tags_layout.addWidget(tag)
+
+    def _on_tag_removed(self, text):
+        if text in self.selected_items:
+            self.selected_items.remove(text)
+
+            # Remove widget
+            for i in range(self.tags_layout.count()):
+                item = self.tags_layout.itemAt(i)
+                widget = item.widget()
+                if isinstance(widget, TagWidget) and widget.text == text:
+                    widget.deleteLater()
+                    break
+
+            self._update_placeholder()
+            self.selectionChanged.emit(self.selected_items)
+
+    def _update_placeholder(self):
+        if self.selected_items:
+            self.placeholder_label.hide()
+        else:
+            self.placeholder_label.show()
+
+    def currentSelection(self):
+        return self.selected_items
+
+    def setSelection(self, items):
+        # Clear existing
+        self.selected_items = []
+        # Remove all tag widgets
+        while self.tags_layout.count():
+            item = self.tags_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+
+        for item in items:
+            if item in self.items:
+                self.selected_items.append(item)
+                self._add_tag(item)
+
+        self._update_placeholder()

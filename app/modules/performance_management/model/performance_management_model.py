@@ -53,10 +53,10 @@ class PerformanceModel(BaseModel):
         # self.update_processes()
 
     # ============ 性能曲线相关 ============
-    def append_sample(self, cpu: float, mem: float, disk_usage: float, disk_read_kb: float, disk_write_kb: float, ts: float | None = None):
+    def append_sample(self, cpu: float, mem: float, mem_used_kb: int, mem_total_kb: int, mem_available_kb: int, disk_usage: float, disk_read_kb: float, disk_write_kb: float, ts: float | None = None):
         """追加一个性能采样点，并裁剪到 max_points。"""
         ts = ts or time.time()
-        self.samples.append((ts, cpu, mem, disk_usage, disk_read_kb, disk_write_kb))
+        self.samples.append((ts, cpu, mem, mem_used_kb, mem_total_kb, mem_available_kb, disk_usage, disk_read_kb, disk_write_kb))
         if len(self.samples) > self.max_points:
             self.samples = self.samples[-self.max_points:]
         self.dataChanged.emit()

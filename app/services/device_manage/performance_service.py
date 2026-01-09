@@ -14,12 +14,15 @@ class PerformanceFetchError(Exception):
 class PerformanceMetrics:
     cpu: float
     mem: float
+    mem_used_kb: int
+    mem_total_kb: int
+    mem_available_kb: int
     disk_usage: float
     disk_read_kb: float
     disk_write_kb: float
 
 @dataclass
-class ProcessSample:
+class ProcessInfo:
     type: str
     user: str
     pid: int
@@ -102,13 +105,16 @@ class PerformanceService:
         return PerformanceMetrics(
             cpu=cpu_usage,
             mem=mem_usage,
+            mem_used_kb=memory['used_kb'] if memory else 0,
+            mem_total_kb=memory['total_kb'] if memory else 0,
+            mem_available_kb=memory['available_kb'] if memory else 0,
             disk_usage=disk_usage,
             disk_read_kb=read_kb,
             disk_write_kb=write_kb
         )
 
 
-    def fetch_processes(self, limit: int = 20, timeout: int = 8) -> List[ProcessSample]:
+    def fetch_processes(self, limit: int = 20, timeout: int = 8) -> List[ProcessInfo]:
         """采集进程列表。"""
         # 每次采集前，重新从 DeviceService 获取最新的 SSHClient 实例
         self._ssh_client = self._device_service.get_ssh_client()
@@ -125,7 +131,7 @@ class PerformanceService:
         return self._parse_process_output(stdout)
 
     @staticmethod
-    def _parse_process_output(stdout: str) -> List[ProcessSample]:
+    def _parse_process_output(stdout: str) -> List[ProcessInfo]:
         lines = stdout.strip().split('\n')
         processes = []
 
@@ -170,8 +176,15 @@ class PerformanceService:
                 container = 'NeuSARPlatform'
                 process_name = 'neusar_startup.sh'
 
+            # Filter out unknown types to match processmonitor.py behavior
+            if p_type == 'unknown':
+                # print(f"Filtering out PID {pid}: {command}") # Debug
+                continue
+
+            # print(f"Keeping PID {pid} ({p_type}): {command}") # Debug
+
             try:
-                processes.append(ProcessSample(
+                processes.append(ProcessInfo(
                     type=p_type,
                     user=user,
                     pid=int(pid),

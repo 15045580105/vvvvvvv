@@ -313,20 +313,38 @@ class DeviceService(QObject):
         self.disconnect_device(device)
 
     # ---- 提供给其他 Service 复用的 已连接成功的 DoIP / SomeIP /ssh 能力 ----
-    def get_doip_client(self) -> DoIPClientHandler | None:
-        """返回当前 DoIP 客户端实例（若尚未连接则为 None）。"""
-        if self._doip_handler is not None and self._doip_handler.is_connected():
-            return self._doip_handler
-        return None
+    def get_doip_client(self) -> Optional[DoIPClientHandler]:
+        """获取当前的 DoIP 客户端实例"""
+        return self._doip_handler
+
+    def get_ssh_client(self) -> Optional[SSHClient]:
+        """获取当前的 SSH 客户端实例"""
+        return self._ssh_client
+
+
+    def close_device_connections(self):
+        self._ssh_client.disconnect()
+        self._someip_client.stop()
+        self._doip_handler.disconnect()
+
+
+    def active_ssh_command(self):
+        """
+        发送 DoIP 指令激活 SSH (或其他功能)
+        """
+        self.log_signal.emit("开始发送激活 SSH 指令...")
+        # 31 01 BE E9
+        routine = bytes.fromhex("31 01 BE E9")
+        self.execute_secure_routine(routine, sec_level=0x21)
 
     def send_doip_payload(
-        self,
-        payload: bytes,
-        *,
-        timeout: float | None = None,
-        response_index: int | None = None,
-        target_did: int | None = None,
-        prefer_last: bool = False,
+            self,
+            payload: bytes,
+            *,
+            timeout: float | None = None,
+            response_index: int | None = None,
+            target_did: int | None = None,
+            prefer_last: bool = False,
     ) -> bytes | None:
         """统一的 DoIP 发送接口，供 Topology/Diagnostic 等业务 Service 重用。"""
         client = self.get_doip_client()
@@ -353,32 +371,9 @@ class DeviceService(QObject):
             self.log_signal.emit(f"通过 DoIP 发送报文失败: {e}")
             return None
 
-    def get_someip_client(self) -> SomeIPClient | None:
-        """返回当前 SomeIP 客客户端实例（可能为 None）。"""
-        return self._someip_client
-
-    def get_ssh_client(self) -> SSHClient | None:
-        """返回当前 SSH 客客户端实例（可能为 None）。"""
-        return self._ssh_client
 
 
-    def close_device_connections(self):
-        self._ssh_client.disconnect()
-        self._someip_client.stop()
-        self._doip_handler.disconnect()
-
-
-    def active_ssh_command(self):
-        """
-        发送 DoIP 指令激活 SSH (或其他功能)
-        """
-        self.log_signal.emit("开始发送激活 SSH 指令...")
-        # 31 01 BE E9
-        routine = bytes.fromhex("31 01 BE E9")
-        self.execute_secure_routine(routine, sec_level=0x21)
-
-
-    def execute_secure_routine(self, routine_command: bytes, sec_level: int = 0x21, log_callback: Optional[Callable[[str], None]] = None) -> bool | bytes:
+    def execute_secure_routine(self, routine_command: bytes, sec_level: int = 0x21, log_callback: Optional[Callable[[str], None]] = None, return_on_auth_fail: bool = False) -> bool | bytes:
         """
         执行带安全访问的 UDS 例程序列:
         1. 10 03 (Extended Session)
@@ -387,8 +382,9 @@ class DeviceService(QObject):
 
         :param routine_command: 例程指令 bytes
         :param sec_level: 安全访问级别
-        :param log_callback: 日志回调函数，接受一个字符串参数。如果提供，则日志通过此回调输出；否则通过 self.log_signal 发出。
-        :return: 成功返回 响应数据(bytes)，失败返回 False。注意：非空 bytes 在 bool 上下文中为 True，兼容旧逻辑。
+        :param log_callback: 日志回调函数
+        :param return_on_auth_fail: 安全访问失败是否退出
+        :return: 成功返回 响应数据(bytes)，失败返回 False。
         """
         # 定义内部日志函数
         def _log(msg: str):
@@ -440,7 +436,8 @@ class DeviceService(QObject):
 
         if not rx_key or rx_key[0] != 0x67:
             _log(f"安全访问失败: {rx_key.hex(' ').upper() if rx_key else '无响应'}")
-            # return False
+            if return_on_auth_fail:
+                return False
         else:
             _log(f"安全访问成功: {rx_key.hex(' ').upper()}")
 

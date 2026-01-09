@@ -1122,9 +1122,9 @@ class DPTService:
                             else:
                                 for b_idx in range(b_start, b_end + 1):
                                      existing_field["bit_fields"][f"bit_{b_idx}"] = {
-                                        "description": field.get("description", ""),
-                                        "conversion": field.get("conversion")
-                                    }
+                                    "description": field.get("description", ""),
+                                    "conversion": field.get("conversion")
+                                }
                         else:
                             b_idx = int(bit_val)
                             existing_field["bit_fields"][f"bit_{b_idx}"] = {

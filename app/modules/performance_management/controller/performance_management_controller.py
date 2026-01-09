@@ -4,7 +4,7 @@ from app.modules.performance_management.model.performance_management_model impor
     ProcessInfo,
 )
 from app.modules.performance_management.view.performance_management_view import PerformanceView
-from app.services.device_manage.performance_service import PerformanceService, PerformanceFetchError
+from app.services.device_manage.performance_service import PerformanceService
 from app.core.dependency_injection import di_container
 from app.services.device_manage.device_service import DeviceService
 
@@ -33,14 +33,9 @@ class DataCollectorThread(QtCore.QThread):
             if not self._paused:
                 try:
                     metrics = self.service.fetch_metrics()
-                    # Emit tuple: (request_time, command, response_time, metrics)
-                    # Assuming command is static or fetched from somewhere, else we need to pass it here
-                    command = "fetch_metrics"  # Placeholder, update logic if command varies
                     request_time = datetime.datetime.now()
-                    response_time = request_time  # Placeholder, update if actual response time is available
-
                     # Emit the tuple
-                    self.data_collected.emit((request_time, command, response_time, metrics))
+                    self.data_collected.emit((request_time, metrics))
                 except Exception as e:
                     self.error_occurred.emit(str(e))
 
@@ -67,7 +62,7 @@ class DataWriterThread(QtCore.QThread):
         super().__init__()
         self.data_queue = data_queue
         self._running = True
-        self.log_dir = "logs/performance"
+        self.log_dir = "logs/performance metrics"
         if not os.path.exists(self.log_dir):
             os.makedirs(self.log_dir)
         self.current_date = datetime.date.today()
@@ -89,7 +84,10 @@ class DataWriterThread(QtCore.QThread):
         self.writer = csv.writer(self.file_handle)
 
         if not file_exists:
-            self.writer.writerow(['Request Time', 'Command', 'Response Time', 'CPU (%)', 'Memory (%)', 'Disk Usage (%)', 'Disk Read (KB)', 'Disk Write (KB)'])
+            self.writer.writerow([
+                'Request Time','CPU (%)', 'Memory (%)', 'Mem Used (KB)', 'Mem Total (KB)', 'Mem Available (KB)',
+                'Disk Usage (%)', 'Disk Read (KB)', 'Disk Write (KB)'
+            ])
 
         self._cleanup_old_files()
 
@@ -114,19 +112,19 @@ class DataWriterThread(QtCore.QThread):
                     self._open_file()
 
                 if self.writer:
-                    # Unpack tuple (req_time, cmd, resp_time, metrics)
-                    if isinstance(item, tuple) and len(item) == 4:
-                        req_time, cmd, resp_time, metrics = item
+                    # Unpack tuple (req_time, metrics)
+                    if isinstance(item, tuple) and len(item) == 2:
+                        req_time, metrics = item
 
                         req_time_str = req_time.strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
-                        resp_time_str = resp_time.strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
 
                         self.writer.writerow([
                             req_time_str,
-                            cmd,
-                            resp_time_str,
                             metrics.cpu,
                             metrics.mem,
+                            metrics.mem_used_kb,
+                            metrics.mem_total_kb,
+                            metrics.mem_available_kb,
                             metrics.disk_usage,
                             metrics.disk_read_kb,
                             metrics.disk_write_kb
@@ -168,16 +166,12 @@ class ProcessCollectorThread(QtCore.QThread):
                 try:
                     # 1. 记录请求时间
                     request_time = datetime.datetime.now()
-                    command = "ps -eo user,pid,%cpu,%mem,vsz,rss,tty,stat,start,time,command --sort=-%cpu" # Approximate command used in service
 
                     # 2. 请求数据
                     processes = self.service.fetch_processes()
 
-                    # 3. 记录响应时间
-                    response_time = datetime.datetime.now()
-
-                    # 4. 发送数据到主线程/其他线程 (Tuple)
-                    self.data_collected.emit((request_time, command, response_time, processes))
+                    # 3. 发送数据到主线程/其他线程 (Tuple)
+                    self.data_collected.emit((request_time, processes))
                 except Exception as e:
                     self.error_occurred.emit(str(e))
 
@@ -227,7 +221,7 @@ class ProcessWriterThread(QtCore.QThread):
 
         if not file_exists:
             self.writer.writerow([
-                "Request Time", "Command", "Response Time", "TYPE", "USER", "PID", "CPU%", "MEM%", "VSZ", "RSS", "TTY", "STAT", "START", "TIME", "CONTAINER", "PROCESS_NAME"
+                "Request Time", "TYPE", "USER", "PID", "CPU%", "MEM%", "VSZ", "RSS", "TTY", "STAT", "START", "TIME", "CONTAINER", "PROCESS_NAME"
             ])
 
         self._cleanup_old_files()
@@ -243,7 +237,7 @@ class ProcessWriterThread(QtCore.QThread):
             print(f"Cleanup failed: {e}")
 
     def run(self):
-        while self._running:
+        while self._running or not self.data_queue.empty():
             try:
                 # 从队列获取数据，设置超时避免死锁
                 # data_queue now expects a tuple: (request_time, command, response_time, processes)
@@ -256,18 +250,15 @@ class ProcessWriterThread(QtCore.QThread):
 
                 if self.writer:
                     # Unpack the tuple
-                    if isinstance(item, tuple) and len(item) == 4:
-                        req_time, cmd, resp_time, processes = item
+                    if isinstance(item, tuple) and len(item) == 2:
+                        req_time, processes = item
 
                         # Format times
                         req_time_str = req_time.strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
-                        resp_time_str = resp_time.strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
 
                         for p in processes:
                             self.writer.writerow([
                                 req_time_str,
-                                cmd,
-                                resp_time_str,
                                 p.type, p.user, p.pid, p.cpu_percent, p.mem_percent, p.vsz_kb, p.rss_kb,
                                 p.tty, p.stat, p.start_time, p.cpu_time, p.container, p.process_name
                             ])
@@ -523,65 +514,32 @@ class PerformanceController(BaseController):
         self._export_data(process_only=True)
 
     def _export_data(self, metrics_only=False, process_only=False):
-        filename = f"performance_data_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
-        abs_path = os.path.abspath(filename)
+        """
+        启动导出线程。
+        """
+        # Prevent multiple exports at the same time if needed, or just let them run
+        # For simplicity, we create a new worker each time.
+        # Ideally, we should track it to avoid garbage collection issues if it finishes too quickly or not at all.
 
-        try:
-            import openpyxl
-            wb = openpyxl.Workbook()
+        worker = ExportWorker(metrics_only, process_only, metrics_count=len(self.model.samples), process_count=len(self.model.process_list))
+        worker.status_updated.connect(self._on_export_status_updated)
+        # Keep a reference to prevent GC
+        self._export_worker = worker
+        worker.finished.connect(lambda: setattr(self, '_export_worker', None))
 
-            # Remove default sheet
-            if "Sheet" in wb.sheetnames:
-                wb.remove(wb["Sheet"])
+        if metrics_only:
+            self.view.set_metrics_status("正在导出性能数据...", "warn")
+        elif process_only:
+            self.view.set_process_status("正在导出进程数据...", "warn")
 
-            if metrics_only or (not process_only):
-                ws_metrics = wb.create_sheet("Metrics")
-                ws_metrics.append(['Timestamp', 'CPU (%)', 'Memory (%)', 'Disk Usage (%)', 'Disk Read (KB)', 'Disk Write (KB)'])
-                for sample in self.model.samples:
-                    if len(sample) == 6:
-                        ts, cpu, mem, disk_usage, disk_read, disk_write = sample
-                    else:
-                        ts = sample[0]
-                        cpu = sample[1] if len(sample) > 1 else 0.0
-                        mem = sample[2] if len(sample) > 2 else 0.0
-                        disk_usage = sample[3] if len(sample) > 3 else 0.0
-                        disk_read = sample[4] if len(sample) > 4 else 0.0
-                        disk_write = sample[5] if len(sample) > 5 else 0.0
+        worker.start()
 
-                    time_str = datetime.datetime.fromtimestamp(ts).strftime('%Y-%m-%d %H:%M:%S')
-                    ws_metrics.append([time_str, cpu, mem, disk_usage, disk_read, disk_write])
+    def _on_export_status_updated(self, type_, message, level):
+        if type_ == "metrics":
+            self.view.set_metrics_status(message, level)
+        elif type_ == "process":
+            self.view.set_process_status(message, level)
 
-            if process_only or (not metrics_only):
-                ws_processes = wb.create_sheet("Processes")
-                ws_processes.append([
-                    "TYPE", "USER", "PID", "CPU%", "MEM%", "VSZ", "RSS", "TTY", "STAT", "START", "TIME", "CONTAINER", "PROCESS_NAME"
-                ])
-                for p in self.model.process_list:
-                    ws_processes.append([
-                        p.type, p.user, p.pid, p.cpu_percent, p.mem_percent, p.vsz_kb, p.rss_kb,
-                        p.tty, p.stat, p.start_time, p.cpu_time, p.container, p.process_name
-                    ])
-
-            wb.save(filename)
-            link = f'<a href="file:///{abs_path}">{abs_path}</a>'
-
-            if metrics_only:
-                self.view.set_metrics_status(f"数据已导出到: {link}", "info")
-            elif process_only:
-                self.view.set_process_status(f"数据已导出到: {link}", "info")
-            else:
-                # Fallback if both
-                self.view.set_metrics_status(f"数据已导出到: {link}", "info")
-                self.view.set_process_status(f"数据已导出到: {link}", "info")
-
-        except ImportError:
-            msg = "导出失败: 未安装 openpyxl 库"
-            if metrics_only: self.view.set_metrics_status(msg, "error")
-            elif process_only: self.view.set_process_status(msg, "error")
-        except Exception as e:
-            msg = f"导出失败: {str(e)}"
-            if metrics_only: self.view.set_metrics_status(msg, "error")
-            elif process_only: self.view.set_process_status(msg, "error")
 
 
     def _on_search_text_changed(self, text: str):
@@ -599,7 +557,7 @@ class PerformanceController(BaseController):
 
     def _on_data_collected(self, data):
         """处理采集到的数据 (在主线程中执行)"""
-        # data is now a tuple: (request_time, command, response_time, metrics)
+        # data is now a tuple: (request_time, metrics)
 
         # 放入写入队列
         self.data_queue.put(data)
@@ -608,32 +566,96 @@ class PerformanceController(BaseController):
         self._iteration_count += 1
 
         # Unpack tuple
-        if isinstance(data, tuple) and len(data) == 4:
-            _, _, _, metrics = data
+        if isinstance(data, tuple) and len(data) == 2:
+            _, metrics = data
         else:
             # Fallback for safety
             metrics = data
 
-        # Print to console
-        print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] Metrics - CPU: {metrics.cpu:.1f}%, Mem: {metrics.mem:.1f}%")
+        # Print to console (formatted like sshmonitor)
+        current_time_str = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        print(f"\n第 {self._iteration_count} 次监控 - {current_time_str}")
+        print("-" * 50)
+
+        mem_used_mb = metrics.mem_used_kb / 1024
+        mem_total_gb = metrics.mem_total_kb / (1024 * 1024)
+        mem_avail_gb = metrics.mem_available_kb / (1024 * 1024)
+
+        print(f"内存使用率: {metrics.mem:.1f}%")
+        print(f"内存使用: {mem_used_mb:.2f} MB / {mem_total_gb:.2f} GB")
+        print(f"可用内存: {mem_avail_gb:.2f} GB")
+        print(f"磁盘读取: {metrics.disk_read_kb:.1f} KB")
+        print(f"磁盘写入: {metrics.disk_write_kb:.1f} KB")
+        print(f"磁盘使用率: {metrics.disk_usage:.1f}%")
+        print(f"CPU使用率: {metrics.cpu:.1f}%")
 
         self.model.set_error(None)
-        self.model.append_sample(metrics.cpu, metrics.mem, metrics.disk_usage, metrics.disk_read_kb, metrics.disk_write_kb)
+        self.model.append_sample(
+            metrics.cpu,
+            metrics.mem,
+            metrics.mem_used_kb,
+            metrics.mem_total_kb,
+            metrics.mem_available_kb,
+            metrics.disk_usage,
+            metrics.disk_read_kb,
+            metrics.disk_write_kb
+        )
 
         # Update chart with new data
         # Pass elapsed time as x_value. The view will handle the scrolling window.
-        self.view.update_chart(elapsed, metrics.cpu, metrics.mem, metrics.disk_usage, metrics.disk_read_kb, metrics.disk_write_kb, self.model.max_points)
+        self.view.update_chart(
+            elapsed,
+            metrics.cpu,
+            metrics.mem,
+            metrics.mem_used_kb,
+            metrics.mem_total_kb,
+            metrics.mem_available_kb,
+            metrics.disk_usage,
+            metrics.disk_read_kb,
+            metrics.disk_write_kb,
+            self.model.max_points
+        )
 
     def _on_process_data_collected(self, data):
         """处理采集到的进程数据 (在主线程中执行)"""
-        # data is now a tuple: (request_time, command, response_time, processes)
+        # data is now a tuple: (request_time, processes)
 
         # 1. Send full tuple to writer thread
         self.process_data_queue.put(data)
 
         # 2. Extract processes list and send to UI thread
-        if isinstance(data, tuple) and len(data) == 4:
-            _, _, _, processes = data
+        if isinstance(data, tuple) and len(data) == 2:
+            _, processes = data
+
+            # 增加打印逻辑
+            self._process_iteration_count = getattr(self, '_process_iteration_count', 0) + 1
+            print(f"\n{'='*20} 第 {self._process_iteration_count} 次采集 {'='*20}")
+            print("找到的进程信息：")
+            header = f"{'TYPE':<6} {'USER':<10} {'PID':<8} {'CPU%':<6} {'MEM%':<6} {'VSZ':<10} {'RSS':<10} {'TTY':<8} {'STAT':<5} {'START':<8} {'TIME':<10} {'CONTAINER':<15} {'PROCESS_NAME':<20}"
+            print(header)
+            print("=" * 140)
+
+            type1_count = 0
+            type2_count = 0
+
+            for p in processes:
+                # ProcessInfo object to dict-like access or attribute access
+                print(f"{p.type:<6} {p.user:<10} {p.pid:<8} "
+                      f"{p.cpu_percent:<6.1f} {p.mem_percent:<6.1f} "
+                      f"{p.vsz_kb:<10} {p.rss_kb:<10} {p.tty:<8} "
+                      f"{p.stat:<5} {p.start_time:<8} {p.cpu_time:<10} "
+                      f"{p.container:<15} {p.process_name:<20}")
+
+                if p.type == 'type1':
+                    type1_count += 1
+                elif p.type == 'type2':
+                    type2_count += 1
+
+            print(f"\n统计信息：")
+            print(f"第一类进程（路径以/containers/开头）: {type1_count} 个")
+            print(f"第二类进程（特定命令格式）: {type2_count} 个")
+            print(f"总计: {len(processes)} 个")
+
             self.process_ui_queue.put(processes)
         else:
             # Fallback if something went wrong (shouldn't happen with updated collector)
@@ -676,3 +698,173 @@ class PerformanceController(BaseController):
         # process_infos 已经是 ProcessInfo 对象列表，由 ProcessUIUpdateThread 转换
         self.model.set_process_list(process_infos)
         self._refresh_process_view()
+
+
+class ExportWorker(QtCore.QThread):
+    """数据导出线程"""
+    # type (metrics/process), message, level
+    status_updated = QtCore.pyqtSignal(str, str, str)
+
+    def __init__(self, metrics_only=False, process_only=False, metrics_count=0, process_count=0):
+        super().__init__()
+        self.metrics_only = metrics_only
+        self.process_only = process_only
+        self.metrics_count = metrics_count
+        self.process_count = process_count
+
+    def run(self):
+        base_dir = os.getcwd()
+
+        try:
+            import openpyxl
+            from openpyxl.styles import PatternFill
+
+            # 定义样式
+            fill_odd = PatternFill(start_color="E0F2FE", end_color="E0F2FE", fill_type="solid")   # Light Blue
+            fill_even = PatternFill(start_color="FEF9C3", end_color="FEF9C3", fill_type="solid")  # Light Yellow
+
+            def apply_metrics_style(ws):
+                # Auto-adjust column width & Apply alternating row colors
+                for i, row in enumerate(ws.iter_rows(min_row=2)): # Skip header
+                    if i % 1000 == 0: time.sleep(0.001) # Prevent UI freeze
+                    fill = fill_odd if (i + 2) % 2 != 0 else fill_even
+                    for cell in row:
+                        cell.fill = fill
+
+                _adjust_column_width(ws)
+
+            def apply_process_style(ws):
+                # Apply colors based on Request Time batch
+                last_time = None
+                use_odd = True # Start with odd (Blue)
+
+                for i, row in enumerate(ws.iter_rows(min_row=2)):
+                    if i % 1000 == 0: time.sleep(0.001) # Prevent UI freeze
+                    # Assuming first column is Request Time
+                    current_time = row[0].value
+
+                    if current_time != last_time:
+                        use_odd = not use_odd # Toggle color
+                        last_time = current_time
+
+                    fill = fill_odd if use_odd else fill_even
+                    for cell in row:
+                        cell.fill = fill
+
+                _adjust_column_width(ws)
+
+            def _adjust_column_width(ws):
+                for col in ws.columns:
+                    max_length = 0
+                    column = col[0].column_letter
+                    for cell in col:
+                        try:
+                            if len(str(cell.value)) > max_length:
+                                max_length = len(str(cell.value))
+                        except:
+                            pass
+                    adjusted_width = (max_length + 2)
+                    ws.column_dimensions[column].width = min(adjusted_width, 50) # Limit max width
+
+            # --- 导出性能数据 ---
+            if self.metrics_only or (not self.process_only):
+                perf_filename = os.path.join(base_dir, "Performance_Metrics_Data_7Days.xlsx")
+                wb_perf = openpyxl.Workbook()
+                if "Sheet" in wb_perf.sheetnames: wb_perf.remove(wb_perf["Sheet"])
+                ws_metrics = wb_perf.create_sheet("Metrics")
+
+                # 写入表头
+                headers = [
+                    'Request Time', 'CPU (%)', 'Memory (%)', 'Mem Used (KB)', 'Mem Total (KB)', 'Mem Available (KB)',
+                    'Disk Usage (%)', 'Disk Read (KB)', 'Disk Write (KB)'
+                ]
+                ws_metrics.append(headers)
+
+                # 读取 logs/performance/ 下的所有 CSV
+                log_dir = "logs/performance metrics"
+                if os.path.exists(log_dir):
+                    files = sorted([f for f in os.listdir(log_dir) if f.startswith("performance_") and f.endswith(".csv")])
+                    for idx, f in enumerate(files):
+                        if idx % 5 == 0: time.sleep(0.001) # Yield
+                        filepath = os.path.join(log_dir, f)
+                        try:
+                            with open(filepath, 'r', encoding='utf-8', errors='ignore') as csvfile:
+                                reader = csv.reader(csvfile)
+                                next(reader, None) # Skip header
+                                for row in reader:
+                                    # 转换数值类型
+                                    new_row = []
+                                    for idx, val in enumerate(row):
+                                        if idx >= 1: # 数值列
+                                            try: new_row.append(float(val))
+                                            except: new_row.append(val)
+                                        else:
+                                            new_row.append(val)
+                                    ws_metrics.append(new_row)
+                        except Exception as e:
+                            print(f"Error reading {f}: {e}")
+
+                apply_metrics_style(ws_metrics)
+                wb_perf.save(perf_filename)
+                link = f'<a href="file:///{perf_filename}">{perf_filename}</a>'
+                self.status_updated.emit("metrics", f"性能数据已导出(最近{self.metrics_count}条): {link}", "info")
+
+            # --- 导出进程数据 ---
+            if self.process_only or (not self.metrics_only):
+                proc_filename = os.path.join(base_dir, "Process_Data_7Days.xlsx")
+                wb_proc = openpyxl.Workbook()
+                if "Sheet" in wb_proc.sheetnames: wb_proc.remove(wb_proc["Sheet"])
+                ws_proc = wb_proc.create_sheet("Processes")
+
+                headers = [
+                    "Request Time", "TYPE", "USER", "PID", "CPU%", "MEM%", "VSZ", "RSS", "TTY", "STAT", "START", "TIME", "CONTAINER", "PROCESS_NAME"
+                ]
+                ws_proc.append(headers)
+
+                # 读取 logs/process/ 下的所有 CSV
+                log_dir = "logs/process"
+                max_rows = 500000
+
+                if os.path.exists(log_dir):
+                    files = sorted([f for f in os.listdir(log_dir) if f.startswith("process_") and f.endswith(".csv")])
+
+                    # Re-implement with deque for efficiency
+                    from collections import deque
+                    rows_deque = deque(maxlen=max_rows)
+
+                    for idx, f in enumerate(files): # Chronological order
+                        if idx % 5 == 0: time.sleep(0.001) # Yield
+                        filepath = os.path.join(log_dir, f)
+                        try:
+                            with open(filepath, 'r', encoding='utf-8', errors='ignore') as csvfile:
+                                reader = csv.reader(csvfile)
+                                header = next(reader, None)
+                                for row in reader:
+                                    # Convert numbers
+                                    for idx in [3, 4, 5, 6, 7]:
+                                        if idx < len(row):
+                                            try: row[idx] = float(row[idx])
+                                            except: pass
+                                    rows_deque.append(row)
+                        except: pass
+
+                    for i, row in enumerate(rows_deque):
+                        if i % 1000 == 0: time.sleep(0.001) # Yield
+                        ws_proc.append(row)
+
+                    apply_process_style(ws_proc)
+                    wb_proc.save(proc_filename)
+                    link = f'<a href="file:///{proc_filename}">{proc_filename}</a>'
+                    self.status_updated.emit("process", f"进程数据已导出(最近{self.process_count}条): {link}", "info")
+                else:
+                    self.status_updated.emit("process", "没有找到进程日志目录", "warn")
+
+        except ImportError:
+            msg = "导出失败: 未安装 openpyxl 库"
+            if self.metrics_only: self.status_updated.emit("metrics", msg, "error")
+            elif self.process_only: self.status_updated.emit("process", msg, "error")
+        except Exception as e:
+            msg = f"导出失败: {str(e)}"
+            if self.metrics_only: self.status_updated.emit("metrics", msg, "error")
+            elif self.process_only: self.status_updated.emit("process", msg, "error")
+

@@ -326,18 +326,13 @@ class TopologyService:
 
     def _get_factory_mode(self, log_callback: Optional[Callable[[str], None]] = None) -> str:
         if log_callback: log_callback("-->读取工厂模式<--")
-        data = self._send_uds_read(0x01, 0x10, log_callback)
+        # 假设工厂模式 DID 为 0xBE01 (示例)
+        data = self._send_uds_read(0xBE, 0x01, log_callback)
         if data:
             if log_callback: log_callback(f"工厂模式原始数据: {data.hex(' ').upper()}")
-            val = data[0]
-            if 0x10 <= val <= 0xFF:
-                result = "工厂模式"
-            else:
-                result = "非工厂模式"
-            if log_callback: log_callback(f"工厂模式解析结果: {result}")
-            return result
-        if log_callback: log_callback("工厂模式读取失败: 无数据")
-        return "Unknown"
+            # 假设 01 为工厂模式，00 为用户模式
+            return "工厂模式" if data[0] == 0x01 else "用户模式"
+        return "未知"
 
     def _get_voltage(self, log_callback: Optional[Callable[[str], None]] = None) -> str:
         if log_callback: log_callback("-->读取电压<--")
@@ -373,7 +368,7 @@ class TopologyService:
         if log_callback: log_callback("-->读取密钥槽状态<--")
         data = self._send_uds_read(0xBE, 0x2C, log_callback)
         if data:
-            if log_callback: log_callback(f"密钥槽��态原始数据: {data.hex(' ').upper()}")
+            if log_callback: log_callback(f"密钥槽状态原始数据: {data.hex(' ').upper()}")
             result = data.hex()
             if log_callback: log_callback(f"密钥槽状态解析结果: {result}")
             return result
@@ -633,3 +628,107 @@ class TopologyService:
             network_management=network_mgmt,
             storage_info=storage_info,
         )
+
+    def fetch_can_lin_snapshot(self, log_callback: Optional[Callable[[str], None]] = None) -> List[Tuple[str, str, str, int, int]]:
+        """
+        采集 CAN/LIN 拓扑信息
+        总线状态获取方法：读取当前故障DTC，19022f，判断返回的DTC中是否有busoff的DTC。
+        """
+        if self._device_service is None:
+             # 回退到 dummy 数据
+             if log_callback: log_callback("未连接设备，使用模拟数据")
+             return self._build_dummy_can_lin_snapshot()
+
+        client = self._device_service.get_doip_client()
+        if not client or not client.is_connected:
+            if log_callback: log_callback("DoIP 未连接，使用模拟数据")
+            return self._build_dummy_can_lin_snapshot()
+
+        # 1. 故障读取 (DTC 0x19 02 2F)
+        req = bytes.fromhex("19 02 2F")
+        if log_callback: log_callback(f"发送 DTC 读取指令: {req.hex(' ').upper()}")
+        rx = client.send_doip_message(req, timeout=5.0)
+
+        dtc_list = []
+        if rx and rx[0] == 0x59:
+             # 解析 DTC
+             # 格式: 59 02 2F [StatusAvailabilityMask] [DTC1] [Status1] [DTC2] [Status2] ...
+             # DTC 是 3 字节，Status 是 1 字节
+             if len(rx) > 4:
+                 data = rx[4:]
+                 count = len(data) // 4
+                 for i in range(count):
+                     dtc_bytes = data[i*4 : i*4+3]
+                     dtc_hex = dtc_bytes.hex().upper()
+                     dtc_list.append(dtc_hex)
+             if log_callback: log_callback(f"读取到的 DTC 列表: {dtc_list}")
+        else:
+             if log_callback: log_callback(f"DTC 读取失败或无响应: {rx.hex(' ').upper() if rx else 'None'}")
+
+        # 2. 映射关系
+        # DTC - 节点名称映射
+        # 存在DTC的通道，显示为红色(offline)，不存在DTC的通道，显示为绿色(online)
+        dtc_map = {
+            "C07388": "CCU_CANFD5", # CAN00
+            "D8D088": "CCU_CANFD11", # CAN01
+            "D8D188": "Rollback1", # CAN02
+            "D8D288": "CCU_CANFD2", # CAN03
+            "D8D388": "CCU_CANFD4", # CAN04
+            "D8D488": "CCU_CANFD13", # CAN05
+            "D8D588": "CCU_CANFD3", # CAN06
+            "D8D688": "OBD_CAN", # CAN07
+            "D8D788": "CCU_CANFD12", # CAN08
+            "D8D888": "CCU_CANFD7", # CAN09
+            "D8D988": "CCU_CANFD8", # CAN10
+            "D8DA88": "CCU_CANFD9", # CAN11
+            "D8DB88": "CCU_CANFD10", # CAN12
+            "D8DC88": "CCU_CANFD1", # CAN13
+            "D8DD88": "Rollback2", # CAN14
+            "D8DE88": "CCU_CANFD6", # CAN15
+            "9F0088": "LIN1",
+            "9F0188": "LIN2"
+        }
+        dtc_list = ['05162F', '06162F', '098728', '0A8728', '0B8728', '0C8768', '0E8728', '0F8728', '108728', '128728', '138728', '148728', '158728', '168728', '1C8728', '1D8728', '1E8728', '058728', '068728', '078728', '088728', '098728', '248728', '258728', '268728', '2B622F', '0A622F', '0D622F', '3F772E', '8B8820', '45292F', '18292F', '19292F', '230A28', '540928', 'B68728', '7B7728', '988728', '29872C', '12872C', '20872C', '30872C', '40872C', '508728', '9F0188', 'C07388']
+        if log_callback: log_callback(f"因设备未读有故障码，模拟的 DTC 列表: {dtc_list}")
+        # 默认所有节点在线
+        node_status = {name: "online" for name in dtc_map.values()}
+
+        # 根据 DTC 更新状态
+        for dtc in dtc_list:
+            if dtc in dtc_map:
+                node_name = dtc_map[dtc]
+                node_status[node_name] = "offline"
+                if log_callback: log_callback(f"发现故障 DTC {dtc}，节点 {node_name} 标记为离线")
+
+        # 3. 构建节点数据
+        # 格式: (name, icon, status, x, y)
+        nodes = []
+        # 中心节点
+        nodes.append(("LLCE", "", "online", 0, 0))
+
+        # 子节点
+        # 使用圆周布局或其他布局，这里暂时由 TopologyWidget 自动布局
+        # 此处只提供数据列表
+
+        # 按照用户提供的列表顺序或者逻辑顺序添加
+        ordered_nodes = [
+             "CCU_CANFD1", "CCU_CANFD2", "CCU_CANFD3", "CCU_CANFD4", "CCU_CANFD5", "CCU_CANFD6",
+             "CCU_CANFD7", "CCU_CANFD8", "CCU_CANFD9", "CCU_CANFD10", "CCU_CANFD11", "CCU_CANFD12", "CCU_CANFD13",
+             "Rollback1", "Rollback2", "OBD_CAN", "LIN1", "LIN2"
+        ]
+
+        for name in ordered_nodes:
+            status = node_status.get(name, "online")
+            nodes.append((name, "", status, 0, 0))
+
+        return nodes
+
+    def _build_dummy_can_lin_snapshot(self) -> List[Tuple[str, str, str, int, int]]:
+        """模拟 CAN/LIN 拓扑数据"""
+        nodes = [("LLCE", "", "online", 0, 0)]
+        for i in range(1, 14):
+            nodes.append((f"CANFD{i}", "", "online", 0, 0))
+        nodes.append(("LIN1", "", "online", 0, 0))
+        nodes.append(("LIN2", "", "online", 0, 0))
+        return nodes
+

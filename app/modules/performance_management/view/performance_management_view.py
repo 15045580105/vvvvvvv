@@ -7,28 +7,43 @@ from app.common.ui.widgets import ModernButton
 class MetricCard(QtWidgets.QFrame):
     clicked = QtCore.pyqtSignal(str)
 
-    def __init__(self, title, identifier, parent=None):
+    def __init__(self, title, identifier, color="#333333", parent=None):
         super().__init__(parent)
         self.identifier = identifier
+        self.base_color = color # Store the base color for the value
         self.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
         self.selected = False
 
-        self.layout = QtWidgets.QVBoxLayout(self)
-        self.layout.setContentsMargins(15, 15, 15, 15)
+        # Main layout is Horizontal: Left (Title/Sub) | Right (Value)
+        self.layout = QtWidgets.QHBoxLayout(self)
+        self.layout.setContentsMargins(15, 10, 15, 10)
+        self.layout.setSpacing(10)
+
+        # Left Container for Title and Subtitle
+        left_container = QtWidgets.QWidget()
+        left_layout = QtWidgets.QVBoxLayout(left_container)
+        left_layout.setContentsMargins(0, 0, 0, 0)
+        left_layout.setSpacing(2)
 
         self.title_lbl = QtWidgets.QLabel(title)
         self.title_lbl.setStyleSheet("font-size: 14px; font-weight: bold; color: #555;")
+        self.title_lbl.setWordWrap(True) # Allow title to wrap if needed
 
+        self.sub_lbl = QtWidgets.QLabel("Waiting...")
+        self.sub_lbl.setStyleSheet("font-size: 12px; color: #888;")
+
+        left_layout.addWidget(self.title_lbl)
+        left_layout.addWidget(self.sub_lbl)
+        left_layout.addStretch()
+
+        # Right Label for Value
         self.value_lbl = QtWidgets.QLabel("-")
-        self.value_lbl.setStyleSheet("font-size: 28px; font-weight: bold; color: #333; margin-top: 5px;")
+        self.value_lbl.setAlignment(QtCore.Qt.AlignmentFlag.AlignRight | QtCore.Qt.AlignmentFlag.AlignVCenter)
+        # Adjust font size slightly if needed to fit, but horizontal layout gives more space
+        self.value_lbl.setStyleSheet(f"font-size: 24px; font-weight: bold; color: {self.base_color};")
 
-        self.sub_lbl = QtWidgets.QLabel("Waiting for data...")
-        self.sub_lbl.setStyleSheet("font-size: 12px; color: #888; margin-top: 2px;")
-
-        self.layout.addWidget(self.title_lbl)
-        self.layout.addWidget(self.value_lbl)
-        self.layout.addWidget(self.sub_lbl)
-        self.layout.addStretch()
+        self.layout.addWidget(left_container, stretch=1)
+        self.layout.addWidget(self.value_lbl, stretch=0)
 
         self.update_style()
 
@@ -67,12 +82,12 @@ class MetricCard(QtWidgets.QFrame):
         self.value_lbl.setText(value_text)
         self.sub_lbl.setText(sub_text)
 
-        color = "#111827" # Default black
+        color = self.base_color # Default to base color
         if level == "warn": color = "#F59E0B"
         elif level == "error": color = "#EF4444"
         elif level == "success": color = "#10B981"
 
-        self.value_lbl.setStyleSheet(f"font-size: 28px; font-weight: bold; color: {color}; margin-top: 5px;")
+        self.value_lbl.setStyleSheet(f"font-size: 24px; font-weight: bold; color: {color};")
 
 
 class ProcessTableModel(QtCore.QAbstractTableModel):
@@ -303,18 +318,28 @@ class PerformanceView(QtWidgets.QWidget):
 
         # Left Panel: Cards
         left_panel = QtWidgets.QWidget()
-        left_panel.setMaximumWidth(220) # Limit width as requested
+        left_panel.setMaximumWidth(300) # Increased width for horizontal layout
         left_layout = QtWidgets.QVBoxLayout(left_panel)
         left_layout.setContentsMargins(0, 0, 0, 0)
         left_layout.setSpacing(10)
 
-        self.card_cpu = MetricCard("CPU (%)", "cpu")
-        self.card_mem = MetricCard("Memory (%)", "mem")
-        self.card_disk_usage = MetricCard("Disk Usage (%)", "disk_usage")
-        self.card_disk_read = MetricCard("Disk Read (KB)", "disk_read")
-        self.card_disk_write = MetricCard("Disk Write (KB)", "disk_write")
+        self.card_cpu = MetricCard("CPU (%)", "cpu", "#3B82F6")
+        self.card_mem = MetricCard("Memory (%)", "mem", "#8B5CF6")
+        self.card_mem_used = MetricCard("Mem Used (KB)", "mem_used", "#EC4899")
+        self.card_mem_avail = MetricCard("Mem Available (KB)", "mem_avail", "#14B8A6")
+        self.card_disk_usage = MetricCard("Disk Usage (%)", "disk_usage", "#10B981")
+        self.card_disk_read = MetricCard("Disk Read (KB)", "disk_read", "#F59E0B")
+        self.card_disk_write = MetricCard("Disk Write (KB)", "disk_write", "#EF4444")
 
-        self.cards = [self.card_cpu, self.card_mem, self.card_disk_usage, self.card_disk_read, self.card_disk_write]
+        self.cards = [
+            self.card_cpu,
+            self.card_mem,
+            self.card_mem_used,
+            self.card_mem_avail,
+            self.card_disk_usage,
+            self.card_disk_read,
+            self.card_disk_write
+        ]
         for card in self.cards:
             left_layout.addWidget(card)
             card.clicked.connect(self.on_card_clicked)
@@ -354,6 +379,10 @@ class PerformanceView(QtWidgets.QWidget):
         self.cpu_series.setName("CPU (%)")
         self.mem_series = QLineSeries()
         self.mem_series.setName("Memory (%)")
+        self.mem_used_series = QLineSeries()
+        self.mem_used_series.setName("Mem Used (KB)")
+        self.mem_avail_series = QLineSeries()
+        self.mem_avail_series.setName("Mem Available (KB)")
         self.disk_usage_series = QLineSeries()
         self.disk_usage_series.setName("Disk Usage (%)")
         self.disk_read_series = QLineSeries()
@@ -364,6 +393,8 @@ class PerformanceView(QtWidgets.QWidget):
         self.series_map = {
             "cpu": self.cpu_series,
             "mem": self.mem_series,
+            "mem_used": self.mem_used_series,
+            "mem_avail": self.mem_avail_series,
             "disk_usage": self.disk_usage_series,
             "disk_read": self.disk_read_series,
             "disk_write": self.disk_write_series
@@ -382,6 +413,8 @@ class PerformanceView(QtWidgets.QWidget):
             color_map = {
                 "cpu": QColor("#3B82F6"), # Blue
                 "mem": QColor("#8B5CF6"), # Purple
+                "mem_used": QColor("#EC4899"), # Pink
+                "mem_avail": QColor("#14B8A6"), # Teal
                 "disk_usage": QColor("#10B981"), # Green
                 "disk_read": QColor("#F59E0B"), # Orange
                 "disk_write": QColor("#EF4444") # Red
@@ -469,6 +502,8 @@ class PerformanceView(QtWidgets.QWidget):
         titles = {
             "cpu": "CPU Usage (%)",
             "mem": "Memory Usage (%)",
+            "mem_used": "Memory Used (KB)",
+            "mem_avail": "Memory Available (KB)",
             "disk_usage": "Disk Usage (%)",
             "disk_read": "Disk Read Speed (KB/s)",
             "disk_write": "Disk Write Speed (KB/s)"
@@ -485,6 +520,10 @@ class PerformanceView(QtWidgets.QWidget):
         if identifier in ["cpu", "mem", "disk_usage"]:
             self.y_axis.setRange(0, 100)
             self.y_axis.setLabelFormat("%d%%")
+        elif identifier in ["mem_used", "mem_avail"]:
+            # Default range, will be auto-scaled
+            self.y_axis.setRange(0, 1000)
+            self.y_axis.setLabelFormat("%d KB")
         else:
             # For speed, we need dynamic range, but for now reset to a default or auto
             # We will handle dynamic scaling in update_chart
@@ -502,7 +541,7 @@ class PerformanceView(QtWidgets.QWidget):
         if self.current_metric in ["disk_read", "disk_write"]:
             self.y_axis.setRange(0, 1000)
 
-    def update_chart(self, x_value: float, cpu: float, mem: float, disk_usage: float, disk_read_kb: float, disk_write_kb: float, max_points: int = 60):
+    def update_chart(self, x_value: float, cpu: float, mem: float, mem_used_kb: int, mem_total_kb: int, mem_available_kb: int, disk_usage: float, disk_read_kb: float, disk_write_kb: float, max_points: int = 60):
         """追加一个新的采样点到曲线中，并更新卡片。"""
 
         # ... (comments omitted) ...
@@ -518,6 +557,10 @@ class PerformanceView(QtWidgets.QWidget):
         elif mem > 50: mem_level = "warn"
         self.card_mem.update_data(f"{mem:.1f}%", "Used", mem_level)
 
+        # Update new memory cards
+        self.card_mem_used.update_data(f"{mem_used_kb / 1024:.1f}", "MB Used", "info")
+        self.card_mem_avail.update_data(f"{mem_available_kb / 1024:.1f}", "MB Avail", "info")
+
         du_level = "info"
         if disk_usage > 80: du_level = "error"
         elif disk_usage > 50: du_level = "warn"
@@ -532,8 +575,8 @@ class PerformanceView(QtWidgets.QWidget):
 
         current_time = x_value # This is actually elapsed time passed from controller
 
-        # Store tuple: (elapsed_time, cpu, mem, disk_usage, read, write)
-        self.data_buffer.append((current_time, cpu, mem, disk_usage, disk_read_kb, disk_write_kb))
+        # Store tuple: (elapsed_time, cpu, mem, mem_used, mem_avail, disk_usage, read, write)
+        self.data_buffer.append((current_time, cpu, mem, mem_used_kb, mem_available_kb, disk_usage, disk_read_kb, disk_write_kb))
 
         # Remove old data (> 60s ago)
         while self.data_buffer and (current_time - self.data_buffer[0][0] > 60):
@@ -550,11 +593,13 @@ class PerformanceView(QtWidgets.QWidget):
         lower_points_map = {k: [] for k in self.series_map.keys()} # For area series baseline
 
         for entry in self.data_buffer:
-            t, c, m, du, dr, dw = entry
+            t, c, m, mu, ma, du, dr, dw = entry
             time_ago = current_time - t
 
             points_map["cpu"].append(QtCore.QPointF(time_ago, c))
             points_map["mem"].append(QtCore.QPointF(time_ago, m))
+            points_map["mem_used"].append(QtCore.QPointF(time_ago, mu))
+            points_map["mem_avail"].append(QtCore.QPointF(time_ago, ma))
             points_map["disk_usage"].append(QtCore.QPointF(time_ago, du))
             points_map["disk_read"].append(QtCore.QPointF(time_ago, dr))
             points_map["disk_write"].append(QtCore.QPointF(time_ago, dw))
@@ -568,9 +613,14 @@ class PerformanceView(QtWidgets.QWidget):
             series.replace(points_map[key])
             series.lower_series.replace(lower_points_map[key])
 
-        # 4. Auto-scale Y Axis for speed metrics
-        if self.current_metric in ["disk_read", "disk_write"]:
-            current_val = disk_read_kb if self.current_metric == "disk_read" else disk_write_kb
+        # 4. Auto-scale Y Axis for speed/size metrics
+        if self.current_metric in ["disk_read", "disk_write", "mem_used", "mem_avail"]:
+            if self.current_metric == "disk_read": current_val = disk_read_kb
+            elif self.current_metric == "disk_write": current_val = disk_write_kb
+            elif self.current_metric == "mem_used": current_val = mem_used_kb
+            elif self.current_metric == "mem_avail": current_val = mem_available_kb
+            else: current_val = 0
+
             if current_val > self.y_axis.max():
                 self.y_axis.setMax(current_val * 1.2)
             elif self.y_axis.max() > 1000 and current_val < self.y_axis.max() * 0.5:
@@ -599,15 +649,8 @@ class PerformanceView(QtWidgets.QWidget):
 
     def update_process_table(self, processes):
         """刷新进程表格，仅更新行数据，不影响表头。"""
-        # 获取排序方式
-        if hasattr(self, 'sort_combo'):
-            sort_by = self.sort_combo.currentText()
-
-            # 排序
-            if sort_by == "CPU%":
-                processes.sort(key=lambda x: x.cpu_percent, reverse=True)
-            elif sort_by == "MEM%":
-                processes.sort(key=lambda x: x.mem_percent, reverse=True)
+        # 默认按 CPU% 降序排序
+        processes.sort(key=lambda x: x.cpu_percent, reverse=True)
 
         # 使用模型更新数据，极大提高性能
         self.process_model.update_data(processes)
