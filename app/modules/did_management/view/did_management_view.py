@@ -402,8 +402,9 @@ class DIDView(BaseView):
 
     def append_log(self, message: str):
         """Append message to the raw text log area."""
-        timestamp = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")
         self.raw_text.append(f"[{timestamp}] {message}")
+        self.raw_text.moveCursor(QtGui.QTextCursor.End)
 
     def resizeEvent(self, event):
         super().resizeEvent(event)

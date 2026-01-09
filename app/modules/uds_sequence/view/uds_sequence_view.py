@@ -866,6 +866,7 @@ class UDSSequenceView(QtWidgets.QWidget):
     def log_message(self, message: str):
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")
         self.exec_log.append(f"[{timestamp}] {message}")
+        self.exec_log.moveCursor(QtGui.QTextCursor.End)
 
     # --- Internal slots to emit signals ---
     def _on_send_clicked_internal(self):

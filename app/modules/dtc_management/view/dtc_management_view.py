@@ -267,8 +267,7 @@ class DTCView(BaseView):
         if hasattr(self, 'log_edit'):
             self.log_edit.appendPlainText(f"[{ts}] {message}")
             # Scroll to bottom
-            scrollbar = self.log_edit.verticalScrollBar()
-            scrollbar.setValue(scrollbar.maximum())
+            self.log_edit.moveCursor(QtGui.QTextCursor.End)
         else:
             print(f"[{ts}] {message}")
 
