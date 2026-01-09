@@ -179,7 +179,7 @@ class DeviceService(QObject):
         if self._doip_handler is None:
             self._doip_handler = DoIPClientHandler()
 
-        # 处理网卡选择
+        # 处理网 卡选择
         network_interface_ip = doip_settings.get("network_interface_ip")
         if network_interface_ip:
             self._doip_handler.select_network_interface(network_interface_ip)

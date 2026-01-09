@@ -1,6 +1,7 @@
 # python
 from datetime import datetime
-from PyQt5 import QtWidgets, QtCore
+from PyQt5 import QtWidgets, QtCore, QtGui
+from PyQt5.QtCore import Qt
 
 from app.common.ui.widgets import ModernButton
 from app.presentation.views.base_view import BaseView
@@ -19,7 +20,7 @@ class DTCView(BaseView):
         main_layout.setSpacing(0)
 
         # Splitter
-        self.splitter = QtWidgets.QSplitter(QtCore.Qt.Vertical)
+        self.splitter = QtWidgets.QSplitter(Qt.Vertical)
         main_layout.addWidget(self.splitter)
 
         # Top Container
@@ -31,12 +32,12 @@ class DTCView(BaseView):
 
         # Global Action Buttons
         self.read_btn = ModernButton("读取故障码", "#3B82F6")
-        self.read_btn.setMinimumWidth(100)
+        self.read_btn.setMinimumWidth(120)
 
         self.clear_btn = QtWidgets.QPushButton("清除故障码")
-        self.clear_btn.setCursor(QtCore.Qt.PointingHandCursor)
+        self.clear_btn.setCursor(QtGui.QCursor(Qt.PointingHandCursor))
         self.clear_btn.setMinimumHeight(32)
-        self.clear_btn.setMinimumWidth(100)
+        self.clear_btn.setMinimumWidth(120)
         self.clear_btn.setStyleSheet("""
             QPushButton { 
                 background-color: white; 
@@ -52,6 +53,14 @@ class DTCView(BaseView):
 
         # Tab Widget
         self.tab_widget = QtWidgets.QTabWidget()
+        self.tab_widget.setStyleSheet("""
+            QTabBar::tab {
+                min-width: 120px;
+                height: 20px;
+                font-family: "Microsoft YaHei";
+                font-size: 14px;
+            }
+        """)
         top_layout.addWidget(self.tab_widget)
 
         # --- Page 1: Fault List ---
@@ -64,14 +73,14 @@ class DTCView(BaseView):
         self.setup_freeze_page(self.page_freeze)
         self.tab_widget.addTab(self.page_freeze, "冻结帧信息")
 
-        # Corner Buttons
+        # Corner Buttons (Moved back to CornerWidget to save vertical space)
         corner_widget = QtWidgets.QWidget()
         corner_layout = QtWidgets.QHBoxLayout(corner_widget)
-        corner_layout.setContentsMargins(0, 5, 10, 5)
+        corner_layout.setContentsMargins(0, 0, 10, 0)
         corner_layout.setSpacing(10)
         corner_layout.addWidget(self.read_btn)
         corner_layout.addWidget(self.clear_btn)
-        self.tab_widget.setCornerWidget(corner_widget, QtCore.Qt.TopRightCorner)
+        self.tab_widget.setCornerWidget(corner_widget, Qt.TopRightCorner)
 
         # Connect Actions
         self.read_btn.clicked.connect(self.on_read_dtcs)
@@ -152,7 +161,12 @@ class DTCView(BaseView):
         self.fault_table.verticalHeader().setVisible(False)
         self.fault_table.setAlternatingRowColors(True)
         self.fault_table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
-        self.fault_table.horizontalHeader().setSectionResizeMode(QtWidgets.QHeaderView.Stretch)
+        self.fault_table.horizontalHeader().setSectionResizeMode(QtWidgets.QHeaderView.Interactive)
+        self.fault_table.horizontalHeader().setSectionResizeMode(0, QtWidgets.QHeaderView.ResizeToContents)
+
+        # Install event filter for adaptive column resizing
+        self.fault_table.installEventFilter(self)
+
         self.fault_table.setShowGrid(False)
         self.fault_table.setFrameShape(QtWidgets.QFrame.NoFrame)
         layout.addWidget(self.fault_table)
@@ -170,7 +184,7 @@ class DTCView(BaseView):
         self.lbl_page_num.setStyleSheet("color: #3B82F6; font-weight: bold; padding: 0 10px;")
 
         for btn in [self.btn_prev, self.btn_next]:
-            btn.setCursor(QtCore.Qt.PointingHandCursor)
+            btn.setCursor(QtGui.QCursor(Qt.PointingHandCursor))
             btn.setStyleSheet("""
                 QPushButton {
                     border: 1px solid #E2E8F0; 
@@ -192,7 +206,7 @@ class DTCView(BaseView):
         btn = QtWidgets.QPushButton(text)
         btn.setCheckable(True)
         btn.setChecked(checked)
-        btn.setCursor(QtCore.Qt.PointingHandCursor)
+        btn.setCursor(QtGui.QCursor(Qt.PointingHandCursor))
         btn.setStyleSheet("""
             QPushButton {
                 background-color: white;
@@ -249,9 +263,12 @@ class DTCView(BaseView):
         layout.addWidget(self.freeze_table)
 
     def append_log(self, message: str):
-        ts = datetime.now().strftime("%H:%M:%S")
+        ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")
         if hasattr(self, 'log_edit'):
             self.log_edit.appendPlainText(f"[{ts}] {message}")
+            # Scroll to bottom
+            scrollbar = self.log_edit.verticalScrollBar()
+            scrollbar.setValue(scrollbar.maximum())
         else:
             print(f"[{ts}] {message}")
 
@@ -280,12 +297,12 @@ class DTCView(BaseView):
                 freeze_state = "未读取"
 
             seq_item = QtWidgets.QTableWidgetItem(str(r + 1))
-            seq_item.setTextAlignment(QtCore.Qt.AlignCenter)
+            seq_item.setTextAlignment(Qt.AlignCenter)
             self.fault_table.setItem(r, 0, seq_item)
 
             def make_center(text):
                 it = QtWidgets.QTableWidgetItem(text)
-                it.setTextAlignment(QtCore.Qt.AlignCenter)
+                it.setTextAlignment(Qt.AlignCenter)
                 return it
 
             self.fault_table.setItem(r, 1, make_center(code))
@@ -297,8 +314,8 @@ class DTCView(BaseView):
             # Freeze Status with Dot
             status_widget = QtWidgets.QWidget()
             status_layout = QtWidgets.QHBoxLayout(status_widget)
-            status_layout.setContentsMargins(10, 0, 10, 0)
-            status_layout.setAlignment(QtCore.Qt.AlignCenter)
+            status_layout.setContentsMargins(5, 0, 5, 0)
+            status_layout.setAlignment(Qt.AlignCenter)
 
             dot = QtWidgets.QLabel()
             dot.setFixedSize(10, 10)
@@ -315,10 +332,10 @@ class DTCView(BaseView):
             op_widget = QtWidgets.QWidget()
             op_layout = QtWidgets.QHBoxLayout(op_widget)
             op_layout.setContentsMargins(0, 0, 0, 0)
-            op_layout.setAlignment(QtCore.Qt.AlignCenter)
+            op_layout.setAlignment(Qt.AlignCenter)
 
             btn = QtWidgets.QPushButton("读取冻结帧")
-            btn.setCursor(QtCore.Qt.PointingHandCursor)
+            btn.setCursor(QtGui.QCursor(Qt.PointingHandCursor))
             btn.setProperty("row", r)
             btn.clicked.connect(self.on_click_freeze_btn)
 
@@ -326,6 +343,9 @@ class DTCView(BaseView):
             self.fault_table.setCellWidget(r, 7, op_widget)
 
             self.fault_table.setRowHeight(r, 50)
+
+        # Trigger resize adjustment after data load to ensure layout is correct
+        QtCore.QTimer.singleShot(0, self.adjust_column_widths)
 
     def populate_freeze_frame(self, data):
         """
@@ -360,7 +380,7 @@ class DTCView(BaseView):
 
             for i, val in enumerate(common_vals):
                 it = QtWidgets.QTableWidgetItem(val)
-                it.setTextAlignment(QtCore.Qt.AlignCenter)
+                it.setTextAlignment(Qt.AlignCenter)
                 self.freeze_table.setItem(start_row, i, it)
                 if count > 1:
                     self.freeze_table.setSpan(start_row, i, count, 1)
@@ -371,7 +391,7 @@ class DTCView(BaseView):
 
                 def set_item(c, txt):
                     it = QtWidgets.QTableWidgetItem(str(txt))
-                    it.setTextAlignment(QtCore.Qt.AlignCenter)
+                    it.setTextAlignment(Qt.AlignCenter)
                     self.freeze_table.setItem(r, c, it)
 
                 set_item(5, param["byte"])
@@ -394,9 +414,17 @@ class DTCView(BaseView):
         return color_map.get(text, "#94A3B8")
 
     def set_last_read_time(self, dt: datetime):
-        txt = f"最后读取时间：{dt.strftime('%Y-%m-%d %H:%M:%S')}"
+        txt = f"最后读取时间：{dt.strftime('%Y-%m-%d %H:%M:%S.%f')}"
         self.last_read_label.setText(txt)
         self.freeze_time_label.setText(txt)
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        QtCore.QTimer.singleShot(0, self.adjust_column_widths)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self.adjust_column_widths()
 
     def on_read_dtcs(self):
         # Emit signal instead of handling logic
@@ -450,3 +478,49 @@ class DTCView(BaseView):
                 # Switch to freeze tab and show mock data
                 # In real app, controller would call populate_freeze_frame
                 self.tab_widget.setCurrentIndex(1)
+
+    def eventFilter(self, source, event):
+        if source == self.fault_table and event.type() == QtCore.QEvent.Resize:
+            self.adjust_column_widths()
+        return super().eventFilter(source, event)
+
+    def adjust_column_widths(self):
+        if not self.fault_table or self.fault_table.columnCount() == 0:
+            return
+
+        # Total available width
+        total_width = self.fault_table.viewport().width()
+        if total_width <= 0:
+            return
+
+        # Column 0 is ResizeToContents, get its current width
+        col0_width = self.fault_table.columnWidth(0)
+
+        # Remaining width to distribute
+        # Subtract a small buffer (2px) to prevent horizontal scrollbar flickering
+        available = total_width - col0_width - 2
+        if available <= 0:
+            return
+
+        # Ratios (approximate based on users fixed widths: 300, 700, 300...)
+        # 1: 3, 2: 7, 3: 3, 4: 3, 5: 3, 6: 3, 7: 3
+        # Total parts = 25
+        parts = {1: 3, 2: 7, 3: 3, 4: 3, 5: 3, 6: 3, 7: 3}
+        total_parts = sum(parts.values())
+
+        used_width = 0
+
+        # Set all except description (Col 2) first
+        cols_to_set = [1, 3, 4, 5, 6, 7]
+        for col in cols_to_set:
+            part = parts.get(col, 0)
+            if part > 0:
+                width = int((part / total_parts) * available)
+                self.fault_table.setColumnWidth(col, width)
+                used_width += width
+
+        # Give remaining to Description (Col 2)
+        desc_width = available - used_width
+        # Ensure it's not negative
+        if desc_width > 0:
+            self.fault_table.setColumnWidth(2, desc_width)

@@ -18,6 +18,10 @@ from typing import Callable, Dict, List, Optional, Tuple
 # Scapy 导入与配置
 try:
     from scapy.config import conf
+    from scapy.layers.l2 import Ether, Dot1Q, getmacbyip
+    from scapy.layers.inet import IP, UDP
+    from scapy.sendrecv import sendp, sniff
+    from scapy.arch import get_if_list, get_if_addr, get_if_hwaddr
 
     conf.contribs['automotive.someip'] = True
     from scapy.contrib.automotive.someip import (
@@ -51,13 +55,20 @@ class SomeIPClient:
                  # 将 client_id 默认值固定为 30813，避免运行时自动生成
                  client_id: int = 0x1234,
                  multicast_ip: str = DEFAULT_SD_MULTICAST_IP,
-                 multicast_port: int = DEFAULT_SD_MULTICAST_PORT):
+                 multicast_port: int = DEFAULT_SD_MULTICAST_PORT,
+                 vlan_id: int = None,
+                 client_mac: str = None,
+                 target_mac: str = None):
 
         self.local_ip = local_ip
         self.local_port = local_port
         self.client_id = client_id
         self.multicast_ip = multicast_ip
         self.multicast_port = multicast_port
+        self.vlan_id = vlan_id
+        self.iface = None
+        self.mac = client_mac
+        self.target_mac = target_mac
 
         self.udp_socket: Optional[socket.socket] = None
         self.tcp_socket: Optional[socket.socket] = None
@@ -113,6 +124,22 @@ class SomeIPClient:
                 except Exception as e:
                     logger.warning(f"设置组播出口失败: {e}")
 
+            # 如果启用了 VLAN，解析接口和 MAC
+            if self.vlan_id is not None:
+                try:
+                    for iface in get_if_list():
+                        # Windows 上 get_if_addr 可能需要 GUID，这里尝试匹配 IP
+                        if get_if_addr(iface) == self.local_ip:
+                            self.iface = iface
+                            if self.mac is None:
+                                self.mac = get_if_hwaddr(iface)
+                            logger.info(f"VLAN模式: 绑定接口 {self.iface} ({self.mac}), VLAN ID={self.vlan_id}")
+                            break
+                    if not self.iface:
+                        logger.warning(f"无法找到 IP {self.local_ip} 对应的网卡接口，VLAN 发送可能失败")
+                except Exception as e:
+                    logger.error(f"解析 VLAN 接口失败: {e}")
+
             # 加入组播组 (用于接收组播 Offer)
             try:
                 mreq = struct.pack("4s4s",
@@ -124,6 +151,16 @@ class SomeIPClient:
                 logger.warning(f"加入组播组失败 (可能无法收到组播 Offer): {e}")
 
             self.running = True
+
+            # 启动 Scapy VLAN 接收线程 (重要: 修复通过 Scapy 接收 VLAN 流量)
+            if self.vlan_id is not None:
+                if self.iface:
+                    self.scapy_recv_thread = threading.Thread(target=self._receive_loop_scapy_vlan, daemon=True)
+                    self.scapy_recv_thread.start()
+                    logger.info(f"已启动 VLAN {self.vlan_id} Scapy 监听线程 (Interface: {self.iface})")
+                else:
+                    logger.error("VLAN ID 已配置但未找到对应网卡接口，无法启动 VLAN 监听！请检查本地 IP 设置。")
+
             self.recv_thread = threading.Thread(target=self._receive_loop_udp, daemon=True)
             self.recv_thread.start()
 
@@ -179,6 +216,73 @@ class SomeIPClient:
         """注销 SD 消消息回调"""
         if callback in self.sd_callbacks:
             self.sd_callbacks.remove(callback)
+
+    def _receive_loop_scapy_vlan(self):
+        """基于 Scapy 的 VLAN 接收循环"""
+        logger.info(f"开始监听 VLAN {self.vlan_id} 流量...")
+
+        def scapy_packet_handler(pkt):
+            if not self.running: return
+
+            if UDP not in pkt:
+                return
+
+            # 判断是否处理该包
+            should_process = False
+            src_ip = pkt[IP].src if IP in pkt else "0.0.0.0"
+            if src_ip == self.local_ip: # 忽略自己发的包
+                return
+
+            # 调试日志: 打印看到的流经端口 30490 的 VLAN 包
+            debug_log = False
+            if pkt[UDP].dport == self.multicast_port or pkt[UDP].sport == self.multicast_port:
+                debug_log = True
+
+            # 情况1: 带有 VLAN Tag 且 ID 匹配
+            if Dot1Q in pkt:
+                if pkt[Dot1Q].vlan == self.vlan_id:
+                    should_process = True
+                    if debug_log:
+                        logger.debug(f"[Scapy-VLAN] 捕获 VLAN {self.vlan_id} 包: {src_ip} -> {pkt[UDP].dport}")
+
+            # 情况2: 不带 VLAN Tag (可能被网卡驱动剥离了)，但端口匹配或者是组播
+            elif self.vlan_id is not None:
+                # 检查是否是我们关心的端口
+                dport = pkt[UDP].dport
+                sport = pkt[UDP].sport
+                # 30506 是组播端口, local_port 是单播接收端口,
+                # 也可以检查源端口是否是服务端的常用端口 (如 30500)
+                if dport == self.multicast_port or dport == self.local_port:
+                    should_process = True
+                    if debug_log:
+                        logger.debug(f"[Scapy-NoTag] 捕获端口匹配包: {src_ip} -> {dport}")
+
+            if should_process:
+                try:
+                    payload = bytes(pkt[UDP].payload)
+                    src_port = pkt[UDP].sport
+
+                    # 调试日志: 打印即使解析失败的包，确认是否有流量到达
+                    # logger.info(f"[ScapyRx] {src_ip}:{src_port} Len={len(payload)}")
+
+                    if len(payload) > 0:
+                        self._process_packet(payload, (src_ip, src_port))
+                except Exception as e:
+                    pass
+
+        # 移除 filter，全抓并在 Python 层过滤。
+        # 这样可以规避 Windows Npcap 有时无法正确处理 'vlan' BPF 的问题
+
+        while self.running:
+            try:
+                # sniff 是阻塞的，设置 timeout 以便通过 loop 检查 self.running
+                sniff(iface=self.iface,
+                      prn=scapy_packet_handler,
+                      store=0,
+                      timeout=0.5)
+            except Exception as e:
+                logger.error(f"Scapy Sniff 出错: {e}")
+                time.sleep(1)
 
     def _receive_loop_udp(self):
         while self.running and self.udp_socket:
@@ -312,6 +416,26 @@ class SomeIPClient:
                 except Exception as e:
                     logger.error(f"TCP 发送失败: {e}")
                     self._close_tcp()
+            elif self.vlan_id is not None and self.iface and target_ip:
+                # VLAN 模式发送
+                try:
+                    # 优先使用配置的目标 MAC
+                    dst_mac = self.target_mac
+                    if not dst_mac:
+                        dst_mac = getmacbyip(target_ip)
+                    if not dst_mac:
+                        logger.warning(f"无法解析 {target_ip} 的 MAC 地址，尝试广播")
+                        dst_mac = "ff:ff:ff:ff:ff:ff"
+
+                    full_pkt = Ether(src=self.mac, dst=dst_mac) / \
+                               Dot1Q(vlan=self.vlan_id) / \
+                               IP(src=self.local_ip, dst=target_ip) / \
+                               UDP(sport=self.local_port, dport=target_port) / \
+                               pkt
+                    sendp(full_pkt, iface=self.iface, verbose=False)
+                    logger.info(f"发送 VLAN {self.vlan_id} UDP Req -> {target_ip}:{target_port} (MAC={dst_mac})")
+                except Exception as e:
+                    logger.error(f"Scapy VLAN 发送失败: {e}")
             elif target_ip:
                 try:
                     self.udp_socket.sendto(bytes(pkt), (target_ip, target_port))
@@ -330,6 +454,29 @@ class SomeIPClient:
                      session_id=self._get_next_session_id(), msg_type=0x02) / sd
 
         dest_ip = override_ip if override_ip else self.multicast_ip
+
+        if self.vlan_id is not None and self.iface:
+            # VLAN 模式发送
+            try:
+                if dest_ip == self.multicast_ip:
+                    # 简单映射组播 MAC (239.71.0.2 -> 01:00:5e:47:00:02)
+                    dst_mac = "01:00:5e:47:00:02"
+                else:
+                    dst_mac = getmacbyip(dest_ip)
+                    if not dst_mac:
+                        dst_mac = "ff:ff:ff:ff:ff:ff"
+
+                full_pkt = Ether(src=self.mac, dst=dst_mac) / \
+                           Dot1Q(vlan=self.vlan_id) / \
+                           IP(src=self.local_ip, dst=dest_ip) / \
+                           UDP(sport=self.local_port, dport=self.multicast_port) / \
+                           pkt
+                sendp(full_pkt, iface=self.iface, verbose=False)
+                logger.info(f"发送 VLAN {self.vlan_id} FindService to {dest_ip}:{self.multicast_port}")
+                return
+            except Exception as e:
+                logger.error(f"Scapy VLAN 发送失败: {e}")
+                # 失败后尝试回退到普通 Socket 发送
 
         try:
             self.udp_socket.sendto(bytes(pkt), (dest_ip, self.multicast_port))
@@ -361,25 +508,40 @@ class SomeIPClient:
             for entry in entries:
                 if entry.type == 0x01 and entry.srv_id == service_id:  # OfferService
                     # 尝试解析 Endpoint
-                    t_ip = target_ip
-                    t_port = target_port
-                    proto = 'UDP'
+                    # 使用 entry 中的索引来获取正确的 Option，避免读取到其他服务的 Option
+                    found_opts = []
 
-                    for opt in options:
+                    try:
+                        # 尝试获取索引字段 (Scapy 字段名称可能因版本不同而异，这里适配探测到的名称)
+                        idx1 = getattr(entry, 'index_1', getattr(entry, 'index_1st_opts', 0))
+                        num1 = getattr(entry, 'n_opt_1', getattr(entry, 'number_1st_opts', 0))
+                        idx2 = getattr(entry, 'index_2', getattr(entry, 'index_2nd_opts', 0))
+                        num2 = getattr(entry, 'n_opt_2', getattr(entry, 'number_2nd_opts', 0))
+
+                        def collect_from_range(start, count):
+                            for k in range(start, start + count):
+                                if k < len(options):
+                                    found_opts.append(options[k])
+
+                        collect_from_range(idx1, num1)
+                        collect_from_range(idx2, num2)
+                    except Exception as e:
+                        logger.warning(f"Error parsing SD entry indices: {e}")
+                        # Fallback: 如果解析失败，回退到遍历所有 (虽然这可能是错误的)
+                        found_opts = options
+
+                    for opt in found_opts:
                         if isinstance(opt, SDOption_IP4_EndPoint):
-                            t_ip = opt.addr
-                            t_port = opt.port
-                            proto = 'TCP' if opt.l4_proto == 0x06 else 'UDP'
+                            # 找到对应的 Endpoint
+                            target_info['ip'] = opt.addr
+                            target_info['port'] = opt.port
+                            target_info['proto'] = 'TCP' if opt.l4_proto == 0x06 else 'UDP'
 
-                    # 更新目标信息
-                    target_info['ip'] = t_ip
-                    target_info['port'] = t_port
-                    target_info['proto'] = proto
+                            # 优先选择 TCP (如果发现 TCP 选项)
+                            if target_info['proto'] == 'TCP':
+                                self.connect_tcp(opt.addr, opt.port)
 
-                    if proto == 'TCP':
-                        self.connect_tcp(t_ip, t_port)
-
-                    found_event.set()
+                            found_event.set()
 
         # 2. 定义业务回调
         def on_response(pkt):
@@ -459,20 +621,36 @@ class TestRunner:
         print("\n=== 启动测试 (三步策略) ===")
 
         # --- 配置 ---
-        CLIENT_IP = "10.1.0.99"
-        ECU_UNICAST_IP = "10.1.0.79"  # 控制器 IP
+        # MAC地址将自动使用本机网卡MAC
+        # 请确保网卡已配置 VLAN 4
+        CLIENT_IP = "172.16.64.47"
+        CLIENT_MAC = "20:7B:D5:20:25:B6"
+
+        # 目标控制器配置
+        ECU_UNICAST_IP = "172.16.66.79"  # 控制器 IP
+        # 如果 Ping 不通，必须手动填入控制器的 MAC 地址！否则发出的包要么 ARP 失败，要么是广播 MAC 可能被丢弃
+        # 请填入嗅探器抓到的包里的源 MAC 地址，例如:
+        ECU_MAC = "02:47:00:00:02:4F" # "00:01:02:03:04:05"
+
         STD_MCAST_IP = "239.71.0.2"  # 标准组播 IP
+        VLAN_ID = 4  # 设置 VLAN ID
 
         # 必须确保这两个 ID 和控制器数据库(ARXML)一致
         SERVICE_ID = 0x106E
         METHOD_ID = 0x0001
 
         # 盲测时的默认端口 (通常是 30500, 30501, 30491 等)
-        BLIND_PORT = 30500
+        BLIND_PORT = 30490
         # ------------
 
-        # 测试时也使用固定 client_id 30813，避免自动生成
-        client = SomeIPClient(local_ip=CLIENT_IP, client_id=30813, multicast_ip=STD_MCAST_IP)
+        print(f"配���: 本机 {CLIENT_IP} -> 目标 {ECU_UNICAST_IP} (VLAN {VLAN_ID})")
+        if not ECU_MAC:
+            print("注意: 未配置 ECU_MAC。如果 ARP 不通，单播通信可能会失败。")
+
+        # 测试时也使用固定 client_id 30813
+        client = SomeIPClient(local_ip=CLIENT_IP, client_id=30813,
+                              multicast_ip=STD_MCAST_IP, vlan_id=VLAN_ID,
+                              client_mac=CLIENT_MAC, target_mac=ECU_MAC)
         if not client.start(): return
 
         # 1. 注册 SD 回调
@@ -483,7 +661,25 @@ class TestRunner:
 
                     # 尝试解析 IP
                     t_ip, t_port, proto = ECU_UNICAST_IP, BLIND_PORT, 'UDP'
-                    for opt in options:
+
+                    found_opts = []
+                    try:
+                        idx1 = getattr(entry, 'index_1', getattr(entry, 'index_1st_opts', 0))
+                        num1 = getattr(entry, 'n_opt_1', getattr(entry, 'number_1st_opts', 0))
+                        idx2 = getattr(entry, 'index_2', getattr(entry, 'index_2nd_opts', 0))
+                        num2 = getattr(entry, 'n_opt_2', getattr(entry, 'number_2nd_opts', 0))
+
+                        def collect_from_range(start, count):
+                            for k in range(start, start + count):
+                                if k < len(options):
+                                    found_opts.append(options[k])
+
+                        collect_from_range(idx1, num1)
+                        collect_from_range(idx2, num2)
+                    except:
+                        found_opts = options # Fallback
+
+                    for opt in found_opts:
                         if isinstance(opt, SDOption_IP4_EndPoint):
                             t_ip = opt.addr
                             t_port = opt.port
@@ -521,17 +717,23 @@ class TestRunner:
             target_ip = None
             target_port = None
 
-            if self.found.wait(timeout=5):
+            if self.found.wait(timeout=10):
                 print(f"--> [SD成功] 服务已就绪，准备发送请求...")
                 target_ip = self.target['ip']
                 target_port = self.target['port']
+
+                # 如果发现的是 TCP 服务，确保连接
+                if self.target['proto'] == 'TCP':
+                     # 此时 client.connect_tcp 应该已经被回调调用过，但确认一下也无妨
+                     pass
+
             else:
                 # --- 策略 C: 盲测直接访问 (如果 A/B 都失败) ---
-                print(f"策略 C: 始终未收到 Offer，尝试直接发送业务请求 (盲测)...")
+                print(f"策略 C: 始终未收到 Offer (由 Scapy 监听)，尝试直接发送业��请求 (盲测)...")
                 target_ip = ECU_UNICAST_IP
                 target_port = BLIND_PORT
 
-                # 发送请求
+            # 发送请求
             print(f"发送 Request -> {target_ip}:{target_port}")
             # 注意: 盲测时默认使用 UDP，如果知道是 TCP 服务需要修改代码调用 connect_tcp
             client.send_request(
@@ -545,7 +747,10 @@ class TestRunner:
             if self.received.wait(timeout=5):
                 print("测试通过！(收到业务回复)")
             else:
-                print("测试失败: SD无响应 且 盲发请求无回复。")
+                print("测试失败: SD无响应 且 盲发请求无回复。请检查:")
+                print("1. 目标 IP/MAC 是否正确")
+                print("2. 防火墙是否放行 Scapy")
+                print("3. 是否有其他程序占用端口")
 
         except KeyboardInterrupt:
             print("停止")
@@ -555,3 +760,4 @@ class TestRunner:
 
 if __name__ == "__main__":
     TestRunner().run()
+

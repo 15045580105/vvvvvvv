@@ -8,15 +8,22 @@
 import sys
 import json
 import os
+import threading
 
-from PyQt5.QtWidgets import QApplication, QFileDialog, QMessageBox
+from PyQt5 import QtCore
+from PyQt5.QtWidgets import QApplication
 
 from app.core.base_controller import BaseController
+from app.core.dependency_injection import di_container
 from app.modules.app_config.model.app_config_model import AppConfigModel
 from app.modules.app_config.view.app_config_view import SettingsWindow
+from app.services.diagnostic.dpt_service import DPTService
 
 
 class AppConfigController(BaseController):
+    dpt_status_signal = QtCore.pyqtSignal(str, str)
+    ecu_config_loaded_signal = QtCore.pyqtSignal(object)
+
     def __init__(self, parent=None):
         self.model = AppConfigModel(parent)
         self.view = SettingsWindow()
@@ -36,6 +43,20 @@ class AppConfigController(BaseController):
         self.view.app_log_page.save_signal.connect(self.save_app_log_settings)
         self.view.app_log_page.reset_signal.connect(self.reset_app_log_settings)
 
+        # Register status callback
+        self.dpt_status_signal.connect(self.handle_dpt_status)
+        self.ecu_config_loaded_signal.connect(self.on_ecu_config_loaded)
+
+        # Delay heavy initialization
+        QtCore.QTimer.singleShot(0, self.delayed_init)
+
+    def delayed_init(self):
+        dpt_service = di_container.resolve(DPTService)
+        if not dpt_service:
+            dpt_service = DPTService()
+            di_container.register_singleton(DPTService, dpt_service)
+        dpt_service.add_status_callback(self._on_dpt_status)
+
         # Initial data load
         self.on_model_changed()
 
@@ -54,6 +75,19 @@ class AppConfigController(BaseController):
 
     def save_doip_settings(self, settings):
         self.model.save_doip_settings(settings)
+
+        # Reload DPT Service if path changed
+        dpt_file = settings.get("dpt_file")
+        if dpt_file:
+            dpt_service = di_container.resolve(DPTService)
+            if not dpt_service:
+                dpt_service = DPTService()
+                di_container.register_singleton(DPTService, dpt_service)
+
+            try:
+                dpt_service.load_from_file(dpt_file, persist=False)
+            except Exception as e:
+                print(f"Failed to reload DPT file: {e}")
 
     def reset_doip_settings(self):
         self.model.reset_doip_defaults()
@@ -85,6 +119,9 @@ class AppConfigController(BaseController):
             self.model.save_diag_layer_settings(settings)
 
     def load_ecu_config(self, file_path):
+        threading.Thread(target=self._load_ecu_config_worker, args=(file_path,), daemon=True).start()
+
+    def _load_ecu_config_worker(self, file_path):
         try:
             with open(file_path, 'r', encoding='utf-8') as f:
                 data = json.load(f)
@@ -101,9 +138,20 @@ class AppConfigController(BaseController):
                             # If item has 'address', use it. If it has 'physical_addr', use it.
                             ecu_map[item["name"]] = item
 
-                self.view.diag_layer_page.update_ecu_combo(ecu_map)
+                self.ecu_config_loaded_signal.emit(ecu_map)
         except Exception as e:
-            QMessageBox.warning(self.view, "Error", f"Failed to load ECU config: {e}")
+            print(f"Failed to load ECU config: {e}")
+            # Optionally emit an error signal or handle it
+
+    def on_ecu_config_loaded(self, ecu_map):
+        self.view.diag_layer_page.update_ecu_combo(ecu_map)
+
+    def _on_dpt_status(self, status, message):
+        self.dpt_status_signal.emit(status, message)
+
+    def handle_dpt_status(self, status, message):
+        if hasattr(self.view.doip_page, "set_dpt_status"):
+            self.view.doip_page.set_dpt_status(status, message)
 
 def main():
     app = QApplication(sys.argv)

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import Iterable, List, Dict, Any, Union
-import struct
 
 
 # -----------------------------
@@ -32,6 +31,7 @@ class DPTFieldValue:
     range_str: str # Bit / Byte range string
     raw_hex: str   # Raw value in Hex or Binary
     parsed_value: str # Parsed/Converted value
+    encoding: str = "" # Encoding format
     status: str = "" # Additional status info
 
 
@@ -78,43 +78,49 @@ class DPTParser:
         """从 dict 配置构造解析器。
 
         支持两种格式：
-        1. {"fields": [...]} (旧格式)
-        2. {"field_key": {...}, ...} (新格式)
+        1. {"fields": [...]} (列表格式)
+        2. {"field_key": {...}, ...} (字典格式)
         """
         fields: List[DPTFieldDef] = []
 
-        # 检查是否是旧格式
         if "fields" in config and isinstance(config["fields"], list):
-            # 旧格式转换逻辑 (略，或者假设不再使用旧格式，或者做简单兼容)
-            # 这里为了支持新需求，主要处理新格式
-            pass
-
-        # 处理新格式：遍历字典
-        # 如果 config 包含 "fields" 键且是列表，则遍历该列表（兼容旧代码逻辑，如果需要）
-        # 但根据 dpt_service.py 的修改，传入的 config 可能是 {"hardware_code": {...}}
-
-        source = config
-        if "fields" in config and isinstance(config["fields"], list):
-             # 如果是旧格式列表，暂不支持或需要适配，这里假设传入的是新格式字典
-             # 或者如果 dpt_service 传递了 {"fields": list}，我们需要处理
-             source = {f["name"]: f for f in config["fields"]} # 尝试转换
-
-        for key, item in source.items():
-            if not isinstance(item, dict):
-                continue
-
-            fields.append(
-                DPTFieldDef(
-                    key=key,
-                    name=item.get("description", key),
-                    byte_offset=int(item.get("byte_offset", 0)),
-                    byte_length=int(item.get("byte_length", 0)),
-                    encoding=item.get("encoding", "Unsigned"),
-                    conversion=item.get("conversion"),
-                    bit_fields=item.get("bit_fields", {}),
-                    fixed_value=item.get("fixed_value")
+            # List format
+            for i, item in enumerate(config["fields"]):
+                if not isinstance(item, dict): continue
+                
+                # Use description as name if available, else use index or key
+                name = item.get("description", item.get("name", f"Field_{i}"))
+                
+                fields.append(
+                    DPTFieldDef(
+                        key=str(i),
+                        name=name,
+                        byte_offset=int(item.get("byte_offset", 0)),
+                        byte_length=int(item.get("byte_length", 0)),
+                        encoding=item.get("encoding", "Unsigned"),
+                        conversion=item.get("conversion"),
+                        bit_fields=item.get("bit_fields", {}),
+                        fixed_value=item.get("fixed_value")
+                    )
                 )
-            )
+        else:
+            # Dict format
+            for key, item in config.items():
+                if not isinstance(item, dict):
+                    continue
+
+                fields.append(
+                    DPTFieldDef(
+                        key=key,
+                        name=item.get("description", key),
+                        byte_offset=int(item.get("byte_offset", 0)),
+                        byte_length=int(item.get("byte_length", 0)),
+                        encoding=item.get("encoding", "Unsigned"),
+                        conversion=item.get("conversion"),
+                        bit_fields=item.get("bit_fields", {}),
+                        fixed_value=item.get("fixed_value")
+                    )
+                )
         return cls(fields)
 
     def parse_bytes(self, data: Union[bytes, bytearray, Iterable[int]]) -> DPTParseResult:
@@ -152,64 +158,112 @@ class DPTParser:
         else:
             range_str = f"{fdef.byte_offset}-{fdef.byte_offset + fdef.byte_length - 1}/ALL"
 
-        # Raw Hex
+        # Raw Hex (Value Column): Always space separated hex strings
         raw_hex = chunk.hex(' ').upper()
 
-        # Parsed Value
+        # Parsed Value (Status/Unit Column)
         parsed_val = ""
 
-        if fdef.encoding == "ASCII":
-            try:
-                parsed_val = chunk.decode("ascii")
-            except:
-                parsed_val = chunk.decode("ascii", errors="replace")
-        elif fdef.encoding == "Unsigned":
-            # Big-endian integer
-            val = int.from_bytes(chunk, byteorder='big', signed=False)
+        # Normalize Encoding
+        enc = str(fdef.encoding).strip().upper() if fdef.encoding else "UNSIGNED"
+        conv = fdef.conversion
 
-            # Conversion
-            if fdef.conversion:
-                if isinstance(fdef.conversion, dict):
-                    # Try exact match
-                    # JSON keys are strings, convert val to string
-                    val_str = str(val)
-                    # Check if conversion has keys like "0", "1"
-                    # Also check for range mapping if needed (not implemented yet based on simple dict)
-                    # dpt.json example: "conversion": {"0": "Link up", ...}
-                    if val_str in fdef.conversion:
-                        parsed_val = fdef.conversion[val_str]
+        # --- 1. ASCII Processing ---
+        # Explicit ASCII encoding takes precedence. User specified that Encoding contains ASCII info.
+        is_ascii = "ASCII" in enc or "STRING" in enc or "CHAR" in enc
+
+        if is_ascii:
+            try:
+                # Decode bytes to ASCII string
+                # 'ignore' to skip non-printable bytes without showing errors
+                decoded = chunk.decode("ascii", errors="ignore")
+                # Filter null bytes which are common in fixed-length strings
+                parsed_val = decoded.replace('\x00', '')
+            except:
+                parsed_val = raw_hex
+
+        # --- 2. Numeric / Map Processing ---
+        else:
+            # Determine numeric value
+            is_signed = "SIGNED" in enc or "INTEGER" in enc
+            if is_signed:
+                val = int.from_bytes(chunk, byteorder='big', signed=True)
+            else:
+                val = int.from_bytes(chunk, byteorder='big', signed=False)
+
+            # Apply Conversion logic
+            if conv:
+                if isinstance(conv, dict):
+                    if conv.get("type") == "linear":
+                        # Linear: y = x * Resolution + Offset
+                        res = float(conv.get("resolution", 1.0))
+                        off = float(conv.get("offset", 0.0))
+                        phy_val = val * res + off
+                        if phy_val.is_integer():
+                            parsed_val = str(int(phy_val))
+                        else:
+                            parsed_val = f"{phy_val:.6f}".rstrip('0').rstrip('.')
+                    else:
+                        # Enum / Map
+                        # Try exact match for stringified integer
+                        val_str = str(val)
+                        if val_str in conv:
+                            parsed_val = conv[val_str]
+                        else:
+                            # If not found in map, show original value
+                            # If it's a long field, fallback to hex to avoid giant integers
+                            if fdef.byte_length > 8:
+                                parsed_val = raw_hex
+                            else:
+                                parsed_val = str(val)
+
+                elif isinstance(conv, str):
+                    # Simple String = Unit
+                    if conv.upper() != "NONE":
+                        # If long field and just a unit string, displaying huge int + unit is weird.
+                        # Maybe still show Hex? Or trust the user wanted a unit.
+                        # Usually long fields with units are rare.
+                        if fdef.byte_length > 8:
+                             parsed_val = f"{raw_hex} ({conv})"
+                        else:
+                             parsed_val = f"{val} {conv}"
+                    else:
+                        # Conversion is "None" string?
+                         if fdef.byte_length > 8:
+                            parsed_val = raw_hex
+                         else:
+                            parsed_val = str(val)
+            else:
+                # No conversion
+                if "HEX" in enc:
+                    parsed_val = raw_hex
+                else:
+                    # If byte length > 8 and no conversion, giant integers are usually wrongly encoded strings or hex
+                    # Fallback to Hex if it looks like a large raw dump
+                    if fdef.byte_length > 8:
+                        parsed_val = raw_hex
                     else:
                         parsed_val = str(val)
-                elif isinstance(fdef.conversion, str):
-                    parsed_val = f"{val} ({fdef.conversion})"
-                else:
-                    parsed_val = str(val)
-            else:
-                parsed_val = str(val)
-        else:
-            parsed_val = raw_hex
+
+        # Final Fallback
+        if not parsed_val:
+             parsed_val = raw_hex
 
         result.fields.append(DPTFieldValue(
             name=fdef.name,
             range_str=range_str,
             raw_hex=raw_hex,
-            parsed_value=parsed_val
+            parsed_value=parsed_val,
+            encoding=fdef.encoding or "Unsigned"
         ))
 
     def _parse_bit_fields(self, fdef: DPTFieldDef, chunk: bytes, result: DPTParseResult):
-        # Convert chunk to bits string
-        # Assuming big-endian for bits within bytes?
-        # Usually bit 0 is LSB or MSB depending on definition.
-        # dpt.json example: "bit_0": "Link up".
-        # Usually bit 0 is the Least Significant Bit (LSB).
-
-        val = int.from_bytes(chunk, byteorder='big', signed=False)
+        # Convert chunk to integer
+        # User specified: "如果是完整的字节则正常解析如果是不完整的字节则是需要解析对应bit此时是小端序"
+        # Bit parsing context often implies Little Endian for bit indexing within bytes or across bytes in some definitions.
+        val = int.from_bytes(chunk, byteorder='little', signed=False)
 
         # Sort bit fields by bit index
-        # Keys are "bit_0", "bit_1", etc.
-        # Need to parse "bit_X" or "bit_X_Y" (range)?
-        # dpt.json has "bit_0", "bit_1".
-
         sorted_bits = []
         for k, v in fdef.bit_fields.items():
             if k.startswith("bit_"):
@@ -218,42 +272,38 @@ class DPTParser:
                     sorted_bits.append((idx, v))
                 except:
                     pass
-
         sorted_bits.sort(key=lambda x: x[0])
 
         for bit_idx, bit_def in sorted_bits:
-            # Extract bit value
-            # Assuming bit_0 is LSB (value & 1)
+            # Extract bit value (Assuming bit_0 is LSB)
             bit_val = (val >> bit_idx) & 1
 
-            # Calculate absolute byte index and relative bit index if needed
-            # But user requested "ByteIndex/BitIndex"
-            # If the field spans multiple bytes, we need to know which byte this bit belongs to.
-            # Assuming bit_0 is LSB of the whole chunk (Big Endian integer).
-            # If chunk is 1 byte: bit 0 is LSB.
-            # If chunk is 2 bytes: bit 0 is LSB of byte 1 (the last byte).
-            # Wait, usually "bit 0" in these definitions refers to the bit within the byte if it's a byte-based definition.
-            # But here we read `byte_length` bytes.
-            # If `byte_length` is 1, then `byte_offset` is the byte index.
-            # `bit_idx` is the bit index.
-
-            # If `byte_length` > 1, it gets complicated.
-            # Assuming byte_length=1 for bit_fields usually.
-
             current_byte_offset = fdef.byte_offset
-            # If multiple bytes, we might need to adjust current_byte_offset based on bit_idx
-            # But let's assume simple case first or that bit_idx is within the chunk.
-
             range_str = f"{current_byte_offset}/{bit_idx}"
-
             raw_hex = str(bit_val)
-
             parsed_val = str(bit_val)
+
             conversion = bit_def.get("conversion")
-            if conversion and isinstance(conversion, dict):
-                val_str = str(bit_val)
-                if val_str in conversion:
-                    parsed_val = conversion[val_str]
+            if conversion:
+                if isinstance(conversion, dict):
+                    if conversion.get("type") == "linear":
+                        # Linear on a bit? Possible.
+                        res = float(conversion.get("resolution", 1.0))
+                        off = float(conversion.get("offset", 0.0))
+                        phy_val = bit_val * res + off
+                        if phy_val.is_integer():
+                            parsed_val = str(int(phy_val))
+                        else:
+                            parsed_val = f"{phy_val:.6f}".rstrip('0').rstrip('.')
+                    else:
+                        # Enum - strict mapping
+                        val_str = str(bit_val)
+                        if val_str in conversion:
+                            parsed_val = conversion[val_str]
+                elif isinstance(conversion, str):
+                    # Unit string - only append if not empty
+                    if conversion.strip().upper() != "NONE":
+                        parsed_val = f"{bit_val} {conversion}"
 
             description = bit_def.get("description", "")
 
@@ -261,7 +311,8 @@ class DPTParser:
                 name=description,
                 range_str=range_str,
                 raw_hex=raw_hex,
-                parsed_value=parsed_val
+                parsed_value=parsed_val,
+                encoding="Bit"
             ))
 
 

@@ -33,7 +33,8 @@ class AppConfigurationService(BaseService):
                 "routing_request": True,
                 "network_interface": 0,
                 "tcp_use_any": False,
-                "udp_broadcast": False
+                "udp_broadcast": False,
+                "dpt_file": ""
             },
             "diag_layer": {
                 "s3_client_time": "3000",
@@ -93,4 +94,3 @@ class AppConfigurationService(BaseService):
     def app_log_settings(self, value):
         self._settings["app_log"] = value
         self.save_settings()
-

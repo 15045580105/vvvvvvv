@@ -2,7 +2,7 @@ from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout,
                              QTreeWidget, QTreeWidgetItem, QStackedWidget,
                              QLabel, QComboBox, QLineEdit, QCheckBox, QPushButton,
                              QGroupBox, QFormLayout, QGridLayout, QSplitter,
-                             QMessageBox, QFileDialog, QListWidget, QListWidgetItem,
+                             QMessageBox, QFileDialog,
                              QRadioButton, QButtonGroup)
 from PyQt5.QtCore import Qt, QRegExp, pyqtSignal
 from PyQt5.QtGui import QRegExpValidator, QFont, QIntValidator
@@ -77,7 +77,8 @@ class DoIPSettingsPage(QWidget):
 
         # 网络接口
         self.network_combo = QComboBox()
-        self._load_network_interfaces()
+        # Delay loading network interfaces to avoid blocking UI on startup
+        QtCore.QTimer.singleShot(100, self._load_network_interfaces)
         tool_layout.addRow("Network interface:", self.network_combo)
 
         # Target Logical Addresses
@@ -110,6 +111,31 @@ class DoIPSettingsPage(QWidget):
 
         tool_group.setLayout(tool_layout)
         main_layout.addWidget(tool_group)
+
+        # DPT Configuration Group
+        dpt_group = self._create_group_box("DPT Configuration", "#22C55E")
+
+        dpt_layout = QFormLayout()
+        dpt_layout.setSpacing(12)
+
+        dpt_path_layout = QHBoxLayout()
+        self.dpt_path_edit = QLineEdit("")
+        self.dpt_path_edit.setReadOnly(True)
+        self.browse_dpt_btn = QPushButton("Browse")
+        self.browse_dpt_btn.setStyleSheet(self._get_button_style("#3498db", "#5dade2", "#2980b9"))
+        self.browse_dpt_btn.clicked.connect(self.browse_dpt)
+
+        dpt_path_layout.addWidget(self.dpt_path_edit)
+        dpt_path_layout.addWidget(self.browse_dpt_btn)
+
+        dpt_layout.addRow("DPT File:", dpt_path_layout)
+        dpt_group.setLayout(dpt_layout)
+        main_layout.addWidget(dpt_group)
+
+        # DPT Status Label
+        self.dpt_status_label = QLabel("")
+        self.dpt_status_label.setAlignment(Qt.AlignCenter)
+        main_layout.addWidget(self.dpt_status_label)
 
         main_layout.addStretch()
         self.setLayout(main_layout)
@@ -154,6 +180,17 @@ class DoIPSettingsPage(QWidget):
         """)
         return group
 
+    def browse_dpt(self):
+        """浏览DPT文件"""
+        file_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Select DPT File",
+            "",
+            "Excel Files (*.xlsx)"
+        )
+        if file_path:
+            self.dpt_path_edit.setText(file_path)
+
     def _load_network_interfaces(self):
         self.network_combo.clear()
         try:
@@ -192,6 +229,23 @@ class DoIPSettingsPage(QWidget):
         else:
             self.phy_radio.setChecked(True)
 
+        # DPT File
+        self.dpt_path_edit.setText(settings.get("dpt_file", ""))
+
+    def set_dpt_status(self, status, message):
+        """设置DPT状态信息"""
+        if status == "loading":
+            self.dpt_status_label.setText(f"Loading: {message}")
+            self.dpt_status_label.setStyleSheet("color: blue;")
+        elif status == "completed":
+            self.dpt_status_label.setText("DPT loaded successfully.")
+            self.dpt_status_label.setStyleSheet("color: green;")
+        elif status == "error":
+            self.dpt_status_label.setText(f"Error: {message}")
+            self.dpt_status_label.setStyleSheet("color: red;")
+        else:
+            self.dpt_status_label.setText(message)
+
     def save_settings(self):
         """保存设置"""
         settings = {
@@ -203,7 +257,8 @@ class DoIPSettingsPage(QWidget):
             "network_interface_ip": self.network_combo.currentData(),
             "target_phy_addr": self.phy_addr_edit.text(),
             "target_fun_addr": self.fun_addr_edit.text(),
-            "target_addr_mode": self.addr_group.checkedId()
+            "target_addr_mode": self.addr_group.checkedId(),
+            "dpt_file": self.dpt_path_edit.text()
         }
         self.save_signal.emit(settings)
 
@@ -988,14 +1043,19 @@ class SettingsWindow(QWidget):
             self.stacked_widget.setCurrentWidget(self.current_page)
 
     def on_ok_clicked(self):
-        """OK按钮点击事件 - 保存当前页面设置"""
-        if self.current_page and hasattr(self.current_page, 'save_settings'):
-            self.current_page.save_settings()
+        """OK按钮点击事件 - 保存所有页面设置并关闭窗口"""
+        # 保存所有页面的设置
+        if hasattr(self, 'doip_page'):
+            self.doip_page.save_settings()
+        if hasattr(self, 'diag_layer_page'):
+            self.diag_layer_page.save_settings()
+        if hasattr(self, 'domain_update_page'):
+            self.domain_update_page.save_settings()
+        if hasattr(self, 'app_log_page'):
+            self.app_log_page.save_settings()
+
+        self.close()
 
     def on_cancel_clicked(self):
-        """Cancel按钮点击事件 - 重置当前页面设置"""
-        if self.current_page and hasattr(self.current_page, 'reset_to_defaults'):
-            reply = QMessageBox.question(self, "Confirm", "Discard changes?",
-                                         QMessageBox.Yes | QMessageBox.No)
-            if reply == QMessageBox.Yes:
-                self.current_page.reset_to_defaults()
+        """Cancel按钮点击事件 - 不保存直接关闭窗口"""
+        self.close()
