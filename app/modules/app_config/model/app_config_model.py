@@ -76,14 +76,15 @@ class AppConfigModel(BaseModel):
             "network_interface": 0,
             "target_phy_addr": "0x004F",
             "target_fun_addr": "0x07DF",
-            "target_addr_mode": 1
+            "target_addr_mode": 1,
+            "dpt_file": ""
         }
 
     def reset_diag_layer_settings(self):
         self.diag_layer_settings = {
             "s3_client_time": "3000",
             "s3_server_time": "5000",
-            "dll_path": "D:/GAC客户提供/GAC_CCU_SA.dll",
+            "dll_path": "",
             "physical_addr": "0x004F",
             "functional_addr": "0x07DF",
             "ecu_config_path": "",

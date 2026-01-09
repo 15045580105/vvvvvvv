@@ -621,7 +621,7 @@ class UDSSequenceView(QtWidgets.QWidget):
         self.btn_3e = QtWidgets.QPushButton("3E")
         self.btn_3e.setCheckable(True)
         self.btn_3e.setToolTip("Tester Present: 3E 80 (点击切换 3E 00)")
-        self.btn_3e.setFixedSize(32, 32)
+        self.btn_3e.setFixedSize(40, 32)
         self._apply_toggle_style(self.btn_3e, "#6366F1") # Indigo
         btn_row_layout.addWidget(self.btn_3e)
 
@@ -629,7 +629,7 @@ class UDSSequenceView(QtWidgets.QWidget):
         self.btn_stop_fail = QtWidgets.QPushButton("⚠")
         self.btn_stop_fail.setCheckable(True)
         self.btn_stop_fail.setToolTip("遇错停止: 选中后遇到错误将停止执行")
-        self.btn_stop_fail.setFixedSize(32, 32)
+        self.btn_stop_fail.setFixedSize(40, 32)
         self.btn_stop_fail.setChecked(True)
         self._apply_toggle_style(self.btn_stop_fail, "#EF4444") # Red
         btn_row_layout.addWidget(self.btn_stop_fail)
@@ -866,6 +866,7 @@ class UDSSequenceView(QtWidgets.QWidget):
     def log_message(self, message: str):
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")
         self.exec_log.append(f"[{timestamp}] {message}")
+        self.exec_log.moveCursor(QtGui.QTextCursor.End)
 
     # --- Internal slots to emit signals ---
     def _on_send_clicked_internal(self):
@@ -967,6 +968,7 @@ class UDSSequenceView(QtWidgets.QWidget):
                 border: 1px solid #D1D5DB;
                 border-radius: 6px;
                 font-weight: bold;
+                padding: 0px;
             }}
             QPushButton:checked {{
                 background-color: {active_color};

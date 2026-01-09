@@ -1,12 +1,16 @@
 from datetime import datetime
+from PyQt5 import QtCore, QtWidgets
 from app.core.base_controller import BaseController
 from app.modules.dtc_management.model.dtc_management_model import DTCModel
 from app.modules.dtc_management.view.dtc_management_view import DTCView
 from app.core.dependency_injection import di_container
 from app.services.device_manage.device_service import DeviceService
+from app.services.diagnostic.dpt_service import DPTService
 
 
 class DTCController(BaseController):
+    dpt_status_signal = QtCore.pyqtSignal(str, str)
+
     def __init__(self, parent=None):
         self.model = DTCModel(parent)
         self.view = DTCView(parent)
@@ -20,7 +24,27 @@ class DTCController(BaseController):
         self.view.filter_changed_signal.connect(self.handle_filter_changed)
         self.view.clear_dtc_signal.connect(self.handle_clear_dtcs)
 
+        # Delay heavy initialization
+        QtCore.QTimer.singleShot(0, self.delayed_init)
+
+    def delayed_init(self):
+        self._dpt_service = di_container.resolve(DPTService)
+        if not self._dpt_service:
+             self._dpt_service = DPTService()
+             di_container.register_singleton(DPTService, self._dpt_service)
+
+        # Register status callback
+        self.dpt_status_signal.connect(self.handle_dpt_status)
+        self._dpt_service.add_status_callback(self._on_dpt_status)
+
+        # 加载保存的 DID 列表
         self.on_model_changed()
+
+    def _on_dpt_status(self, status, message):
+        self.dpt_status_signal.emit(status, message)
+
+    def handle_dpt_status(self, status, message):
+        self.view.append_log(f"系统: {message}")
 
     def on_model_changed(self):
         self.refresh_view()
@@ -48,6 +72,10 @@ class DTCController(BaseController):
         self.view.populate(self.model.categories, filtered)
 
     def handle_read_dtcs(self):
+        if not self._dpt_service.is_ready():
+            QtWidgets.QMessageBox.warning(self.view, "提示", "DPT解析未完成，请稍候")
+            return
+
         # Update last read time
         self.view.set_last_read_time(datetime.now())
 
@@ -81,59 +109,89 @@ class DTCController(BaseController):
         self.view.append_log(f"{ts} {direction}: {hex_data}")
 
     def parse_dtc_response(self, resp):
-        # Response format: 59 02 Mask [DTC1 DTC2 DTC3 Status] ...
-        if len(resp) < 3:
-            self.view.append_log("Response too short")
-            return
+        try:
+            # Response format: 59 02 Mask [DTC1 DTC2 DTC3 Status] ...
+            if len(resp) < 3:
+                self.view.append_log("Response too short")
+                return
 
-        if resp[0] != 0x59:
-            self.view.append_log(f"Negative response or invalid SID: {resp[0]:02X}")
-            return
+            if resp[0] != 0x59:
+                self.view.append_log(f"Negative response or invalid SID: {resp[0]:02X}")
+                return
 
-        # availability_mask = resp[2]
-        dtc_data = resp[3:]
+            # availability_mask = resp[2]
+            dtc_data = resp[3:]
 
-        parsed_dtcs = []
+            parsed_dtcs = []
 
-        # Each DTC is 4 bytes: 3 bytes DTC + 1 byte Status
-        num_dtcs = len(dtc_data) // 4
+            # Each DTC is 4 bytes: 3 bytes DTC + 1 byte Status
+            num_dtcs = len(dtc_data) // 4
 
-        for i in range(num_dtcs):
-            offset = i * 4
-            dtc_bytes = dtc_data[offset:offset+3]
-            status = dtc_data[offset+3]
+            for i in range(num_dtcs):
+                offset = i * 4
+                dtc_bytes = dtc_data[offset:offset+3]
+                status = dtc_data[offset+3]
 
-            dtc_code = self._bytes_to_dtc_code(dtc_bytes)
-            status_hex = f"0x{status:02X}"
+                try:
+                    dtc_code = self._bytes_to_dtc_code(dtc_bytes)
+                except Exception as e:
+                    self.view.append_log(f"Error parsing DTC bytes {dtc_bytes}: {e}")
+                    dtc_code = "UNKNOWN"
 
-            # Determine fault state
-            fault_state = self._get_fault_state(status)
+                status_hex = f"0x{status:02X}"
 
-            # Mock description and subsystem for now as we don't have a database
-            desc = "未知故障"
-            subsystem = "Unknown"
+                # Determine fault state
+                fault_state = self._get_fault_state(status)
 
-            # Tuple: (code, desc, subsystem, status_code, fault_state, freeze_state)
-            parsed_dtcs.append((dtc_code, desc, subsystem, status_hex, fault_state, "未读取"))
+                # Get description from DPT service if available
+                desc = "未知故障"
+                subsystem = "Unknown"
 
-        # Update model
-        self.model.dtcs = parsed_dtcs
+                try:
+                    if self._dpt_service and self._dpt_service.is_ready():
+                        dtc_info = self._dpt_service.get_dtc_info(dtc_code)
+                        if dtc_info:
+                            fetched_desc = dtc_info.get("description")
+                            if fetched_desc:
+                                desc = str(fetched_desc)
+                            # subsystem = dtc_info.get("subsystem", subsystem) # If available
+                except Exception as e:
+                    self.view.append_log(f"Error getting info for {dtc_code}: {e}")
 
-        # Update categories counts
-        total = len(parsed_dtcs)
-        current = sum(1 for x in parsed_dtcs if x[4] == "当前故障")
-        history = sum(1 for x in parsed_dtcs if x[4] == "历史故障")
-        pending = sum(1 for x in parsed_dtcs if x[4] == "未决故障")
+                # Tuple: (code, desc, subsystem, status_code, fault_state, freeze_state)
+                # Ensure all elements are strings to prevent UI crashes
+                parsed_dtcs.append((
+                    str(dtc_code),
+                    str(desc),
+                    str(subsystem),
+                    str(status_hex),
+                    str(fault_state),
+                    "未读取"
+                ))
 
-        self.model.categories = [
-            f"全部故障 ({total})",
-            f"当前故障 ({current})",
-            f"历史故障 ({history})",
-            f"未决故障 ({pending})",
-        ]
+            # Update model
+            self.model.dtcs = parsed_dtcs
 
-        self.model.dataChanged.emit()
-        self.view.append_log(f"Parsed {total} DTCs")
+            # Update categories counts
+            total = len(parsed_dtcs)
+            current = sum(1 for x in parsed_dtcs if x[4] == "当前故障")
+            history = sum(1 for x in parsed_dtcs if x[4] == "历史故障")
+            pending = sum(1 for x in parsed_dtcs if x[4] == "未决故障")
+
+            self.model.categories = [
+                f"全部故障 ({total})",
+                f"当前故障 ({current})",
+                f"历史故障 ({history})",
+                f"未决故障 ({pending})",
+            ]
+
+            self.model.dataChanged.emit()
+            self.view.append_log(f"Parsed {total} DTCs")
+
+        except Exception as e:
+            self.view.append_log(f"Error parsing DTC response: {e}")
+            import traceback
+            traceback.print_exc()
 
     def _get_fault_state(self, status):
         # Bit 0: testFailed (Current)
@@ -184,9 +242,27 @@ class DTCController(BaseController):
             self.log_message("RX", resp)
             success = self.parse_freeze_frame_response(resp, dtc_code, dtc_entry[1])
             self.view.update_freeze_read_status(row_index, success)
+
+            # Update model persistence
+            new_status = "读取成功" if success else "读取失败"
+            self._update_dtc_freeze_status(dtc_code, new_status)
         else:
             self.view.append_log("No response for freeze frame")
             self.view.update_freeze_read_status(row_index, False)
+            self._update_dtc_freeze_status(dtc_code, "读取失败")
+
+    def _update_dtc_freeze_status(self, code, status):
+        # Update the specific DTC in the main model list
+        for i, dtc in enumerate(self.model.dtcs):
+            if dtc[0] == code:
+                # dtc is tuple: (code, desc, subsystem, status_hex, fault_state, freeze_state)
+                # or (code, desc, subsystem, status_hex, fault_state)
+
+                # Check tuple length to be safe
+                if len(dtc) >= 5:
+                    new_dtc = (dtc[0], dtc[1], dtc[2], dtc[3], dtc[4], status)
+                    self.model.dtcs[i] = new_dtc
+                break
 
     def handle_clear_dtcs(self):
         device_service = di_container.resolve(DeviceService)
@@ -424,4 +500,5 @@ class DTCController(BaseController):
         except Exception as e:
             self.view.append_log(f"Parse error: {e}")
             return False
+
 

@@ -1,4 +1,5 @@
 from typing import Optional
+from datetime import datetime
 from PyQt5 import QtWidgets, QtGui, QtCore
 from PyQt5.QtCore import Qt
 
@@ -219,7 +220,6 @@ class ValueCellWidget(QtWidgets.QWidget):
 
 
 class DIDView(BaseView):
-    dpt_import_requested = QtCore.pyqtSignal()
     value_detail_requested = QtCore.pyqtSignal(int)
     read_requested = QtCore.pyqtSignal()
     write_requested = QtCore.pyqtSignal()
@@ -246,8 +246,6 @@ class DIDView(BaseView):
         self.ecu_init_btn = ModernButton("ECU初始化", "#8B5CF6", "🔧")
         ctl.addWidget(self.ecu_init_btn)
 
-        self.dpt_import_btn = ModernButton("导入DPT文件", "#22C55E", "📂")
-        ctl.addWidget(self.dpt_import_btn)
 
         # 将表格工具按钮合并到顶栏，保持在导入按钮之后
         self.add_btn = ModernButton("+", "#22C55E", "")
@@ -285,12 +283,13 @@ class DIDView(BaseView):
 
         # DID 表格
         self.table = QtWidgets.QTableWidget()
-        self.table.setColumnCount(7)
+        self.table.setColumnCount(8)
         self.table.setHorizontalHeaderLabels([
             "",  # 选中
             "Description",
             "DID",
             "STR/HEX",
+            "Follow DPT",
             "DiagnosticSession",
             "SecurityAccess",
             "Value",
@@ -321,11 +320,15 @@ class DIDView(BaseView):
         self.table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
         self.table.setSelectionMode(QtWidgets.QAbstractItemView.SingleSelection)
         self.table.setAlternatingRowColors(True)
-        self.table.verticalHeader().setVisible(False)
+
+        # Enable vertical header (row numbers) and style it
+        self.table.verticalHeader().setVisible(True)
+        self.table.verticalHeader().setDefaultSectionSize(34)
+        # Ensure minimum width for visibility on high DPI
+        self.table.verticalHeader().setMinimumWidth(40)
+
         # 编辑触发交给 controller 控制
         self.table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
-        # 增加行高
-        self.table.verticalHeader().setDefaultSectionSize(34)
         # 让表格在容器中尽量占满空间
         self.table.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Expanding)
 
@@ -338,7 +341,13 @@ class DIDView(BaseView):
             "QTableWidget::item:selected{ background: #e6f7ff; }"
             # 与现有界面风格一致的细微横/纵分隔线
             "QTableView::item{ border-bottom: 1px solid rgba(0,0,0,0.06); border-right: 1px solid rgba(0,0,0,0.04); }"
+            # Style vertical header
+            "QHeaderView::section:vertical { background-color: #F3F4F6; border: none; border-right: 1px solid #E5E7EB; padding-right: 4px; font-family: 'Segoe UI', sans-serif; font-size: 11px; color: #6B7280; }"
         )
+
+        # Enable mouse tracking to support delegate tooltips (e.g. Value column button)
+        self.table.setMouseTracking(True)
+        self.table.viewport().setMouseTracking(True)
 
         table_container.addWidget(self.table)
         self.stack.addWidget(table_widget) # Index 0
@@ -362,7 +371,6 @@ class DIDView(BaseView):
         self.splitter.setStretchFactor(1, 1)
 
         # 信号转发（仅界面层）
-        self.dpt_import_btn.clicked.connect(self.dpt_import_requested.emit)
         self.read_btn.clicked.connect(self.read_requested.emit)
         self.write_btn.clicked.connect(self.write_requested.emit)
         self.add_btn.clicked.connect(self.add_row_requested.emit)
@@ -392,17 +400,29 @@ class DIDView(BaseView):
             self.ecu_init_btn.color = QtGui.QColor("#8B5CF6") # Original purple
             self.ecu_init_btn.update_style()
 
+    def append_log(self, message: str):
+        """Append message to the raw text log area."""
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")
+        self.raw_text.append(f"[{timestamp}] {message}")
+        self.raw_text.moveCursor(QtGui.QTextCursor.End)
+
     def resizeEvent(self, event):
         super().resizeEvent(event)
         # 尽量保留用户调整的列宽，但确保满足最小宽度
         self._apply_column_widths()
-        # 如果 controller 在视图显示前请求了显式像素宽度，在 resize 时应用
+
+        # Adjust vertical header width to fit row numbers
         try:
-            if getattr(self, "_pending_pixel_widths", None):
-                if self.table.viewport().width() > 0:
-                    pixels = self._pending_pixel_widths
-                    self._pending_pixel_widths = None
-                    self.set_column_pixel_widths(pixels)
+            # Calculate required width for the last row number
+            row_count = self.table.rowCount()
+            if row_count > 0:
+                # Get font metrics
+                fm = self.table.verticalHeader().fontMetrics()
+                # Measure width of the largest number string
+                text = str(row_count + 1) # +1 just in case
+                width = fm.horizontalAdvance(text) + 20 # Add padding
+                # Set width (ensure minimum)
+                self.table.verticalHeader().setFixedWidth(max(40, width))
         except Exception:
             pass
 
@@ -413,7 +433,7 @@ class DIDView(BaseView):
         # 使用视口宽度（可见区域）计算可用的水平空间
         total_width = max(1, self.table.viewport().width())
         # 使用可配置的权重（controller 可更新以匹配设计稿）
-        weights = getattr(self, "_column_weights", [1, 8, 3, 2, 4, 4, 10])
+        weights = getattr(self, "_column_weights", [1, 8, 3, 2, 2, 4, 4, 10])
         # 使用表头字体度量准确计算表头文本宽度
         fm = header.fontMetrics()
         # 从表头文本计算每列的最小宽度
@@ -425,8 +445,8 @@ class DIDView(BaseView):
             # 如果表头文本较长，给予额外填充
             if len(header_text) > 12:
                 header_min += 24
-            # 针对 DiagnosticSession(4) 和 SecurityAccess(5) 的额外最小保护
-            if i in (4, 5):
+            # 针对 DiagnosticSession(5) 和 SecurityAccess(6) 的额外最小保护
+            if i in (5, 6):
                 header_min = max(header_min, 150)
             if i == 0:  # 复选框列需要稍大一点的最小宽度
                 header_min = max(header_min, 40)
@@ -747,18 +767,6 @@ class ValueButtonDelegate(FullCellDelegate):
             # 让父类继续处理（以保持选择行为）
             return super().editorEvent(event, model, option, index)
 
-        # ToolTip 事件：显示自定义提示文本
-        if ev_type == QtCore.QEvent.ToolTip:
-            try:
-                pos = event.pos()
-                global_pos = self._table.viewport().mapToGlobal(pos)
-                if btn_rect.contains(pos):
-                    QtWidgets.QToolTip.showText(global_pos, "DPT解析结果", self._table.viewport())
-                    return True
-            except Exception:
-                pass
-            return super().editorEvent(event, model, option, index)
-
         # 鼠标按下/释放：拦截按钮点击
         if ev_type in (QtCore.QEvent.MouseButtonPress, QtCore.QEvent.MouseButtonRelease):
             try:
@@ -774,6 +782,23 @@ class ValueButtonDelegate(FullCellDelegate):
                 return True
 
         return super().editorEvent(event, model, option, index)
+
+    def helpEvent(self, event, view, option, index):
+        if not event or not view:
+            return False
+        if event.type() == QtCore.QEvent.ToolTip:
+            try:
+                btn_rect = self.button_rect_from_cell(option.rect)
+                pos = event.pos() # helpEvent pos is usually relative to view
+                # Ensure pos is mapped correctly if needed, but event.pos() for helpEvent
+                # is usually viewport coordinates?
+                # Actually helpEvent(QHelpEvent) -> pos() is widget relative.
+                if btn_rect.contains(pos):
+                    QtWidgets.QToolTip.showText(event.globalPos(), "DPT解析结果", view)
+                    return True
+            except Exception:
+                pass
+        return super().helpEvent(event, view, option, index)
 
 
 class ValueDetailDialog(QtWidgets.QDialog):
@@ -817,6 +842,15 @@ class ValueDetailDialog(QtWidgets.QDialog):
         header.setSectionResizeMode(3, QtWidgets.QHeaderView.Stretch)
 
         self.table.setAlternatingRowColors(True)
+
+        # Style vertical header for detail dialog too
+        self.table.verticalHeader().setVisible(True)
+        self.table.verticalHeader().setDefaultSectionSize(28)
+        # self.table.verticalHeader().setFixedWidth(35)
+        self.table.setStyleSheet(
+            "QHeaderView::section:vertical { background-color: #F3F4F6; border: none; border-right: 1px solid #E5E7EB; padding-right: 4px; font-family: 'Segoe UI', sans-serif; font-size: 11px; color: #6B7280; }"
+        )
+
         layout.addWidget(self.table)
 
         # 填充表格

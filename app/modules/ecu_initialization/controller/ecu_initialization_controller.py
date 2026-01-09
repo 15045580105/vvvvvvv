@@ -1,6 +1,6 @@
 import configparser
 import re
-from PyQt5 import QtWidgets
+from PyQt5 import QtWidgets, QtCore
 from app.core.base_controller import BaseController
 from app.modules.ecu_initialization.model.ecu_initialization_model import ECUInitModel
 from app.modules.ecu_initialization.view.ecu_initialization_view import ECUInitView
@@ -8,6 +8,8 @@ from app.core.dependency_injection import di_container
 from app.services.device_manage.device_service import DeviceService
 
 class ECUInitController(BaseController):
+    log_message = QtCore.pyqtSignal(str, str)
+
     def __init__(self, parent=None, view=None):
         self.model = ECUInitModel()
         self.view = view if view else ECUInitView(parent)
@@ -157,9 +159,18 @@ class ECUInitController(BaseController):
 
                 payload = b'\x2E' + did_bytes + data_bytes
 
+                # Emit TX log
+                self.log_message.emit("TX", f"Write DID {did_hex_str}: {payload.hex(' ').upper()}")
+
                 # Send request
                 # Using send_doip_payload from DeviceService
                 response = self.device_service.send_doip_payload(payload, timeout=2.0)
+
+                # Emit RX log
+                if response:
+                    self.log_message.emit("RX", f"Response: {response.hex(' ').upper()}")
+                else:
+                    self.log_message.emit("RX", "No response")
 
                 # Check positive response: 0x6E + DID
                 if response and response[0] == 0x6E:
@@ -171,6 +182,7 @@ class ECUInitController(BaseController):
 
             except Exception as e:
                 fail_count += 1
+                self.log_message.emit("ERROR", f"Error writing {task['section']}: {e}")
                 print(f"Error writing {task['section']}: {e}")
 
             # Update progress

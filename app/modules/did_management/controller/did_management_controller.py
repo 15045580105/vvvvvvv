@@ -1,5 +1,7 @@
 from typing import Optional, Tuple, cast, Any
 import re
+import json
+import os
 
 from PyQt5 import QtWidgets, QtCore, QtGui
 from PyQt5.QtCore import Qt
@@ -26,25 +28,41 @@ from app.common.utils.security_access_helper import SecurityAccessHelper
 from app.modules.ecu_initialization.controller.ecu_initialization_controller import ECUInitController
 
 
-class DPTLoaderThread(QtCore.QThread):
-    finished_signal = QtCore.pyqtSignal(bool, str)
+DID_LIST_FILE = os.path.join(os.path.dirname(os.path.dirname(__file__)), "did_list.json")
 
-    def __init__(self, dpt_service):
-        super().__init__()
-        self.dpt_service = dpt_service
+
+class DIDLoaderThread(QtCore.QThread):
+    finished_signal = QtCore.pyqtSignal(list)
 
     def run(self):
+        if not os.path.exists(DID_LIST_FILE):
+            self.finished_signal.emit([])
+            return
         try:
-            if self.dpt_service.current_path:
-                self.dpt_service.load_from_file(self.dpt_service.current_path, persist=False)
-            self.finished_signal.emit(True, "")
+            with open(DID_LIST_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            rows = []
+            for item in data:
+                rows.append(DIDTableRow(
+                    description=item.get("description", ""),
+                    did=item.get("did", ""),
+                    data_format=item.get("data_format", "STR"),
+                    follow_dpt=item.get("follow_dpt", False),
+                    diagnostic_session=item.get("diagnostic_session", "Default"),
+                    security_access=item.get("security_access", "Locked"),
+                    value=item.get("value", ""),
+                    selected=item.get("selected", True)
+                ))
+            self.finished_signal.emit(rows)
         except Exception as e:
-            self.finished_signal.emit(False, str(e))
+            print(f"Failed to load DID list: {e}")
+            self.finished_signal.emit([])
 
 
 class DIDController(BaseController):
     """DID 控制器：负责界面交互、消息监听与 DPT 解析的协调逻辑。"""
     switch_page = QtCore.pyqtSignal(dict, str)
+    dpt_status_signal = QtCore.pyqtSignal(str, str)
 
     def __init__(self, parent=None, dpt_service: Optional[DPTService] = None):
         # 初始化模型 & 视图
@@ -53,6 +71,7 @@ class DIDController(BaseController):
 
         # 初始化 ECU 初始化控制器，使用 DIDView 中的子视图
         self.ecu_init_controller = ECUInitController(parent, view=self.view.ecu_init_view)
+        self.ecu_init_controller.log_message.connect(self.on_ecu_init_log)
 
         # call BaseController to wire model/view signals
         super().__init__(self.model, self.view, parent)
@@ -68,15 +87,23 @@ class DIDController(BaseController):
              di_container.register_singleton(DeviceService, self._device_service)
 
         # services and helpers
-        self._dpt_service = dpt_service or DPTService()
-        self._dpt_loader_thread: Optional[DPTLoaderThread] = None
+        # Try to resolve DPTService from container first
+        self._dpt_service = dpt_service or di_container.resolve(DPTService)
+        if not self._dpt_service:
+             self._dpt_service = DPTService()
+             di_container.register_singleton(DPTService, self._dpt_service)
+
+        # Register status callback
+        self.dpt_status_signal.connect(self.handle_dpt_status)
+        self._dpt_service.add_status_callback(self._on_dpt_status)
+
         self._value_detail_dialog: Optional["ValueDetailDialog"] = None
 
         # 应用默认列比例（用于初始布局）：
-        # [勾选, Description, DID, STR/HEX, DiagnosticSession, SecurityAccess, Value]
+        # [勾选, Description, DID, STR/HEX, Follow DPT, DiagnosticSession, SecurityAccess, Value]
         # 第一列窄，Description 宽，Value 最宽以填充剩余空间。
         try:
-            self.view.set_column_weights([1, 8, 3, 2, 4, 4, 10])
+            self.view.set_column_weights([1, 8, 3, 2, 2, 4, 4, 10])
         except Exception:
             pass
 
@@ -85,7 +112,7 @@ class DIDController(BaseController):
         try:
             QtCore.QTimer.singleShot(
                 0,
-                lambda: self.view.set_column_pixel_widths([30, 400, 100, 100, 200, 200, 600]),
+                lambda: self.view.set_column_pixel_widths([30, 400, 100, 100, 100, 200, 200, 600]),
             )
         except Exception:
             pass
@@ -93,7 +120,7 @@ class DIDController(BaseController):
         # reference table from view
         table = self.view.table
 
-        # 为 Description（列1）、DID（列2）与 Value（列6）使用整格编辑委托，
+        # 为 Description（列1）、DID（列2）与 Value（列7）使用整格编辑委托，
         # 以保证编辑器覆盖整格并使用不透明背景，避免重影问题。
         full_delegate = FullCellDelegate(self.view.table)
         table.setItemDelegateForColumn(1, full_delegate)
@@ -101,7 +128,7 @@ class DIDController(BaseController):
         # Value 列使用 ValueButtonDelegate：保留文本显示，右侧绘制并响应一个方形按钮
         try:
             value_delegate = ValueButtonDelegate(table, clicked_callback=lambda idx: self._on_value_detail_requested(idx.row()))
-            table.setItemDelegateForColumn(6, value_delegate)
+            table.setItemDelegateForColumn(7, value_delegate)
         except Exception:
             # 若任意原因 delegate 创建失败，忽略以保证表格仍可工作
             pass
@@ -111,11 +138,10 @@ class DIDController(BaseController):
         sess_delegate = ComboBoxDelegate(self._session_items, table)
         sec_delegate = ComboBoxDelegate(self._security_items, table)
         table.setItemDelegateForColumn(3, fmt_delegate)
-        table.setItemDelegateForColumn(4, sess_delegate)
-        table.setItemDelegateForColumn(5, sec_delegate)
+        table.setItemDelegateForColumn(5, sess_delegate)
+        table.setItemDelegateForColumn(6, sec_delegate)
 
         # 绑定视图信号
-        self.view.dpt_import_requested.connect(self._handle_dpt_import)
         self.view.value_detail_requested.connect(self._on_value_detail_requested)
         self.view.read_requested.connect(self._on_read_clicked)
         self.view.write_requested.connect(self._on_write_clicked)
@@ -127,12 +153,54 @@ class DIDController(BaseController):
         self.view.cell_clicked.connect(self._on_cell_clicked)
         self.view.cell_double_clicked.connect(self._on_cell_double_clicked)
 
-        # 初始化示例 DID 数据（正式使用时应从 DPT/配置加载）
-        demo_rows = [
-            DIDTableRow("GAC ECUHardwareVersion", "F17F"),
-            DIDTableRow("ECUBootSoftwareVersion", "F180", data_format="HEX"),
-        ]
-        self.model.set_did_rows(demo_rows)
+        # 加载保存的 DID 列表
+        self._load_dids_from_file()
+
+
+    def _on_dpt_status(self, status, message):
+        self.dpt_status_signal.emit(status, message)
+
+    def handle_dpt_status(self, status, message):
+        if status == "loading":
+            MessageToast(self.view).show_toast(message, 2)
+        elif status == "completed":
+            MessageToast(self.view).show_toast(message, 0)
+        elif status == "error":
+            MessageToast(self.view).show_toast(message, 1)
+
+        # Also append to log
+        self.view.append_log(f"系统: {message}")
+
+    def _save_dids_to_file(self):
+        """保存当前 DID 列表到文件。"""
+        data = []
+        for row in self.model.did_rows:
+            data.append({
+                "description": row.description,
+                "did": row.did,
+                "data_format": row.data_format,
+                "follow_dpt": row.follow_dpt,
+                "diagnostic_session": row.diagnostic_session,
+                "security_access": row.security_access,
+                "value": row.value,
+                "selected": row.selected
+            })
+        try:
+            with open(DID_LIST_FILE, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=4, ensure_ascii=False)
+        except Exception as e:
+            print(f"Failed to save DID list: {e}")
+
+    def _load_dids_from_file(self):
+        """从文件加载 DID 列表（异步）。"""
+        self._loader_thread = DIDLoaderThread()
+        self._loader_thread.finished_signal.connect(self._on_dids_loaded)
+        self._loader_thread.start()
+
+    def _on_dids_loaded(self, rows):
+        if rows:
+            self.model.set_did_rows(rows)
+        self._loader_thread = None
 
 
     # ---------- delegate 选项提供 ----------
@@ -162,6 +230,30 @@ class DIDController(BaseController):
             self.model.apply_update(rx="错误: 未连接 DoIP 设备")
             self.model.update_row(row_index, value_color="#EF4444")
             return
+
+        # 如果勾选了 Follow DPT，尝试从 DPT 获取会话和安全等级
+        if row.follow_dpt:
+            if not self._dpt_service.is_ready():
+                MessageToast.show_message(self.view, "DPT解析未完成，请稍候", "warning")
+                return
+
+            did_info = self._dpt_service.get_did_info(row.did)
+            if did_info:
+                dpt_session = did_info.get("diagnostic_session")
+                dpt_security = did_info.get("security_access")
+
+                updates = {}
+                if dpt_session:
+                    row.diagnostic_session = str(dpt_session)
+                    updates["diagnostic_session"] = str(dpt_session)
+                if dpt_security:
+                    row.security_access = str(dpt_security)
+                    updates["security_access"] = str(dpt_security)
+
+                if updates:
+                    self.model.update_row(row_index, **updates)
+                    # 保存更新后的配置
+                    self._save_dids_to_file()
 
         # 1. 诊断会话控制 (0x10)
         target_session = 0x01
@@ -403,44 +495,19 @@ class DIDController(BaseController):
             self._process_did_row(row_index, row, is_write=True)
             QtWidgets.QApplication.processEvents()
 
+    def on_ecu_init_log(self, type_: str, message: str) -> None:
+        """Handle log messages from ECUInitController."""
+        if type_ == "TX":
+            self.model.apply_update(tx=message)
+        elif type_ == "RX":
+            self.model.apply_update(rx=message)
+        else:
+            self.model.apply_update(rx=f"[{type_}] {message}")
+
     def _on_ecu_init_requested(self) -> None:
         """点击 ECU 初始化按钮，切换到 ECU 初始化界面。"""
         # 视图层已处理显示/隐藏逻辑，此处可添加业务逻辑（如初始化数据）
         pass
-
-    def on_dpt_selected(self, file_path: str) -> None:
-        """选择 DPT 文件后委托 DPTService 加载并保存路径。"""
-        try:
-            self._dpt_service.load_from_file(file_path)
-            self.model.apply_update(dpt_path=file_path)
-        except Exception as exc:
-            QtWidgets.QMessageBox.critical(self.view, "DPT 导入失败", str(exc))
-
-    def _handle_dpt_import(self) -> None:
-        """处理视图发起的 DPT 导入：弹出文件对话框并调用加载接口。"""
-        current_path = self._dpt_service.current_path
-        start_dir = ""
-
-        if current_path:
-            reply = QtWidgets.QMessageBox.question(
-                self.view,
-                "当前 DPT 路径",
-                f"当前已设定 DPT 文件路径：\n{current_path}\n\n是否重新选择？",
-                QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
-                QtWidgets.QMessageBox.Yes
-            )
-            if reply == QtWidgets.QMessageBox.No:
-                return
-            start_dir = current_path
-
-        file_path, _ = QtWidgets.QFileDialog.getOpenFileName(
-            self.view,
-            "选择 DPT 文件",
-            start_dir,
-            "DPT Files (*.json)",
-        )
-        if file_path:
-            self.on_dpt_selected(file_path)
 
 
     def on_model_changed(self):
@@ -496,19 +563,25 @@ class DIDController(BaseController):
             fmt_item = QtWidgets.QTableWidgetItem(row.data_format)
             table.setItem(r, 3, fmt_item)
 
+            # Follow DPT
+            dpt_item = QtWidgets.QTableWidgetItem()
+            dpt_item.setFlags(Qt.ItemIsUserCheckable | Qt.ItemIsEnabled | Qt.ItemIsSelectable)
+            dpt_item.setCheckState(Qt.Checked if row.follow_dpt else Qt.Unchecked)
+            table.setItem(r, 4, dpt_item)
+
             # DiagnosticSession
             sess_item = QtWidgets.QTableWidgetItem(row.diagnostic_session)
-            table.setItem(r, 4, sess_item)
+            table.setItem(r, 5, sess_item)
 
             # SecurityAccess
             sec_item = QtWidgets.QTableWidgetItem(row.security_access)
-            table.setItem(r, 5, sec_item)
+            table.setItem(r, 6, sec_item)
 
             # Value 列
-            val_item = table.item(r, 6)
+            val_item = table.item(r, 7)
             if val_item is None:
                 val_item = QtWidgets.QTableWidgetItem(row.value)
-                table.setItem(r, 6, val_item)
+                table.setItem(r, 7, val_item)
             else:
                 val_item.setText(row.value)
 
@@ -526,11 +599,11 @@ class DIDController(BaseController):
     def _on_cell_clicked(self, row: int, col: int) -> None:
         """单击事件：在 Description/DID/Value 列直接进入编辑并全选文本，模拟 Excel 行为。"""
         table = self.view.table
-        if col in (1, 2, 6):
+        if col in (1, 2, 7):
             item = table.item(row, col)
             if item is not None:
                 table.editItem(item)
-                if col == 6:
+                if col == 7:
                     QtCore.QTimer.singleShot(0, lambda: self.view.focus_value_editor(row, True))
                 else:
                     QtCore.QTimer.singleShot(0, lambda: self._select_editor_text())
@@ -538,19 +611,19 @@ class DIDController(BaseController):
     def _on_cell_double_clicked(self, row: int, col: int) -> None:
         """双击事件：
         - Description/DID/Value：整格输入编辑；
-        - 下拉列（3/4/5）：显示整格下拉框并尝试展开。"""
+        - 下拉列（3/5/6）：显示整格下拉框并尝试展开。"""
         table = self.view.table
         item = table.item(row, col)
         if item is None:
             return
-        if col in (1, 2, 3, 4, 5, 6):
+        if col in (1, 2, 3, 5, 6, 7):
             table.editItem(item)
-            if col == 6:
+            if col == 7:
                 QtCore.QTimer.singleShot(0, lambda: self.view.focus_value_editor(row, True))
             elif col in (1, 2):
                 QtCore.QTimer.singleShot(0, lambda: self._select_editor_text())
             # 如果是下拉列，编辑器应该自动弹出下拉并且 popup 宽度填满单元格
-            if col in (3, 4, 5):
+            if col in (3, 5, 6):
                 QtCore.QTimer.singleShot(0, lambda: self._show_combo_popup())
 
     def _show_combo_popup(self) -> None:
@@ -576,6 +649,7 @@ class DIDController(BaseController):
         """在末尾添加一条空白 DID 行。"""
         self.model.did_rows.append(DIDTableRow("", ""))
         self.model.dataChanged.emit()
+        self._save_dids_to_file()
 
     def _on_remove_row(self) -> None:
         """删除当前激活/选中的行。"""
@@ -584,6 +658,7 @@ class DIDController(BaseController):
             return
         del self.model.did_rows[row]
         self.model.dataChanged.emit()
+        self._save_dids_to_file()
 
     def _on_move_up(self) -> None:
         """将当前行上移一位（如可上移）。"""
@@ -596,9 +671,10 @@ class DIDController(BaseController):
         )
         self.model.dataChanged.emit()
         self.view.table.selectRow(row - 1)
+        self._save_dids_to_file()
 
     def _on_move_down(self) -> None:
-        """将当��行下移一位（如可下移）。"""
+        """将当前行下移一位（如可下移）。"""
         row = self.view.table.currentRow()
         if row < 0 or row >= len(self.model.did_rows) - 1:
             return
@@ -608,6 +684,7 @@ class DIDController(BaseController):
         )
         self.model.dataChanged.emit()
         self.view.table.selectRow(row + 1)
+        self._save_dids_to_file()
 
     def _on_item_changed(self, item: QtWidgets.QTableWidgetItem) -> None:
         """表格单元格内容改变时将变更同步回模型（处理复选、文本与下拉列）。"""
@@ -628,16 +705,21 @@ class DIDController(BaseController):
         elif col == 3:
             self.model.update_row(row, data_format=text)
         elif col == 4:
-            self.model.update_row(row, diagnostic_session=text)
+            checked = item.checkState() == Qt.Checked
+            self.model.update_row(row, follow_dpt=checked)
         elif col == 5:
-            self.model.update_row(row, security_access=text)
+            self.model.update_row(row, diagnostic_session=text)
         elif col == 6:
+            self.model.update_row(row, security_access=text)
+        elif col == 7:
             # Value 列直接使用表格项文本同步到模型
             self.model.update_row(row, value=text)
 
+        self._save_dids_to_file()
+
     def _flush_value_cell(self, row: int) -> None:
         # 将表格中 Value 单元格的文本刷新到模型（兼容旧逻辑）
-        table_item = self.view.table.item(row, 6)
+        table_item = self.view.table.item(row, 7)
         if table_item is None:
             return
         value = table_item.text()
@@ -646,56 +728,34 @@ class DIDController(BaseController):
     def _on_value_detail_requested(self, row: int) -> None:
         if row < 0 or row >= len(self.model.did_rows):
             return
-        payload, error = self._get_row_bytes(row)
-        if error:
-            MessageToast(self.view).show_toast(error, 1)
-            return
-        if not payload:
-            MessageToast(self.view).show_toast("当前行无可解析数据", 2)
-            return
 
-        if not self._dpt_service.current_path:
-            MessageToast(self.view).show_toast("请先导入 DPT 文件", 2)
+        payload, error = self._get_row_bytes(row)
+
+        # Check if we have DPT definition
+        did_str = self.model.did_rows[row].did
+        did_clean = did_str.strip().replace(" ", "").upper()
+        if did_clean.startswith("0X"):
+             did_clean = did_clean[2:]
+
+        has_parser = False
+        if self._dpt_service.is_ready():
+             has_parser = bool(self._dpt_service.get_parser(did_clean))
+
+        # If we have payload, or if we have parser (even without payload), we proceed.
+        # If we have neither, we show error.
+        if not payload and not has_parser:
+            if error:
+                MessageToast(self.view).show_toast(error, 1)
+            else:
+                MessageToast(self.view).show_toast("当前行无可解析数据且无 DPT 定义", 2)
             return
 
         if not self._dpt_service.is_ready():
-            self._load_dpt_and_show_detail(row)
-        else:
-            self._show_value_detail_dialog(row, payload)
+            MessageToast(self.view).show_toast("DPT 服务未就绪，请在设置中配置 DPT 文件", 2)
+            return
 
-    def _load_dpt_and_show_detail(self, row: int):
-        progress = QtWidgets.QProgressDialog("正在解析 DPT 文件...", "取消", 0, 0, self.view)
-        progress.setModal(True)
-        progress.setMinimumDuration(0)
-        progress.setWindowTitle("请稍候")
-        # Set cancel button
-        progress.setCancelButtonText("取消")
+        self._show_value_detail_dialog(row, payload)
 
-        self._dpt_loader_thread = DPTLoaderThread(self._dpt_service)
-
-        def on_finished(success, message):
-            progress.close()
-            if success:
-                payload, error = self._get_row_bytes(row)
-                if not error and payload:
-                    self._show_value_detail_dialog(row, payload)
-            else:
-                # If it was not a manual cancellation (which we can't easily distinguish here without flag,
-                # but if thread was terminated, this signal might not emit or emit with error)
-                # Actually if we terminate, this slot won't be called.
-                if message:
-                    QtWidgets.QMessageBox.critical(self.view, "解析失败", message)
-
-        self._dpt_loader_thread.finished_signal.connect(on_finished)
-
-        def on_canceled():
-            if self._dpt_loader_thread and self._dpt_loader_thread.isRunning():
-                self._dpt_loader_thread.terminate()
-                self._dpt_loader_thread.wait()
-
-        progress.canceled.connect(on_canceled)
-        progress.show()
-        self._dpt_loader_thread.start()
 
     def _show_value_detail_dialog(self, row: int, payload: bytes):
         # 获取当前行的 DID
@@ -728,7 +788,7 @@ class DIDController(BaseController):
 
     def _popup_position(self, row: int) -> QtCore.QPoint:
         table = self.view.table
-        item = table.item(row, 6)
+        item = table.item(row, 7)
         if item is None:
             return self.view.mapToGlobal(self.view.rect().center())
         rect = table.visualItemRect(item)
@@ -740,7 +800,19 @@ class DIDController(BaseController):
         text = (info.value or "").strip()
         if not text:
             return None, "请先读取该 DID 获取值"
-        fmt = (info.data_format or "STR").upper()
+
+        # Default to HEX as it is the most common format for DIDs
+        fmt = (info.data_format or "HEX").upper()
+
+        # Heuristic: If format implies STR but text looks like pure HEX, treat as HEX
+        # This fixes issues where "STR" is default but user pasted HEX
+        metrics_text = text.replace(" ", "").replace("-", "")
+        if fmt == "STR" and len(metrics_text) > 0 and all(c in "0123456789ABCDEFabcdef" for c in metrics_text):
+             # Only if length is even (or we can pad), usually hex is pairs.
+             # But let's just assume HEX if it looks like HEX to avoid utf-8 encoding hex strings.
+             if len(metrics_text) % 2 == 0:
+                 fmt = "HEX"
+
         try:
             if fmt == "HEX":
                 filtered = "".join(ch for ch in text if ch not in {" ", "-"})
@@ -755,3 +827,5 @@ class DIDController(BaseController):
             return data, None
         except ValueError:
             return None, "Value 字段不是合法的十六进制字符串"
+
+
