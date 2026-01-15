@@ -1,203 +1,294 @@
-import os
-import stat
 import datetime
+import os
+import sys
+import threading
+
+from PyQt5 import QtWidgets, QtCore
+
 from app.core.base_controller import BaseController
+from app.core.event_bus import event_bus
 from app.modules.file_transfer.model.file_transfer_model import FileTransferModel
 from app.modules.file_transfer.view.file_transfer_view import FileTransferView
-from app.services.file_manage.file_transfer_service import FileTransferService
 from app.services.system.config_service import ConfigService
 
 
 class FileTransferController(BaseController):
+    # Defining signals for thread-safe UI updates
+    refresh_local_signal = QtCore.pyqtSignal()
+    refresh_remote_signal = QtCore.pyqtSignal()
+
     def __init__(self, parent=None):
-        self.model = FileTransferModel(parent)
-        self.view = FileTransferView(parent)
+        self.model = FileTransferModel()
+        self.view = FileTransferView()
         super().__init__(self.model, self.view, parent)
 
         self.config_service = ConfigService()
-        # 初始化文件传输服务
-        self.file_transfer_service = FileTransferService()
 
-        # 连接 View 信号到 Controller 槽，实现严格 MVC
-        self.view.local_browse_clicked.connect(self.on_local_browse_clicked)
-        self.view.local_refresh_clicked.connect(self.on_local_refresh_clicked)
-        self.view.local_path_edited.connect(self.on_local_path_edited)
-        self.view.local_dir_expanded.connect(self.on_local_dir_expanded)
+        # Internal signals connection
+        self.refresh_local_signal.connect(self.refresh_local_directory)
+        self.refresh_remote_signal.connect(self._refresh_remote_current_path)
 
-        # 远程树相关
-        self.view.remote_refresh_clicked.connect(self.on_remote_refresh_clicked)
-        self.view.remote_filter_changed.connect(self.on_remote_filter_changed)
-        self.view.remote_dir_expanded.connect(self.on_remote_dir_expanded)
-
-        # 初始化本地目录树
-        self._init_local_tree()
-        # 初始化设备列表
+        self._init_view_connections()
         self._init_device_list()
-        # 初始化远程树（根节点）
-        self._init_remote_tree_root()
+        self.load_local_roots()
+
+        # Listen to device list changes
+        try:
+            event_bus.device_list_changed.connect(self._init_device_list)
+        except Exception as e:
+            print(f"Warning: could not connect to event_bus: {e}")
+
+    def _init_view_connections(self):
+        # Local signals
+        self.view.refresh_local_requested.connect(self.refresh_local_directory)
+        self.view.local_path_entered.connect(self.change_local_directory)
+        self.view.local_item_expanded.connect(self.handle_local_item_expanded)
+        self.view.local_item_clicked.connect(self.on_local_item_clicked)
+        self.view.go_up_local_requested.connect(self.go_up_local)
+        self.view.browse_local_requested.connect(self.browse_local_directory)
+
+        # Remote signals
+        self.view.refresh_remote_requested.connect(self.refresh_remote_directory)
+        self.view.remote_path_entered.connect(self.change_remote_directory)
+        self.view.remote_item_expanded.connect(self.handle_remote_item_expanded)
+        self.view.remote_item_clicked.connect(self.on_remote_item_clicked)
+        self.view.go_up_remote_requested.connect(self.go_up_remote)
+
+        # Transfer signals
+        self.view.upload_requested.connect(self.handle_upload_request)
+        self.view.download_requested.connect(self.handle_download_request)
 
     def _init_device_list(self):
-        """加载已配置的设备列表到下拉框"""
+        """Load devices from ConfigService into ComboBox"""
+        current_data = self.view.get_selected_device()
         self.view.device_combo.clear()
-        devices = self.config_service.load_devices() or []
+
+        devices = self.config_service.load_devices()
         for dev in devices:
-            display = f"{dev.get('name', 'Unknown')} ({dev.get('ip', '')})"
+            name = dev.get('name', 'Unknown')
+            ip = dev.get('ip', '')
+            display = f"{name} ({ip})"
             self.view.device_combo.addItem(display, dev)
 
-    def _init_remote_tree_root(self):
-        """初始化远程树显示"""
-        self.view.remote_tree.clear()
+        # Restore selection if possible (by IP)
+        if current_data:
+             for i in range(self.view.device_combo.count()):
+                 d = self.view.device_combo.itemData(i)
+                 if d and d.get('ip') == current_data.get('ip'):
+                     self.view.device_combo.setCurrentIndex(i)
+                     break
 
-    def get_view(self):
-        return self.view
-
-    # --- 本地文件树相关业务逻辑（Controller 层） ---
-    def _init_local_tree(self):
-        path = self.model.local_path
-        if not os.path.isdir(path):
-            return
-        root_name = os.path.basename(path.rstrip(os.sep)) or path
-        self.view.local_path.setText(path)
-        self.view.render_local_tree(root_name, path)
-        # 首次加载根目录子级
-        self._populate_children(path)
-
-    def on_local_browse_clicked(self):
-        start_dir = self.view.local_path.text().strip() or os.path.expanduser("~")
-        dialog = self.view.get_file_dialog(self.view)
-        dialog.setFileMode(dialog.Directory)
-        dialog.setOption(dialog.ShowDirsOnly, True)
-        dialog.setDirectory(start_dir)
-        if dialog.exec_() != dialog.Accepted:
-            return
-        selected = dialog.selectedFiles()
-        if not selected:
-            return
-        path = selected[0]
-        if not os.path.isdir(path):
-            return
-        self.model.local_path = path
-        root_name = os.path.basename(path.rstrip(os.sep)) or path
-        self.view.local_path.setText(path)
-        self.view.render_local_tree(root_name, path)
-        self._populate_children(path)
-
-    def on_local_refresh_clicked(self, path: str):
-        if not os.path.isdir(path):
-            return
-        self.model.local_path = path
-        root_name = os.path.basename(path.rstrip(os.sep)) or path
-        self.view.render_local_tree(root_name, path)
-        self._populate_children(path)
-
-    def on_local_path_edited(self, path: str):
-        if not os.path.isdir(path):
-            # 简单失败处理：还原为 model 中的路径
-            self.view.local_path.setText(self.model.local_path)
-            return
-        self.model.local_path = path
-        root_name = os.path.basename(path.rstrip(os.sep)) or path
-        self.view.render_local_tree(root_name, path)
-        self._populate_children(path)
-
-    def on_local_dir_expanded(self, path: str):
-        if not os.path.isdir(path):
-            return
-        self._populate_children(path)
-
-    def _populate_children(self, dir_path: str):
-        """扫描一个目录，生成视图所需的数据结构，并驱动 View 渲染。"""
-        try:
-            entries = list(os.scandir(dir_path))
-        except OSError:
-            return
-
-        dirs = sorted([e for e in entries if e.is_dir(follow_symlinks=False)], key=lambda e: e.name.lower())
-        files = sorted([e for e in entries if e.is_file(follow_symlinks=False)], key=lambda e: e.name.lower())
-
-        children = []
-        for entry in dirs:
-            children.append({
-                "name": entry.name,
-                "path": entry.path,
-                "is_dir": True,
-                "size": "",
-                "mtime": "",
-            })
-        for entry in files:
-            try:
-                st = entry.stat()
-            except OSError:
-                continue
-            children.append({
-                "name": entry.name,
-                "path": entry.path,
-                "is_dir": False,
-                "size": self._format_size(st.st_size),
-                "mtime": self._format_mtime(st.st_mtime),
-            })
-
-        self.view.render_local_children(dir_path, children)
-
-    @staticmethod
-    def _format_size(size_bytes: int) -> str:
-        units = ["B", "KB", "MB", "GB", "TB"]
-        size = float(size_bytes)
-        for unit in units:
-            if size < 1024 or unit == "TB":
-                return f"{size:.1f} {unit}" if unit != "B" else f"{int(size)} {unit}"
-            size /= 1024.0
-        return f"{size:.1f} TB"
-
-    @staticmethod
-    def _format_mtime(timestamp: float) -> str:
-        try:
-            return datetime.datetime.fromtimestamp(timestamp).strftime("%Y-%m-%d %H:%M")
-        except (OverflowError, OSError, ValueError):
-            return ""
-
-    # --- 远程文件树相关业务逻辑 ---
-
-    def on_remote_refresh_clicked(self):
-        """远程刷新按钮点击：连接设备并刷新根目录"""
-        idx = self.view.device_combo.currentIndex()
-        if idx < 0:
-            return
-
-        device = self.view.device_combo.itemData(idx)
-        if not device:
-            return
-
-        # 尝试连接
-        success = self.file_transfer_service.connect_device(
-            hostname=device.get('ip'),
-            port=int(device.get('port', 22)),
-            username=device.get('user', 'root'),
-            password=device.get('password')
-        )
-
-        if success:
-            root_path = "/log"
-            self.view.render_remote_tree("log", root_path)
-            self._fetch_and_render_remote(root_path)
+    # ---------------- Local File System Logic ----------------
+    def load_local_roots(self):
+        roots = []
+        if sys.platform.startswith('win'):
+            import string
+            from ctypes import windll
+            drives = []
+            bitmask = windll.kernel32.GetLogicalDrives()
+            for letter in string.ascii_uppercase:
+                if bitmask & 1:
+                    drives.append(f"{letter}:\\")
+                bitmask >>= 1
+            roots = drives
         else:
-            # TODO: Show error
-            print("Connection failed")
+            roots = ['/']
+        self.view.set_local_roots(roots)
 
-    def on_remote_filter_changed(self, text: str):
-        # 暂时只支持过滤当前显示的视图，或者需要在搜索时遍历整个树？
-        # 既然是懒加载，本地过滤只能过滤已加载的。
-        # 这里简化处理：不做任何事，或者简单过滤当前层级
+    def refresh_local_directory(self):
+        path = self.view.local_path_edit.text()
+        if path and os.path.exists(path):
+            self.change_local_directory(path)
+        else:
+            self.load_local_roots()
+
+    def browse_local_directory(self):
+        default_dir = self.view.local_path_edit.text() or "C:/"
+        dir_path = QtWidgets.QFileDialog.getExistingDirectory(self.view, "选择本地目录", default_dir)
+        if dir_path:
+            self.change_local_directory(dir_path)
+
+    def go_up_local(self):
+        current_path = self.view.local_path_edit.text()
+        if not current_path: return
+
+        if sys.platform.startswith('win') and len(current_path) <= 3 and current_path.endswith(':\\'):
+             return
+
+        parent_path = os.path.dirname(current_path)
+        if parent_path and os.path.exists(parent_path):
+            self.change_local_directory(parent_path)
+
+    def change_local_directory(self, path):
+        path = os.path.normpath(path)
+        if not os.path.exists(path):
+            return
+
+        self.view.local_path_edit.setText(path)
+        items = self.get_local_directory_content(path)
+        self.view.update_node_children(path, items, is_remote=False)
+
+    def handle_local_item_expanded(self, path):
+        self.change_local_directory(path)
+
+    def on_local_item_clicked(self, path):
+        # Already handled in View signal emission, but we might want to refresh?
         pass
 
-    def on_remote_dir_expanded(self, path: str):
-        """远程目录节点展开时，填充其子节点。"""
-        if not self.file_transfer_service.is_connected():
+    def get_local_directory_content(self, path):
+        items = []
+        try:
+            with os.scandir(path) as it:
+                for entry in it:
+                    name = entry.name
+                    try:
+                        stat_info = entry.stat()
+                        mtime = datetime.datetime.fromtimestamp(stat_info.st_mtime).strftime('%Y-%m-%d %H:%M')
+                        size = self._format_size(stat_info.st_size) if entry.is_file() else ""
+                        item_type = "文件夹" if entry.is_dir() else "文件"
+                        items.append((name, mtime, item_type, size))
+                    except OSError:
+                        continue
+        except Exception as e:
+            print(f"Read error {path}: {e}")
+
+        items.sort(key=lambda x: (x[2] != "文件夹", x[0].lower()))
+        return items
+
+    def _format_size(self, size):
+        for unit in ['B', 'KB', 'MB', 'GB', 'TB']:
+            if size < 1024:
+                return f"{size:.1f} {unit}"
+            size /= 1024
+        return f"{size:.1f} PB"
+
+    # ---------------- Remote File System Logic ----------------
+    def refresh_remote_directory(self):
+        device = self.view.get_selected_device()
+        if not device:
+            self.view.show_error("错误", "请先选择一个设备")
             return
-        self._fetch_and_render_remote(path)
 
-    def _fetch_and_render_remote(self, path: str):
-        """获取远程路径内容并渲染"""
-        entries = self.file_transfer_service.get_remote_file_list(path)
-        self.view.render_remote_children(path, entries)
+        self.view.append_log(f"正在连接到 {device.get('ip')}...")
+        QtCore.QCoreApplication.processEvents()
 
+        success = self.model.connect(
+            device.get('ip'),
+            int(device.get('port', 22)),
+            device.get('user', 'root'),
+            device.get('password')
+        )
+
+        if not success:
+            self.view.append_log("连接失败")
+            self.view.show_error("错误", "无法连接到设备")
+            return
+
+        self.view.append_log("连接成功")
+
+        path = self.view.remote_path_edit.text()
+        if not path:
+             path = "/log"
+
+        self.change_remote_directory(path)
+
+    def change_remote_directory(self, path):
+        if not self.model.connected: return
+
+        path = path.replace('\\', '/')
+        if not path.startswith('/'): path = '/' + path
+        path = path.rstrip('/') or '/'
+
+        self.view.remote_path_edit.setText(path)
+        items = self.model.list_remote_dir(path)
+
+        if items is not None:
+             # 如果 update_node_children 返回 False（找不到节点），则说明该路径不在当前树中
+             # 此时我们需要重置树的根为该路径
+             found = self.view.update_node_children(path, items, is_remote=True)
+             if not found:
+                 self.view.set_remote_root(path)
+                 self.view.update_node_children(path, items, is_remote=True)
+
+    def handle_remote_item_expanded(self, path):
+         self.change_remote_directory(path)
+
+    def on_remote_item_clicked(self, path):
+        pass
+
+    def go_up_remote(self):
+        current_path = self.view.remote_path_edit.text()
+        if not current_path or current_path == '/': return
+
+        parent_path = os.path.dirname(current_path.rstrip('/')) or '/'
+        parent_path = parent_path.replace('\\', '/')
+        self.change_remote_directory(parent_path)
+
+    # ---------------- Transfer Logic ----------------
+    def handle_upload_request(self):
+        # Use view.local_tree.selectedItems() logic
+        selected_items = self.view.local_tree.selectedItems()
+        if not selected_items:
+            self.view.show_info("提示", "请选择要上传的文件")
+            return
+
+        remote_path = self.view.remote_path_edit.text()
+        if not remote_path:
+            self.view.show_info("提示", "请指定远程目录")
+            return
+
+        local_paths = [item.data(0, QtCore.Qt.UserRole) for item in selected_items if item.data(0, QtCore.Qt.UserRole)]
+
+        # Start Thread
+        t = threading.Thread(target=self._upload_task, args=(local_paths, remote_path))
+        t.daemon = True
+        t.start()
+
+    def _upload_task(self, local_paths, remote_dir):
+        if not self.model.scp_client: return
+
+        self.view.append_log(f"开始上传 {len(local_paths)} 个项目到 {remote_dir}")
+        for path in local_paths:
+            try:
+                self.model.scp_client.put(path, remote_dir, recursive=True)
+                self.view.append_log(f"上传成功: {os.path.basename(path)}")
+            except Exception as e:
+                self.view.append_log(f"上传失败 {os.path.basename(path)}: {e}")
+
+        self.refresh_remote_signal.emit()
+
+    def handle_download_request(self):
+        selected_items = self.view.remote_tree.selectedItems()
+        if not selected_items:
+            self.view.show_info("提示", "请选择要下载的文件")
+            return
+
+        local_dir = self.view.local_path_edit.text()
+        if not local_dir:
+            self.view.show_info("提示", "请指定本地目录")
+            return
+
+        remote_paths = [item.data(0, QtCore.Qt.UserRole) for item in selected_items if item.data(0, QtCore.Qt.UserRole)]
+
+        t = threading.Thread(target=self._download_task, args=(remote_paths, local_dir))
+        t.daemon = True
+        t.start()
+
+    def _download_task(self, remote_paths, local_dir):
+        if not self.model.scp_client: return
+
+        self.view.append_log(f"开始下载 {len(remote_paths)} 个项目到 {local_dir}")
+        for path in remote_paths:
+            try:
+                self.model.scp_client.get(path, local_dir, recursive=True)
+                self.view.append_log(f"下载成功: {os.path.basename(path)}")
+            except Exception as e:
+                self.view.append_log(f"下载失败 {os.path.basename(path)}: {e}")
+
+        self.refresh_local_signal.emit()
+
+    def _refresh_remote_current_path(self):
+        """Helper to refresh remote view without full reconnect logic if possible"""
+        path = self.view.remote_path_edit.text()
+        if not path: path = "/log"
+        self.change_remote_directory(path)

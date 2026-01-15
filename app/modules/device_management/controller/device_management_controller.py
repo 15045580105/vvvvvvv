@@ -4,6 +4,7 @@ from PyQt5.QtCore import QThread, pyqtSignal
 from app.common.ui.modern_widgets import MessageToast, ModernConfirmDialog
 from app.core.base_controller import BaseController
 from app.core.dependency_injection import di_container
+from app.core.event_bus import event_bus
 from app.modules.device_management.models.device_model import DeviceModel, OFFLINE, ONLINE, DISCONNECTED
 from app.modules.device_management.views.device_management_view import DeviceView
 from app.services.device_manage.device_service import DeviceService
@@ -90,6 +91,7 @@ class DeviceController(BaseController):
     def _persist_devices(self):
         """将当前模型中的设备列表落盘到 JSON 配置文件。"""
         self.config_service.save_devices(self.model.to_list())
+        event_bus.device_list_changed.emit()
 
     # -------------------- 设备添加 --------------------
     def _on_add_clicked(self):

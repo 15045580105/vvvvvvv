@@ -1,447 +1,364 @@
 from PyQt5 import QtWidgets, QtCore
-
-from app.common.ui.widgets import ModernButton, TableButton
+from PyQt5.QtCore import Qt, pyqtSignal
+from PyQt5.QtWidgets import (
+    QWidget, QVBoxLayout, QHBoxLayout,
+    QLabel, QLineEdit, QPushButton, QTreeWidget, QTreeWidgetItem,
+    QStyle, QGroupBox, QSplitter,
+    QMessageBox, QComboBox, QTextEdit
+)
 from app.presentation.views.base_view import BaseView
 
-# Qt orientation compatibility constants
-QT_HORIZONTAL = getattr(QtCore.Qt, "Horizontal", 1)
-QT_VERTICAL = getattr(QtCore.Qt, "Vertical", 2)
-ALIGN_CENTER = int(getattr(QtCore.Qt, "AlignCenter", 132))
-USER_ROLE = int(getattr(QtCore.Qt, "UserRole", 32))
-SP_DIR_ICON = getattr(QtWidgets.QStyle, "SP_DirIcon", 2)
-SP_FILE_ICON = getattr(QtWidgets.QStyle, "SP_FileIcon", 3)
+
+class SortableTreeWidgetItem(QTreeWidgetItem):
+    """
+    自定义 TreeWidgetItem，支持：
+    1. 文件夹始终排在文件前面
+    2. 数值列按数值大小排序（如文件大小）
+    """
+    def __lt__(self, other):
+        tree = self.treeWidget()
+        if not tree:
+            return super().__lt__(other)
+
+        column = tree.sortColumn()
+
+        # 逻辑1: 文件夹始终在文件前面
+        if column == 0:
+            type1 = self.text(2)
+            type2 = other.text(2)
+            is_dir1 = (type1 == "文件夹")
+            is_dir2 = (type2 == "文件夹")
+
+            if is_dir1 != is_dir2:
+                # 升序排序时，我们希望文件夹(True) 在 文件(False) 前面
+                # 在 ascendingOrder (0->1) 中，需要 (0, 1) 或者 (True, False)?
+                # return True < False -> False. So True comes after False?
+                # Let's check:
+                # If we return True, self < other. Self comes first in Ascending.
+                # If is_dir1 (Folder) and is_dir2 (File). We want Folder < File.
+                # return True (if Logic says Folder < File).
+                return is_dir1
+
+            return self.text(0).lower() < other.text(0).lower()
+
+        # 逻辑2: 大小列 (col 3) 按数值排序
+        if column == 3:
+            return self._parse_size(self.text(3)) < self._parse_size(other.text(3))
+
+        return super().__lt__(other)
+
+    def _parse_size(self, size_str):
+        if not size_str: return -1
+        parts = size_str.split()
+        if len(parts) != 2: return 0
+        try:
+            val = float(parts[0])
+            unit = parts[1].upper()
+            multipliers = {'B': 1, 'KB': 1024, 'MB': 1024**2, 'GB': 1024**3, 'TB': 1024**4, 'PB': 1024**5}
+            return val * multipliers.get(unit, 1)
+        except:
+            return 0
 
 
 class FileTransferView(BaseView):
-    # 向外暴露的信号，由 Controller 连接处理
-    local_browse_clicked = QtCore.pyqtSignal()
-    local_refresh_clicked = QtCore.pyqtSignal(str)
-    local_path_edited = QtCore.pyqtSignal(str)
-    local_dir_expanded = QtCore.pyqtSignal(str)
+    # 信号定义
 
-    # 远程树相关信号
-    remote_refresh_clicked = QtCore.pyqtSignal()
-    remote_filter_changed = QtCore.pyqtSignal(str)
-    remote_dir_expanded = QtCore.pyqtSignal(str)
+    # 本地文件信号
+    refresh_local_requested = pyqtSignal()
+    local_path_entered = pyqtSignal(str)
+    local_item_expanded = pyqtSignal(str)
+    local_item_clicked = pyqtSignal(str)
+    go_up_local_requested = pyqtSignal()
+    browse_local_requested = pyqtSignal()
+
+    # 远程文件信号
+    refresh_remote_requested = pyqtSignal()
+    remote_path_entered = pyqtSignal(str)
+    remote_item_expanded = pyqtSignal(str)
+    remote_item_clicked = pyqtSignal(str)
+    go_up_remote_requested = pyqtSignal()
+
+    # 传输信号
+    upload_requested = pyqtSignal()
+    download_requested = pyqtSignal()
+
+    # 设备信号
+    # device_selected = pyqtSignal(dict) # Select device from combo
 
     def setup_ui(self):
-        layout = QtWidgets.QHBoxLayout(self)
-        layout.setSpacing(8)
+        # 使用垂直布局
+        outer_layout = QVBoxLayout(self)
+        outer_layout.setContentsMargins(0, 0, 0, 0)
+        outer_layout.setSpacing(0)
 
-        # ---------------- 本地文件面板 ----------------
-        local_panel = QtWidgets.QGroupBox("本地文件")
-        local_layout = QtWidgets.QVBoxLayout()
+        # === 1. 构建主分割器 ===
+        main_splitter = QSplitter(Qt.Vertical)
 
-        # 顶部路径行：标签 + 路径编辑框 + 浏览按钮 + 刷新按钮
-        local_header = QtWidgets.QHBoxLayout()
-        local_header.addWidget(QtWidgets.QLabel("📁 路径:"))
+        # --- 上半部分：左右两栏 ---
+        top_splitter = QSplitter(Qt.Horizontal)
 
-        self.local_path = QtWidgets.QLineEdit("C:/Diagnostics/Logs")
-        local_header.addWidget(self.local_path)
+        # 左侧：本地文件
+        left_group = QGroupBox("本地文件")
+        left_layout = QVBoxLayout(left_group)
 
-        self.browse_local_btn = ModernButton("浏览...", "#0EA5E9", "📂")
-        local_header.addWidget(self.browse_local_btn)
+        # 路径行
+        local_path_layout = QHBoxLayout()
+        local_path_label = QLabel("路径:")
+        self.local_path_edit = QLineEdit()
+        local_up_btn = QPushButton("↑")
+        local_up_btn.setMaximumWidth(30)
+        local_browse_btn = QPushButton("浏览")
+        local_refresh_btn = QPushButton("刷新")
 
-        self.local_refresh_btn = ModernButton("刷新", "#0EA5E9", "🔄")
-        local_header.addWidget(self.local_refresh_btn)
+        local_path_layout.addWidget(local_path_label)
+        local_path_layout.addWidget(self.local_path_edit)
+        local_path_layout.addWidget(local_up_btn)
+        local_path_layout.addWidget(local_browse_btn)
+        local_path_layout.addWidget(local_refresh_btn)
+        left_layout.addLayout(local_path_layout)
 
-        local_layout.addLayout(local_header)
+        # 本地树
+        self.local_tree = QTreeWidget()
+        self._setup_tree_widget(self.local_tree, ["名称", "修改日期", "类型", "大小"], [220, 130, 70, 100])
+        self.local_tree.setSelectionMode(QTreeWidget.ExtendedSelection)
+        left_layout.addWidget(self.local_tree)
 
-        # 本地目录树
-        self.local_tree = QtWidgets.QTreeWidget()
-        self.local_tree.setHeaderLabels(["名称", "大小", "修改时间"])
-        self.local_tree.setColumnCount(3)
-        self.local_tree.setAlternatingRowColors(True)
-        self.local_tree.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
-        self.local_tree.setSelectionMode(QtWidgets.QAbstractItemView.ExtendedSelection)
-        self.local_tree.setAllColumnsShowFocus(True)
-        # 让名称列自动拉伸，保证能看清文件名
-        lh = self.local_tree.header()
-        lh.setStretchLastSection(False)
-        lh.setSectionResizeMode(0, QtWidgets.QHeaderView.Stretch)   # 名称
-        lh.setSectionResizeMode(1, QtWidgets.QHeaderView.ResizeToContents)  # 大小
-        lh.setSectionResizeMode(2, QtWidgets.QHeaderView.ResizeToContents)  # 修改时间
-        local_layout.addWidget(self.local_tree)
+        # 连接本地信号
+        local_up_btn.clicked.connect(self.go_up_local_requested.emit)
+        local_browse_btn.clicked.connect(self.browse_local_requested.emit)
+        local_refresh_btn.clicked.connect(self.refresh_local_requested.emit)
+        self.local_path_edit.returnPressed.connect(lambda: self.local_path_entered.emit(self.local_path_edit.text()))
+        self.local_tree.itemExpanded.connect(self._on_local_item_expanded)
+        self.local_tree.itemClicked.connect(self._on_local_item_clicked)
+        self.local_tree.setExpandsOnDoubleClick(True)
 
-        local_panel.setLayout(local_layout)
+        # 中间：操作按钮
+        center_widget = QWidget()
+        center_layout = QVBoxLayout(center_widget)
+        center_layout.setAlignment(Qt.AlignCenter)
+        upload_btn = QPushButton("↑ 上传")
+        upload_btn.setStyleSheet("background-color: #28a745; color: white; border-radius: 4px; padding: 6px;")
+        download_btn = QPushButton("↓ 下载")
+        download_btn.setStyleSheet("background-color: #ffc107; color: black; border-radius: 4px; padding: 6px;")
+        center_layout.addWidget(upload_btn)
+        center_layout.addWidget(download_btn)
+        center_widget.setMaximumWidth(80)
 
-        # ---------------- 中间按钮面板（上传/下载） ----------------
-        btn_panel = QtWidgets.QVBoxLayout()
-        btn_panel.setSpacing(14)
-        btn_panel.setContentsMargins(0, 0, 0, 0)
-        btn_panel.addStretch(1)
+        upload_btn.clicked.connect(self.upload_requested.emit)
+        download_btn.clicked.connect(self.download_requested.emit)
 
-        # 上传按钮居中
-        self.upload_btn = TableButton("上传", "#059669", "➡")
-        self.upload_btn.setFixedWidth(120)
-        upload_row = QtWidgets.QHBoxLayout()
-        upload_row.setSpacing(0)
-        upload_row.addStretch(1)
-        upload_row.addWidget(self.upload_btn)
-        upload_row.addStretch(1)
-        btn_panel.addLayout(upload_row)
+        # 右侧：远程文件
+        right_group = QGroupBox("远程设备文件")
+        right_layout = QVBoxLayout(right_group)
 
-        # 下载按钮居中
-        self.download_btn = TableButton("下载", "#F59E0B", "⬅")
-        self.download_btn.setFixedWidth(120)
-        download_row = QtWidgets.QHBoxLayout()
-        download_row.setSpacing(0)
-        download_row.addStretch(1)
-        download_row.addWidget(self.download_btn)
-        download_row.addStretch(1)
-        btn_panel.addLayout(download_row)
+        # controls layout (grid for alignment)
+        remote_controls_layout = QtWidgets.QGridLayout()
+        # remote_controls_layout.setContentsMargins(0, 0, 0, 0)
 
-        btn_panel.addStretch(1)
+        # Row 1: Device Selection
+        device_label = QLabel("设备:")
+        self.device_combo = QComboBox()
+        # Make combo expand
+        self.device_combo.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
 
-        # ---------------- 远程文件面板 ----------------
-        remote_panel = QtWidgets.QGroupBox("远程设备文件 (/log)")
-        remote_layout = QtWidgets.QVBoxLayout()
+        remote_controls_layout.addWidget(device_label, 0, 0)
+        remote_controls_layout.addWidget(self.device_combo, 0, 1, 1, 3) # Span 3 columns
 
-        remote_header = QtWidgets.QHBoxLayout()
+        # Row 2: Path Navigation
+        remote_path_label = QLabel("路径:")
+        self.remote_path_edit = QLineEdit()
+        remote_up_btn = QPushButton("↑")
+        remote_up_btn.setMaximumWidth(30)
+        self.remote_refresh_btn = QPushButton("刷新")
 
-        # 新增设备选择
-        remote_header.addWidget(QtWidgets.QLabel("💻 设备:"))
-        self.device_combo = QtWidgets.QComboBox()
-        self.device_combo.setMinimumWidth(150)
-        remote_header.addWidget(self.device_combo)
+        remote_controls_layout.addWidget(remote_path_label, 1, 0)
+        remote_controls_layout.addWidget(self.remote_path_edit, 1, 1)
+        remote_controls_layout.addWidget(remote_up_btn, 1, 2)
+        remote_controls_layout.addWidget(self.remote_refresh_btn, 1, 3)
 
-        remote_header.addWidget(QtWidgets.QLabel("🔍 搜索:"))
-        self.remote_filter = QtWidgets.QLineEdit()
-        self.remote_filter.setPlaceholderText("APPID或路径...")
-        remote_header.addWidget(self.remote_filter)
-        self.remote_refresh_btn = ModernButton("刷新", "#0EA5E9", "🔄")
-        remote_header.addWidget(self.remote_refresh_btn)
+        remote_controls_layout.setColumnStretch(1, 1) # Make input column expand
 
-        remote_layout.addLayout(remote_header)
+        right_layout.addLayout(remote_controls_layout)
 
-        # 远程目录树：仿资源管理器左侧，仅一列名称，无表头
-        self.remote_tree = QtWidgets.QTreeWidget()
-        self.remote_tree.setColumnCount(1)
-        self.remote_tree.setHeaderHidden(True)
-        self.remote_tree.setAlternatingRowColors(True)
-        self.remote_tree.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
-        self.remote_tree.setSelectionMode(QtWidgets.QAbstractItemView.ExtendedSelection)
-        self.remote_tree.setAllColumnsShowFocus(True)
-        # 让这一列随面板自动撑满，避免名称太窄
-        self.remote_tree.header().setSectionResizeMode(0, QtWidgets.QHeaderView.Stretch)
-        remote_layout.addWidget(self.remote_tree)
+        # 远程树
+        self.remote_tree = QTreeWidget()
+        self._setup_tree_widget(self.remote_tree, ["名称", "修改日期", "类型", "大小"], [220, 130, 70, 100])
+        self.remote_tree.setSelectionMode(QTreeWidget.ExtendedSelection)
+        right_layout.addWidget(self.remote_tree)
 
-        remote_panel.setLayout(remote_layout)
+        # 连接远程信号
+        remote_up_btn.clicked.connect(self.go_up_remote_requested.emit)
+        self.remote_refresh_btn.clicked.connect(self.refresh_remote_requested.emit)
+        self.remote_path_edit.returnPressed.connect(lambda: self.remote_path_entered.emit(self.remote_path_edit.text()))
+        self.remote_tree.itemExpanded.connect(self._on_remote_item_expanded)
+        self.remote_tree.itemClicked.connect(self._on_remote_item_clicked)
+        self.remote_tree.setExpandsOnDoubleClick(True)
 
-        # ---------------- 任务队列表格 ----------------
-        task_panel = QtWidgets.QGroupBox("传输任务队列")
-        task_layout = QtWidgets.QVBoxLayout()
+        top_splitter.addWidget(left_group)
+        top_splitter.addWidget(center_widget)
+        top_splitter.addWidget(right_group)
+        top_splitter.setStretchFactor(0, 1)
+        top_splitter.setStretchFactor(1, 0)
+        top_splitter.setStretchFactor(2, 1)
+        # Ensure left and right panels have equal initial width, and center button area is fixed
+        top_splitter.setCollapsible(0, False)
+        top_splitter.setCollapsible(2, False)
+        top_splitter.setSizes([600, 80, 600])
 
-        self.task_table = QtWidgets.QTableWidget(0, 4)
-        self.task_table.setHorizontalHeaderLabels(["文件名", "进度", "状态", "操作"])
+        # --- 下半部分：传输日志 ---
+        bottom_group = QGroupBox("传输日志")
+        bottom_layout = QVBoxLayout(bottom_group)
+        self.transfer_log = QTextEdit()
+        self.transfer_log.setReadOnly(True)
+        bottom_layout.addWidget(self.transfer_log)
 
-        # 优化任务表格视觉与行为
-        self.task_table.verticalHeader().setVisible(False)
-        self.task_table.setAlternatingRowColors(True)
-        self.task_table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
-        self.task_table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
-        self.task_table.setWordWrap(False)
+        main_splitter.addWidget(top_splitter)
+        main_splitter.addWidget(bottom_group)
+        main_splitter.setStretchFactor(0, 3)
+        main_splitter.setStretchFactor(1, 1)
 
-        vh = self.task_table.verticalHeader()
-        vh.setDefaultSectionSize(42)
-        vh.setMinimumSectionSize(38)
+        outer_layout.addWidget(main_splitter)
 
-        hh = self.task_table.horizontalHeader()
-        hh.setStretchLastSection(False)
-        hh.setSectionResizeMode(0, QtWidgets.QHeaderView.Stretch)  # 文件名
-        hh.setSectionResizeMode(1, QtWidgets.QHeaderView.Fixed)    # 进度
-        self.task_table.setColumnWidth(1, 180)
-        hh.setSectionResizeMode(2, QtWidgets.QHeaderView.ResizeToContents)  # 状态
-        hh.setSectionResizeMode(3, QtWidgets.QHeaderView.Fixed)    # 操作
-        self.task_table.setColumnWidth(3, 150)
+        # 初始化图标
+        self.folder_icon = self.style().standardIcon(QStyle.SP_DirIcon)
+        self.file_icon = self.style().standardIcon(QStyle.SP_FileIcon)
 
-        task_layout.addWidget(self.task_table)
-        task_panel.setLayout(task_layout)
+    def _setup_tree_widget(self, tree_widget, headers, column_widths):
+        tree_widget.setHeaderLabels(headers)
+        header = tree_widget.header()
+        for i, width in enumerate(column_widths):
+            header.resizeSection(i, width)
+        tree_widget.setSortingEnabled(True)
 
-        # ---------------- 顶部文件区与底部任务区分隔 ----------------
-        file_splitter = QtWidgets.QSplitter(QT_HORIZONTAL)
-        file_splitter.addWidget(local_panel)
+    def _on_local_item_expanded(self, item):
+        path = item.data(0, Qt.UserRole)
+        self.local_item_expanded.emit(path)
 
-        btn_widget = QtWidgets.QWidget()
-        btn_widget.setLayout(btn_panel)
-        btn_widget.setMaximumWidth(170)
-        file_splitter.addWidget(btn_widget)
+    def _on_remote_item_expanded(self, item):
+        path = item.data(0, Qt.UserRole)
+        self.remote_item_expanded.emit(path)
 
-        file_splitter.addWidget(remote_panel)
-        file_splitter.setSizes([380, 140, 420])
+    def _on_local_item_clicked(self, item, column):
+        path = item.data(0, Qt.UserRole)
+        if path:
+            self.local_path_edit.setText(path)
+            self.local_item_clicked.emit(path)
 
-        main_splitter = QtWidgets.QSplitter(QT_VERTICAL)
-        main_splitter.addWidget(file_splitter)
-        main_splitter.addWidget(task_panel)
-        main_splitter.setSizes([560, 180])
+    def _on_remote_item_clicked(self, item, column):
+        path = item.data(0, Qt.UserRole)
+        if path:
+            self.remote_path_edit.setText(path)
+            self.remote_item_clicked.emit(path)
 
-        layout.addWidget(main_splitter)
-
-        # 初始初始化进度条引用存储
-        self._task_progress_bars = {}
-
-        # 本地目录浏览相关初始化（不再直接访问文件系统）
-        self._local_root_path = self.local_path.text().strip()
-
-        # 本地：仅发出信号，具体业务逻辑由 Controller 处理
-        self.browse_local_btn.clicked.connect(self._emit_local_browse)
-        self.local_refresh_btn.clicked.connect(self._emit_local_refresh)
-        self.local_path.editingFinished.connect(self._emit_local_path_edited)
-        self.local_tree.itemExpanded.connect(self._emit_local_item_expanded)
-
-        # 远程：仅发出信号
-        self.remote_refresh_btn.clicked.connect(self._emit_remote_refresh)
-        self.remote_filter.textChanged.connect(self._emit_remote_filter_changed)
-        self.remote_tree.itemExpanded.connect(self._emit_remote_item_expanded)
-
-    # --- 向 Controller 发信号的包装槽（本地） ---
-    def _emit_local_browse(self):
-        self.local_browse_clicked.emit()
-
-    def _emit_local_refresh(self):
-        path = self.local_path.text().strip()
-        if not path:
-            return
-        self.local_refresh_clicked.emit(path)
-
-    def _emit_local_path_edited(self):
-        path = self.local_path.text().strip()
-        if not path:
-            return
-        self.local_path_edited.emit(path)
-
-    def _emit_local_item_expanded(self, item):
-        if not item:
-            return
-        path = item.data(0, USER_ROLE)
-        if not path:
-            return
-        self.local_dir_expanded.emit(path)
-
-    # --- 向 Controller 发信号的包装槽（远程） ---
-    def _emit_remote_refresh(self):
-        self.remote_refresh_clicked.emit()
-
-    def _emit_remote_filter_changed(self, text: str):
-        self.remote_filter_changed.emit(text.strip())
-
-    def _emit_remote_item_expanded(self, item):
-        if not item:
-            return
-        path = item.data(0, USER_ROLE)
-        if not path:
-            return
-        self.remote_dir_expanded.emit(path)
-
-    # --- View 只负责根据数据渲染，不做文件访问 ---
-    def render_local_tree(self, root_name: str, root_path: str):
-        """构造本地根节点，并为其添加占位子节点，便于后续展开加载。"""
+    def set_local_roots(self, roots): # Update
         self.local_tree.clear()
-        root_item = QtWidgets.QTreeWidgetItem([root_name, "", ""])
-        root_item.setData(0, USER_ROLE, root_path)
-        root_item.setData(0, USER_ROLE + 1, True)
-        icon_provider = QtWidgets.QFileIconProvider()
-        root_item.setIcon(0, icon_provider.icon(QtWidgets.QFileIconProvider.Folder))
-        # 添加一个占位子节点，表示“可展开”
-        placeholder = QtWidgets.QTreeWidgetItem(["加载中...", "", ""])
-        root_item.addChild(placeholder)
-        self.local_tree.addTopLevelItem(root_item)
+        for root in roots:
+            item = SortableTreeWidgetItem(self.local_tree)
+            item.setText(0, root)
+            item.setText(2, "磁盘" if ":" in root else "根目录")
+            item.setIcon(0, self.folder_icon)
+            item.setData(0, Qt.UserRole, root)
+            # 添加一个空子节点以显示展开图标（实现懒加载）
+            dummy = QTreeWidgetItem(item)
+            dummy.setText(0, "Loading...")
 
-    def render_local_children(self, parent_path: str, children: list):
-        """根据 Controller 提供的数据填充本地树某个节点的子节点。
-
-        children: List[{
-            'name': str,
-            'path': str,
-            'is_dir': bool,
-            'size': Optional[str],
-            'mtime': Optional[str],
-        }]
-        """
-        def find_item(root_item, target_path):
-            if root_item.data(0, USER_ROLE) == target_path:
-                return root_item
-            for i in range(root_item.childCount()):
-                found = find_item(root_item.child(i), target_path)
-                if found:
-                    return found
-            return None
-
-        if self.local_tree.topLevelItemCount() == 0:
-            return
-        root_item = self.local_tree.topLevelItem(0)
-        parent_item = find_item(root_item, parent_path)
-        if parent_item is None:
-            return
-
-        # 清空原有子节点（包括占位）
-        parent_item.takeChildren()
-        icon_provider = QtWidgets.QFileIconProvider()
-        for info in children:
-            cols = [info["name"], info.get("size") or "", info.get("mtime") or ""]
-            item = QtWidgets.QTreeWidgetItem(cols)
-            item.setData(0, USER_ROLE, info["path"])
-            item.setData(0, USER_ROLE + 1, bool(info.get("is_dir")))
-            if info.get("is_dir"):
-                item.setIcon(0, icon_provider.icon(QtWidgets.QFileIconProvider.Folder))
-                # 目录也预先挂一个占位子节点，表示后面还能展开
-                placeholder = QtWidgets.QTreeWidgetItem(["加载中...", "", ""])
-                item.addChild(placeholder)
-            else:
-                item.setIcon(0, icon_provider.icon(QtWidgets.QFileIconProvider.File))
-            parent_item.addChild(item)
-
-    def render_remote_tree(self, root_name: str, root_path: str):
-        """根据 Controller 提供的远程根路径信息，构造远程根节点。
-
-        远程树只显示名称一列，样式类似资源管理器左侧导航树。
-        """
+    def set_remote_root(self, path):
+        """设置远程文件树的根节点"""
         self.remote_tree.clear()
-        root_item = QtWidgets.QTreeWidgetItem([root_name])
-        root_item.setData(0, USER_ROLE, root_path)
-        root_item.setData(0, USER_ROLE + 1, True)  # is_dir
-        style = self.style()
-        icon = style.standardIcon(SP_DIR_ICON)
-        root_item.setIcon(0, icon)
-        self.remote_tree.addTopLevelItem(root_item)
-        self.remote_tree.expandItem(root_item)
 
-    def render_remote_children(self, parent_path: str, children: list):
-        """根据 Controller 提供的远程子节点数据，填充到 parent 对应的节点下。
+        # 确定显示名称
+        path = path.replace('\\', '/')
+        if path == '/' or path == '':
+            display_name = '/'
+            full_path = '/'
+        else:
+            path = path.rstrip('/')
+            display_name = path.split('/')[-1] # basename
+            full_path = path
 
-        children: List[{
-            'name': str,
-            'path': str,        # 完整远程路径，如 /log/app1/2025/11/log.txt
-            'is_dir': bool,
-            'appid': str | None,
-            'size_kb': str | None,
-            'ctime': str | None,
-            'mtime': str | None,
-        }]
+        item = SortableTreeWidgetItem(self.remote_tree)
+        item.setText(0, display_name)
+        item.setText(2, "文件夹")
+        item.setIcon(0, self.folder_icon)
+        item.setData(0, Qt.UserRole, full_path)
 
-        除名称和图标外的 APPID/大小/时间信息，不在树上占列，只作为 tooltip 提示。
-        """
-        def find_item(root_item, target_path):
-            if root_item.data(0, USER_ROLE) == target_path:
-                return root_item
-            for i in range(root_item.childCount()):
-                found = find_item(root_item.child(i), target_path)
-                if found:
-                    return found
-            return None
+        # 默认展开根节点
+        item.setExpanded(True)
+        # 添加 dummy 以防万一，虽然我们会马上填充
+        QTreeWidgetItem(item)
 
-        if self.remote_tree.topLevelItemCount() == 0:
-            return
-        root_item = self.remote_tree.topLevelItem(0)
-        parent_item = find_item(root_item, parent_path)
-        if parent_item is None:
-            return
+    def update_node_children(self, path, items, is_remote=False): # Update
+        tree = self.remote_tree if is_remote else self.local_tree
 
-        parent_item.takeChildren()
-        style = self.style()
-        dir_icon = style.standardIcon(SP_DIR_ICON)
-        file_icon = style.standardIcon(SP_FILE_ICON)
+        # 查找对应路径的节点
+        target_item = None
 
-        for info in children:
-            # 只显示名称，其他信息放 tooltip
-            item = QtWidgets.QTreeWidgetItem([info["name"]])
-            item.setData(0, USER_ROLE, info["path"])
-            item.setData(0, USER_ROLE + 1, bool(info.get("is_dir")))
+        # 特殊情况：如果是Windows盘符，需要匹配 root items
+        # 或者如果是 Linux 根如果 path == "/"
 
-            # 拼接 tooltip 文本
-            tooltip_parts = []
-            if info.get("appid"):
-                tooltip_parts.append(f"APPID: {info['appid']}")
-            if info.get("size_kb"):
-                tooltip_parts.append(f"大小: {info['size_kb']} KB")
-            if info.get("ctime"):
-                tooltip_parts.append(f"创建时间: {info['ctime']}")
-            if info.get("mtime"):
-                tooltip_parts.append(f"修改时间: {info['mtime']}")
-            if tooltip_parts:
-                item.setToolTip(0, "\n".join(tooltip_parts))
+        # 遍历查找。为了简化，这里可以优化为维护一个 map，但遍历也行
+        iterator = QtWidgets.QTreeWidgetItemIterator(tree)
+        while iterator.value():
+            item = iterator.value()
+            item_path = item.data(0, Qt.UserRole)
+            if item_path == path: # 注意路径格式匹配
+                target_item = item
+                break
+            # 兼容 Windows 盘符 C: vs C:\
+            if item_path and path and item_path.rstrip('\\/') == path.rstrip('\\/'):
+                 target_item = item
+                 break
+            iterator += 1
 
-            if info.get("is_dir"):
-                item.setIcon(0, dir_icon)
+        if not target_item:
+            # 没找到节点
+            return False
+
+        # 清除现有子节点 (dummy node)
+        target_item.takeChildren()
+
+        for name, mtime, ftype, size in items:
+            child = SortableTreeWidgetItem(target_item)
+            child.setText(0, name)
+            child.setText(1, mtime)
+            child.setText(2, ftype)
+            child.setText(3, size)
+
+            # 构建完整路径
+            if path.endswith(('/', '\\')):
+                full_path = path + name
             else:
-                item.setIcon(0, file_icon)
-            parent_item.addChild(item)
+                full_path = path + '/' + name # 简单拼接，controller负责正确性
+                if '\\' in path: # Windows style
+                     full_path = path + '\\' + name
 
-    # --- Helper methods for task table ---
-    def populate_tasks(self, tasks):
-        """tasks: List[Dict{name:str, progress:int, status:str}]"""
-        # 清空旧引用
-        self._task_progress_bars.clear()
-        self.task_table.setRowCount(len(tasks))
-        for row, t in enumerate(tasks):
-            # 文件名
-            name_item = QtWidgets.QTableWidgetItem(t.get("name", ""))
-            name_item.setToolTip(t.get("name", ""))
-            self.task_table.setItem(row, 0, name_item)
-            # 进度（进度条 + 取消按钮）
-            progress_widget = QtWidgets.QWidget()
-            pw_layout = QtWidgets.QHBoxLayout(progress_widget)
-            pw_layout.setContentsMargins(6, 4, 6, 4)
-            pw_layout.setSpacing(8)
-            bar = QtWidgets.QProgressBar()
-            bar.setRange(0, 100)
-            bar.setValue(int(t.get("progress", 0)))
-            bar.setFormat(f"{int(t.get('progress', 0))}%")
-            bar.setTextVisible(True)
-            bar.setMinimumWidth(110)
-            pw_layout.addWidget(bar)
-            cancel_btn = TableButton("取消", "#EF4444", "✕")
-            cancel_btn.setFixedWidth(50)
-            pw_layout.addWidget(cancel_btn)
-            pw_layout.addStretch(1)
-            self.task_table.setCellWidget(row, 1, progress_widget)
-            # 状态
-            status_item = QtWidgets.QTableWidgetItem(t.get("status", "等待"))
-            status_item.setTextAlignment(ALIGN_CENTER)
-            self.task_table.setItem(row, 2, status_item)
-            # 操作（重试 / 删除）
-            action_widget = QtWidgets.QWidget()
-            aw_layout = QtWidgets.QHBoxLayout(action_widget)
-            aw_layout.setContentsMargins(6, 4, 6, 4)
-            aw_layout.setSpacing(8)
-            retry_btn = TableButton("重试", "#0EA5E9", "🔄")
-            retry_btn.setFixedWidth(60)
-            delete_btn = TableButton("删除", "#6B7280", "🗑")
-            delete_btn.setFixedWidth(60)
-            aw_layout.addStretch(1)
-            aw_layout.addWidget(retry_btn)
-            aw_layout.addWidget(delete_btn)
-            aw_layout.addStretch(1)
-            self.task_table.setCellWidget(row, 3, action_widget)
-            # 存储进度条引用
-            self._task_progress_bars[row] = bar
+            child.setData(0, Qt.UserRole, full_path)
 
-    def update_task_progress(self, row: int, progress: int):
-        if row not in self._task_progress_bars:
-            return
-        bar = self._task_progress_bars[row]
-        clamped = max(0, min(100, int(progress)))
-        bar.setValue(clamped)
-        bar.setFormat(f"{clamped}%")
-        status_item = self.task_table.item(row, 2)
-        if status_item:
-            status_item.setText("完成" if clamped >= 100 else "进行中")
+            if ftype == "文件夹":
+                child.setIcon(0, self.folder_icon)
+                # 添加 dummy 节点以允许展开
+                QTreeWidgetItem(child)
+            else:
+                child.setIcon(0, self.file_icon)
 
-    # --- 通用对话框封装，供 Controller 使用 ---
-    def get_file_dialog(self, parent=None) -> QtWidgets.QFileDialog:
-        """提供一个统一配置的 QFileDialog，便于 Controller 调用。
+        return True
 
-        当前主要用于选择本地目录，Controller 可以根据需要调整 fileMode/filters。
-        """
-        dlg_parent = parent or self
-        dialog = QtWidgets.QFileDialog(dlg_parent)
-        dialog.setOption(QtWidgets.QFileDialog.DontUseNativeDialog, False)
-        return dialog
+    def expand_local_item(self, path):
+         # logic to find and expand item
+         pass
 
+    def select_local_item(self, path):
+        pass
 
-if __name__ == '__main__':
-    app = QtWidgets.QApplication([])
-    view = FileTransferView()
-    view.setup_ui()
-    view.show()
-    app.exec_()
+    def append_log(self, message):
+        self.transfer_log.append(f"[{QtCore.QTime.currentTime().toString()}] {message}")
+
+    def show_error(self, title, message):
+        QMessageBox.critical(self, title, message)
+
+    def show_info(self, title, message):
+        QMessageBox.information(self, title, message)
+
+    # Helper for device combo
+    def get_selected_device(self):
+        return self.device_combo.currentData()
