@@ -186,7 +186,7 @@ class DoIPSettingsPage(QWidget):
             self,
             "Select DPT File",
             "",
-            "Excel Files (*.xlsx)"
+            "Encrypted DPT Files (*.dat);;JSON Files (*.json)"
         )
         if file_path:
             self.dpt_path_edit.setText(file_path)

@@ -505,55 +505,283 @@ def _process_dtc_rows(rows: List[tuple], headers: List[str], result: Dict[str, A
         }
 
 def _process_json_content(content: Dict[str, Any], result: Dict[str, Any]) -> None:
-    if "parsers" in content:
+    if "parsers" in content and isinstance(content["parsers"], dict):
         result["parsers"].update(content["parsers"])
+
     if "dtcs" in content:
-        result["dtcs"].update(content["dtcs"])
+        if isinstance(content["dtcs"], dict):
+            result["dtcs"].update(content["dtcs"])
+        elif isinstance(content["dtcs"], list):
+            _process_structured_dtcs(content["dtcs"], result)
+
+    # Support flat structured format (Legacy)
+    if "dids" in content:
+        _process_structured_dids(content["dids"], result)
+
+    # Support Sheet-based format
+    if "sheets" in content and isinstance(content["sheets"], dict):
+        for sheet_name, sheet_data in content["sheets"].items():
+            if "dids" in sheet_data:
+                _process_structured_dids(sheet_data["dids"], result, sheet_name=sheet_name)
+            if "dtcs" in sheet_data:
+                if isinstance(sheet_data["dtcs"], list):
+                    _process_structured_dtcs(sheet_data["dtcs"], result)
+
+def _process_structured_dtcs(dtc_list: List[Dict], result: Dict[str, Any]) -> None:
+    for item in dtc_list:
+        code = item.get("code")
+        if not code: continue
+        result["dtcs"][code] = item
+
+def _process_structured_dids(did_list: List[Dict], result: Dict[str, Any], sheet_name: str = "") -> None:
+    for did_entry in did_list:
+        did_val = did_entry.get("did_number")
+        if not did_val: continue
+
+        did_key = str(did_val).strip().upper().replace("0X", "")
+
+        # Use provided sheet_name or fallback to entry's sheet_name
+        sheet = sheet_name if sheet_name else did_entry.get("sheet_name", "")
+
+        # Merge Description
+        desc_e = did_entry.get("description_e", "")
+        desc_c = did_entry.get("description_c", "")
+        desc = desc_e
+        if desc_c:
+             desc = f"{desc}({desc_c})" if desc else desc_c
+
+        fields = []
+
+        # Convert items to DPT fields
+        # Note: The items are already separated. We need to handle byte offsets etc.
+        # Logic similar to _process_did_rows but strictly following the structured item
+
+        # Group items that belong to the same field (multi-bit fields or same byte)
+        # But here items are row-based.
+
+        # We need to reconstruct the "current_fields" logic from _process_did_rows
+        # to handle bit fields merging into a byte field if needed, or keeping them separate.
+        # The parser supports bit fields internally.
+
+        current_did_len = 0 # Not provided in new structure explicitly, inferred from items?
+
+        # Sort items by byte, then bit
+        items = sorted(did_entry.get("items", []), key=lambda x: (
+            _parse_range(x.get("byte"))[0] if _parse_range(x.get("byte"))[0] != -1 else 9999,
+            _parse_range(x.get("bit"))[0] if x.get("bit") else -1
+        ))
+
+        # We need to map items to DPTFieldDef dicts
+        for item in items:
+             # Basic field props
+             f_desc_e = item.get("sub_data_name_e", "")
+             f_desc_c = item.get("sub_data_name_c", "")
+             f_desc = f_desc_e
+             if f_desc_c:
+                  f_desc = f"{f_desc}({f_desc_c})" if f_desc else f_desc_c
+
+             byte_val = item.get("byte")
+             byte_start, byte_len = _parse_range(byte_val)
+             if byte_start == -1:
+                 # Handle "All" or missing?
+                 # If missing, it's problematic if we don't have continuity.
+                 # Assuming conversion tool put valid data or we check it.
+                 byte_start = 0
+                 byte_len = 1 # Default?
+
+             encoding = item.get("encoding", "Unsigned")
+
+             # Conversion parsing helper (copied/adapted from XLSX parser)
+             def parse_conv_str(s):
+                s = str(s).strip()
+                if not s or s.lower() == "none":
+                    return None
+                if s.startswith("{"):
+                    try: return json.loads(s)
+                    except: pass
+                # Check for Linear Scaling
+                if "resolution" in s.lower() or "offset" in s.lower():
+                     lin_dict = {"type": "linear", "resolution": 1.0, "offset": 0.0}
+                     normalized = s.replace("\\r", "").replace("\\n", "\n").replace(";", "\n")
+                     for line in normalized.split("\n"):
+                         if "=" in line:
+                            parts = line.split("=", 1)
+                            k, v = parts[0].strip().lower(), parts[1].strip()
+                            try:
+                                if "resolution" in k: lin_dict["resolution"] = float(v)
+                                elif "offset" in k: lin_dict["offset"] = float(v)
+                            except: pass
+                     return lin_dict
+                # Check for Enum (0x00=Desc or 1=Desc)
+                if "=" in s:
+                    conv_dict = {}
+                    valid_enum = False
+                    normalized = s.replace("\\r", "").replace("\\n", "\n").replace(";", "\n").replace(",", "\n")
+                    for line in normalized.split("\n"):
+                         line = line.strip()
+                         if not line: continue
+                         if "=" in line:
+                            parts = line.split("=", 1)
+                            k, v = parts[0].strip().lower(), parts[1].strip()
+                            v = v.strip('"').strip("'")
+                            if k.startswith("0x"):
+                                try: conv_dict[str(int(k, 16))] = v; valid_enum = True
+                                except: pass
+                            else:
+                                try: conv_dict[str(int(k))] = v; valid_enum = True
+                                except: pass
+                    if valid_enum and conv_dict:
+                        return conv_dict
+                return s
+
+             # Conversion
+             conv_e_raw = item.get("conversion_e")
+             conv_c_raw = item.get("conversion_c")
+
+             conv_en = parse_conv_str(conv_e_raw) if conv_e_raw else None
+             conv_cn = parse_conv_str(conv_c_raw) if conv_c_raw else None
+
+             conv = None
+             if conv_en and conv_cn:
+                 if isinstance(conv_en, dict) and isinstance(conv_cn, dict):
+                       # Merge enums
+                       merged = {}
+                       keys = set(conv_en.keys()) | set(conv_cn.keys())
+                       for k in keys:
+                           v_en = conv_en.get(k, "")
+                           v_cn = conv_cn.get(k, "")
+                           if v_en and v_cn: merged[k] = f"{v_en} ({v_cn})"
+                           elif v_en: merged[k] = v_en
+                           else: merged[k] = v_cn
+                       conv = merged
+                 elif isinstance(conv_en, str) and isinstance(conv_cn, str):
+                       conv = f"{conv_en} ({conv_cn})"
+                 else:
+                       conv = conv_en
+             elif conv_en:
+                 conv = conv_en
+             elif conv_cn:
+                 conv = conv_cn
+
+             bit_val = item.get("bit")
+
+             if bit_val and str(bit_val).lower() != "all":
+                 # Bit Field
+                 # Needs to be attached to a Byte Field
+                 # Find or create existing byte field
+                 target_field = None
+                 for f in fields:
+                     if f["byte_offset"] == byte_start and f.get("byte_length", 1) == byte_len:
+                         target_field = f
+                         break
+
+                 if not target_field:
+                     target_field = {
+                         "description": f"Byte {byte_start}",
+                         "byte_offset": byte_start,
+                         "byte_length": byte_len,
+                         "encoding": encoding,
+                         "bit_fields": {}
+                     }
+                     fields.append(target_field)
+
+                 # Ensure bit_fields exists
+                 if "bit_fields" not in target_field:
+                     target_field["bit_fields"] = {}
+
+                 # Parse bit index
+                 b_idx = str(bit_val)
+
+                 is_range = False
+                 b_start, b_end = -1, -1
+
+                 if "~" in b_idx:
+                      parts = b_idx.split("~")
+                      try: b_start, b_end = int(parts[0]), int(parts[1]); is_range = True
+                      except: pass
+                 elif "-" in b_idx:
+                      parts = b_idx.split("-")
+                      try: b_start, b_end = int(parts[0]), int(parts[1]); is_range = True
+                      except: pass
+
+                 if is_range:
+                      # If range is 0-7, promote to standard field if it's a single byte
+                      if b_start == 0 and b_end == 7 and target_field["byte_length"] == 1:
+                           target_field["description"] = f_desc
+                           target_field["conversion"] = conv
+                           target_field["bit_fields"] = {} # Clear bits
+                      else:
+                           for idx in range(b_start, b_end + 1):
+                                target_field["bit_fields"][f"bit_{idx}"] = {
+                                    "description": f_desc,
+                                    "conversion": conv
+                                }
+                 else:
+                      try:
+                          idx = int(b_idx)
+                          target_field["bit_fields"][f"bit_{idx}"] = {
+                              "description": f_desc,
+                              "conversion": conv
+                          }
+                      except: pass
+             else:
+                 # Standard Field
+                 fields.append({
+                     "description": f_desc,
+                     "byte_offset": byte_start,
+                     "byte_length": byte_len,
+                     "encoding": encoding,
+                     "conversion": conv
+                 })
+
+        result["parsers"][did_key] = {
+            "config": {"fields": fields},
+            "meta": {"description": desc, "category": sheet} # Store category
+        }
 
 def _parse_dpt_file_task(path_str: str) -> Dict[str, Any]:
     """
     Executed in a separate process.
     """
     import json
-    import openpyxl
+    # import openpyxl # Removed
     from pathlib import Path
+    from app.common.utils.crypto_utils import dpt_encryptor
 
     path = Path(path_str)
     result = {"parsers": {}, "dtcs": {}, "default_parser_config": None}
 
     try:
-        if path.suffix.lower() == ".json":
-            content = json.loads(path.read_text(encoding="utf-8").strip())
-            _process_json_content(content, result)
+        content_str = ""
+        success = False
 
-        elif path.suffix.lower() == ".xlsx":
-            wb = openpyxl.load_workbook(path, read_only=True, data_only=True)
+        # 1. Try reading as plain JSON (Legacy or unencrypted)
+        try:
+             # Only if extension suggests or just try
+             if path.suffix.lower() == ".json":
+                 content_str = path.read_text(encoding="utf-8").strip()
+                 success = True
+        except: pass
+
+        # 2. Try reading as Encrypted (Priority)
+        error_details = ""
+        if not success:
             try:
-                for sheet_name in wb.sheetnames:
-                    ws = wb[sheet_name]
-                    # Read all rows into memory list to process
-                    rows = list(ws.iter_rows(values_only=True))
-                    if not rows: continue
+                data_bytes = path.read_bytes()
+                content_str = dpt_encryptor.decrypt(data_bytes)
+                success = True
+            except Exception as e:
+                import traceback
+                error_details = f"Decryption error: {str(e)}\n{traceback.format_exc()}"
 
-                    headers = [str(h).strip().lower() if h else "" for h in rows[0]]
-                    data_rows = rows[1:]
-
-                    # Check sheet name first for better accuracy
-                    s_name = sheet_name.lower()
-                    is_did_sheet = "did" in s_name or "19" in s_name or "service" in s_name
-                    is_dtc_sheet = "dtc" in s_name
-
-                    # Fallback to header check
-                    if not is_did_sheet and not is_dtc_sheet:
-                        is_did_sheet = any(k in headers for k in ["did", "identifier", "id", "did\nnumber"])
-                        is_dtc_sheet = any(k in headers for k in ["dtc", "code", "fault code", "dtc number"])
-
-                    if is_did_sheet:
-                        _process_did_rows(data_rows, rows[0], result)
-                    elif is_dtc_sheet:
-                        _process_dtc_rows(data_rows, rows[0], result)
-            finally:
-                wb.close()
+        if success and content_str:
+            try:
+                content = json.loads(content_str)
+                _process_json_content(content, result)
+            except Exception as e:
+                 return {"error": f"JSON Parse Error: {e}"}
+        else:
+            return {"error": f"Failed to load or decrypt DPT file: {path.name}. {error_details}"}
 
     except Exception as e:
         return {"error": str(e)}
@@ -697,9 +925,13 @@ class DPTService:
                 self._load_chunked_json(path)
             elif suffix == ".xlsx":
                 self._load_chunked_xlsx(path)
+            # Support encrypted dat or generic fallback
             else:
-                self._notify_status("error", f"Unsupported file extension: {suffix}")
-                return
+                try:
+                    self._load_chunked_encrypted(path)
+                except Exception:
+                    self._notify_status("error", f"Unsupported file extension or decryption failed: {suffix}")
+                    return
 
             self._current_path = str(path)
             self._notify_status("completed", "DPT 加载成功")
@@ -707,6 +939,37 @@ class DPTService:
             print(f"Error loading DPT file (chunked): {e}")
             self._reset_state()
             self._notify_status("error", f"加载 DPT 出错: {e}")
+
+    def _load_chunked_encrypted(self, path: Path) -> None:
+        from app.common.utils.crypto_utils import dpt_encryptor
+        try:
+             data_bytes = path.read_bytes()
+             content_str = dpt_encryptor.decrypt(data_bytes)
+             data = json.loads(content_str)
+        except Exception as e:
+             raise Exception(f"Decryption failed: {e}")
+
+        self._reset_state()
+        result = {"parsers": {}, "dtcs": {}}
+        _process_json_content(data, result)
+
+        # Populate self
+        self._parsers = {}
+        self._did_metadata = {}
+        self._dtc_map = result.get("dtcs", {})
+
+        parsers_data = result.get("parsers", {})
+
+        for did_key, info in parsers_data.items():
+            try:
+                parser = DPTParser.from_dict_config(info["config"])
+                if "description" in info["meta"]:
+                    parser.description = info["meta"]["description"]
+                self._parsers[did_key] = parser
+                self._did_metadata[did_key] = info["meta"]
+            except Exception:
+                pass
+
 
     def _load_chunked_json(self, path: Path) -> None:
         text = path.read_text(encoding="utf-8").strip()
@@ -1114,6 +1377,7 @@ class DPTService:
 
                         if is_range:
                             # Check if it covers the whole byte (0-7) for a 1-byte field
+                            # This promotes it to a standard field to support ASCII/Encoding properly
                             if b_start == 0 and b_end == 7 and existing_field["byte_length"] == 1:
                                  existing_field["description"] = field.get("description", existing_field["description"])
                                  existing_field["encoding"] = field.get("encoding", existing_field["encoding"])
@@ -1125,12 +1389,6 @@ class DPTService:
                                     "description": field.get("description", ""),
                                     "conversion": field.get("conversion")
                                 }
-                        else:
-                            b_idx = int(bit_val)
-                            existing_field["bit_fields"][f"bit_{b_idx}"] = {
-                                "description": field.get("description", ""),
-                                "conversion": field.get("conversion")
-                            }
                     except:
                         pass
                 else:
@@ -1202,7 +1460,7 @@ class DPTService:
             print(f"Error creating parser for DID {did}: {e}")
 
     def is_ready(self) -> bool:
-        return bool(self._parsers or self._parser)
+        return bool(self._parsers or self._parser or self._dtc_map)
 
     def get_parser(self, did: str) -> Optional[DPTParser]:
         did_key = did.strip().upper().replace("0X", "")
@@ -1278,3 +1536,6 @@ class DPTService:
 
         return result
 
+    def get_dtc_info(self, code: str) -> Optional[Dict[str, Any]]:
+        """Get DTC information by code."""
+        return self._dtc_map.get(code.strip().upper())

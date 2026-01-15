@@ -210,12 +210,20 @@ class DPTParser:
                         if val_str in conv:
                             parsed_val = conv[val_str]
                         else:
-                            # If not found in map, show original value
-                            # If it's a long field, fallback to hex to avoid giant integers
-                            if fdef.byte_length > 8:
-                                parsed_val = raw_hex
+                            # Try hex text key if standard int key failed (e.g. key is "0x00")
+                            hex_key = f"0x{val:02X}"
+                            if hex_key in conv:
+                                parsed_val = conv[hex_key]
+                            # Try simplified hex key (e.g. "0x0", "0x1")
+                            elif f"0x{val:X}" in conv:
+                                parsed_val = conv[f"0x{val:X}"]
                             else:
-                                parsed_val = str(val)
+                                # If not found in map, show original value
+                                # If it's a long field, fallback to hex to avoid giant integers
+                                if fdef.byte_length > 8:
+                                    parsed_val = raw_hex
+                                else:
+                                    parsed_val = str(val)
 
                 elif isinstance(conv, str):
                     # Simple String = Unit
@@ -300,6 +308,14 @@ class DPTParser:
                         val_str = str(bit_val)
                         if val_str in conversion:
                             parsed_val = conversion[val_str]
+                        else:
+                            # Also check hex string for bit values (e.g. "0x00" or "0x01")
+                            hex_key = f"0x{bit_val:02X}"
+                            if hex_key in conversion:
+                                parsed_val = conversion[hex_key]
+                            # Or simplified hex "0x0" / "0x1"
+                            elif f"0x{bit_val:X}" in conversion:
+                                parsed_val = conversion[f"0x{bit_val:X}"]
                 elif isinstance(conversion, str):
                     # Unit string - only append if not empty
                     if conversion.strip().upper() != "NONE":
@@ -323,5 +339,4 @@ def parse_bytes_to_table_rows(
     parser = DPTParser(list(field_defs))
     result = parser.parse_bytes(data)
     return result.to_table_rows()
-
 
