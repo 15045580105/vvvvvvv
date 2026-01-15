@@ -101,6 +101,32 @@ class FileTransferService(BaseService):
         # TODO: Implement SSH ls fallback
         return []
 
+    def upload_file(self, local_path, remote_path, callback=None):
+        """上传文件 callback(transferred, total)"""
+        if not self.ssh_client:
+            return False
+        try:
+            sftp = self.ssh_client.open_sftp()
+            sftp.put(local_path, remote_path, callback=callback)
+            sftp.close()
+            return True
+        except Exception as e:
+            print(f"Upload failed: {e}")
+            return False
+
+    def download_file(self, remote_path, local_path, callback=None):
+        """下载文件 callback(transferred, total)"""
+        if not self.ssh_client:
+            return False
+        try:
+            sftp = self.ssh_client.open_sftp()
+            sftp.get(remote_path, local_path, callback=callback)
+            sftp.close()
+            return True
+        except Exception as e:
+            print(f"Download failed: {e}")
+            return False
+
     @staticmethod
     def _format_size(size_bytes: int) -> str:
         units = ["B", "KB", "MB", "GB", "TB"]

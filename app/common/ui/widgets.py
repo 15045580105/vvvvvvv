@@ -169,11 +169,13 @@ class CheckableComboBox(QtWidgets.QComboBox):
 
         self._is_updating = False
 
+        # Add Select All item
         self.selectAllItem = QtGui.QStandardItem("(全选)")
         self.selectAllItem.setFlags(QtCore.Qt.ItemIsEnabled | QtCore.Qt.ItemIsUserCheckable)
         self.selectAllItem.setData(QtCore.Qt.Unchecked, QtCore.Qt.CheckStateRole)
         self.model.appendRow(self.selectAllItem)
 
+        # Clear text initially
         self.setCurrentIndex(-1)
         self.lineEdit().setText("")
 
@@ -183,10 +185,12 @@ class CheckableComboBox(QtWidgets.QComboBox):
 
         self._is_updating = True
         try:
-            if item.row() == 0:
+            if item == self.selectAllItem:
                 state = item.checkState()
                 for i in range(1, self.model.rowCount()):
-                    self.model.item(i).setCheckState(state)
+                    child = self.model.item(i)
+                    if child.checkState() != state:
+                        child.setCheckState(state)
             else:
                 self.checkSelectAllState()
             self.updateText()
@@ -194,25 +198,25 @@ class CheckableComboBox(QtWidgets.QComboBox):
             self._is_updating = False
 
     def checkSelectAllState(self):
-        if self.model.rowCount() <= 1:
+        # Determine if all items are checked
+        total_items = self.model.rowCount() - 1
+        if total_items <= 0:
             return
 
-        all_checked = True
+        checked_count = 0
         for i in range(1, self.model.rowCount()):
-            if self.model.item(i).checkState() != QtCore.Qt.Checked:
-                all_checked = False
-                break
+            if self.model.item(i).checkState() == QtCore.Qt.Checked:
+                checked_count += 1
 
-        if all_checked:
-            if self.selectAllItem.checkState() != QtCore.Qt.Checked:
-                self.selectAllItem.setCheckState(QtCore.Qt.Checked)
-        else:
-            if self.selectAllItem.checkState() != QtCore.Qt.Unchecked:
-                 self.selectAllItem.setCheckState(QtCore.Qt.Unchecked)
+        all_checked = (checked_count == total_items)
+        if self.selectAllItem.checkState() == QtCore.Qt.Checked and not all_checked:
+             self.selectAllItem.setCheckState(QtCore.Qt.Unchecked)
+        elif self.selectAllItem.checkState() == QtCore.Qt.Unchecked and all_checked:
+             self.selectAllItem.setCheckState(QtCore.Qt.Checked)
 
     def updateText(self):
         texts = []
-        for i in range(1, self.model.rowCount()): # Skip Select All
+        for i in range(1, self.model.rowCount()):
             item = self.model.item(i)
             if item.checkState() == QtCore.Qt.Checked:
                 texts.append(item.text())
@@ -232,7 +236,12 @@ class CheckableComboBox(QtWidgets.QComboBox):
         item.setFlags(QtCore.Qt.ItemIsEnabled | QtCore.Qt.ItemIsUserCheckable)
         item.setData(QtCore.Qt.Unchecked, QtCore.Qt.CheckStateRole)
         self.model.appendRow(item)
-        self.updateText()
+        # Manually trigger update text just in case, but usually checkSelectAllState handles logic
+        # Adding an unchecked item while 'Select All' is checked should uncheck 'Select All'
+        if self.selectAllItem.checkState() == QtCore.Qt.Checked:
+            self.selectAllItem.setCheckState(QtCore.Qt.Unchecked)
+        else:
+            self.updateText()
 
     def addItems(self, texts):
         for text in texts:
@@ -246,6 +255,14 @@ class CheckableComboBox(QtWidgets.QComboBox):
                 checkedItems.append(item.text())
         return checkedItems
 
+    def getCheckedData(self):
+        checkedData = []
+        for i in range(1, self.model.rowCount()):
+            item = self.model.item(i)
+            if item.checkState() == QtCore.Qt.Checked:
+                checkedData.append(item.data())
+        return checkedData
+
     def eventFilter(self, widget, event):
         if widget == self.lineEdit():
             if event.type() == QtCore.QEvent.MouseButtonPress:
@@ -257,10 +274,9 @@ class CheckableComboBox(QtWidgets.QComboBox):
                 if index.isValid():
                     item = self.model.itemFromIndex(index)
                     if item.flags() & QtCore.Qt.ItemIsUserCheckable:
-                        if item.checkState() == QtCore.Qt.Checked:
-                            item.setCheckState(QtCore.Qt.Unchecked)
-                        else:
-                            item.setCheckState(QtCore.Qt.Checked)
+                        # Toggle state
+                        new_state = QtCore.Qt.Unchecked if item.checkState() == QtCore.Qt.Checked else QtCore.Qt.Checked
+                        item.setCheckState(new_state)
                         return True
         return super(CheckableComboBox, self).eventFilter(widget, event)
 
