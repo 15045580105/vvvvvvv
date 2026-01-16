@@ -1,6 +1,8 @@
 from PyQt5 import QtWidgets, QtCore, QtGui
 import warnings
 
+from app.common.log.operation_log_manager import OperationLogManager
+
 # 忽略 PyQt5/sip 在 Python 3.11+ 下的 DeprecationWarning
 warnings.filterwarnings("ignore", category=DeprecationWarning, message=".*sipPyTypeDict.*")
 
@@ -228,6 +230,9 @@ class LogConfigView(BaseView):
         """向所有日志窗口添加日志"""
         timestamp = QtCore.QDateTime.currentDateTime().toString("yyyy-MM-dd HH:mm:ss")
         log_msg = f"[{timestamp}] {message}"
+
+        # Record to OperationLogManager
+        OperationLogManager.instance().append_log("日志配置", message)
 
         # 滚动到底部
         for text_edit in [self.ecu_log_text, self.app_log_text, self.restore_log_text]:

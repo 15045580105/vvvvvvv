@@ -1,6 +1,7 @@
 # python
 from PyQt5 import QtWidgets
 
+from app.common.log.operation_log_manager import OperationLogManager
 from app.common.ui.widgets import ModernButton
 from app.modules.device_topology.view.topology_widget import SimpleTopologyWindow, CanLinTopologyWindow
 from app.presentation.views.base_view import BaseView
@@ -78,6 +79,7 @@ class TopologyView(BaseView):
 
     def append_log(self, text: str):
         self.log_view.append(text)
+        OperationLogManager.instance().append_log("设备拓扑", text)
 
 
 if __name__ == '__main__':

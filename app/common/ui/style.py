@@ -10,6 +10,35 @@ QMainWindow {
     background-color: #F9FAFB;
 }
 
+QDockWidget {
+    border: 1px solid #E5E7EB;
+    font-family: "Segoe UI", "Microsoft YaHei";
+    font-size: 9.5pt;
+}
+
+QDockWidget::title {
+    background-color: #F3F4F6;
+    padding: 8px 10px;
+    border-bottom: 1px solid #E5E7EB;
+    font-weight: 600;
+    color: #374151;
+}
+
+QDockWidget::close-button, QDockWidget::float-button {
+    border: none;
+    background: transparent;
+    border-radius: 4px;
+    padding: 2px;
+}
+
+QDockWidget::close-button:hover, QDockWidget::float-button:hover {
+    background-color: #EFF6FF;
+}
+
+QDockWidget::close-button:pressed, QDockWidget::float-button:pressed {
+    background-color: #DBEAFE;
+}
+
 QTreeWidget {
     background-color: #FFFFFF;
     color: #1F2937;

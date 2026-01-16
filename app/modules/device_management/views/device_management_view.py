@@ -3,6 +3,7 @@ from PyQt5.QtWidgets import QHeaderView
 from PyQt5.QtCore import Qt as _Qt
 
 from app.common.ui.widgets import ModernButton, TableButton, LoadingSpinner
+from app.common.log.operation_log_manager import OperationLogManager
 from app.modules.device_management.models.device_model import CONNECTING
 from app.presentation.views.base_view import BaseView
 
@@ -236,3 +237,5 @@ class DeviceView(BaseView):
 
     def append_log(self, text: str):
         self.log_view.append(text)
+        # Record to OperationLogManager for export
+        OperationLogManager.instance().append_log("设备管理", text)
