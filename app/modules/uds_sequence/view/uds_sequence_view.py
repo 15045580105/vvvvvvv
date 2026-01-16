@@ -214,60 +214,6 @@ class UDSSequenceView(QtWidgets.QWidget):
         layout = QtWidgets.QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
 
-        # Global style optimization
-        self.setStyleSheet('''
-            QWidget#uds_root { background: #FFFFFF; }
-            QGroupBox { 
-                background: #FFFFFF; 
-                font-weight: bold;
-                border: 1px solid #D1D5DB;
-                border-radius: 6px;
-                margin-top: 6px;
-                padding-top: 10px;
-            }
-            QGroupBox::title {
-                subcontrol-origin: margin;
-                left: 10px;
-                padding: 0 3px 0 3px;
-            }
-            QSplitter::handle { 
-                background-color: #E5E7EB; 
-                border: 1px solid #D1D5DB;
-            }
-            QSplitter::handle:horizontal {
-                width: 4px;
-            }
-            QSplitter::handle:vertical {
-                height: 4px;
-            }
-            QTreeView { 
-                background: #FFFFFF; 
-                border: 1px solid #9CA3AF; 
-                border-radius: 4px;
-            }
-            QHeaderView::section { 
-                background-color: #F3F4F6; 
-                border: 1px solid #D1D5DB; 
-                padding: 4px; 
-                font-weight: bold; 
-                color: #374151; 
-            }
-            QTableCornerButton::section { 
-                background-color: #F3F4F6; 
-                border: 1px solid #D1D5DB; 
-            }
-            /* Ensure the first column header looks the same */
-            QHeaderView::section:first {
-                background-color: #F3F4F6;
-            }
-        ''')
-        try:
-            self.setObjectName('uds_root')
-        except Exception:
-            pass
-
-        # ... (rest of setup_ui logic remains similar but simplified for brevity in edit)
-
         main_splitter = QtWidgets.QSplitter()
         main_splitter.setOrientation(Qt.Vertical)
         main_splitter.setHandleWidth(4)

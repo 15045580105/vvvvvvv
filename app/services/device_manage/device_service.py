@@ -38,6 +38,9 @@ class DeviceService(QObject):
         self._someip_client: SomeIPClient | None = None
         self._ssh_client: SSHClient | None = None
 
+        # 记录最后一次连接的设备配置，用于断线重连
+        self._last_connected_device: Dict[str, Any] | None = None
+
         self._config_service = di_container.resolve(AppConfigurationService)
         if not self._config_service:
             self._config_service = AppConfigurationService()
@@ -46,6 +49,9 @@ class DeviceService(QObject):
     def connect_device(self, device: Dict[str, Any]) -> None:
         """连接单个设备：按 SSH/DoIP/SomeIP 三种协议尝试建链，并统一发出状态信号。
         """
+        # 保存设备配置以便重连使用
+        self._last_connected_device = device
+
         # 设置初始状态为 CONNECTING
         device["ssh_connect_status"] = CONNECTING
         device["doip_connect_status"] = CONNECTING
@@ -348,6 +354,15 @@ class DeviceService(QObject):
     ) -> bytes | None:
         """统一的 DoIP 发送接口，供 Topology/Diagnostic 等业务 Service 重用。"""
         client = self.get_doip_client()
+
+        # 1. 发送前检查连接状态，若已断开则尝试重连
+        if (client is None or not client.connected) and self._last_connected_device:
+            self.log_signal.emit("DoIP 客户端未连接，尝试自动重连...")
+            # 重新连接会更 _doip_handler
+            self._connect_doip(self._last_connected_device)
+            # 获取最新连接的 client
+            client = self.get_doip_client()
+
         if client is None:
             self.log_signal.emit("DoIP 客户端未连接，无法发送报文")
             return None
@@ -360,13 +375,32 @@ class DeviceService(QObject):
                 timeout = 3.0
 
         try:
-            return client.send_doip_message(
+            resp = client.send_doip_message(
                 payload,
                 timeout=timeout,
                 response_index=response_index,
                 target_did=target_did,
                 prefer_last=prefer_last,
             )
+
+            # 2. 如果发送失败且发现连接已断开（send_doip_message 内部捕获异常后会置 disconnected），
+            #    则尝试重连并重发一次
+            if resp is None and not client.connected and self._last_connected_device:
+                self.log_signal.emit("发送过程中发现连接断开，尝试自动重连并重发...")
+                self._connect_doip(self._last_connected_device)
+                client = self.get_doip_client()
+
+                if client and client.connected:
+                    resp = client.send_doip_message(
+                        payload,
+                        timeout=timeout,
+                        response_index=response_index,
+                        target_did=target_did,
+                        prefer_last=prefer_last,
+                    )
+
+            return resp
+
         except Exception as e:
             self.log_signal.emit(f"通过 DoIP 发送报文失败: {e}")
             return None

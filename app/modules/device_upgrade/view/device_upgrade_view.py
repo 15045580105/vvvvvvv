@@ -1,5 +1,6 @@
 # python
 from PyQt5 import QtWidgets, QtGui
+from PyQt5.QtCore import pyqtSignal
 
 from app.common.ui.widgets import ModernButton, TableButton
 from app.presentation.views.base_view import BaseView
@@ -7,6 +8,9 @@ from app.presentation.views.base_view import BaseView
 
 class UpgradeView(BaseView):
     """纯 UI 升级页面：仅负责界面布局，不包含业务逻辑或信号。"""
+
+    browse_file_signal = pyqtSignal(QtWidgets.QLineEdit, str)
+    stress_pkg_changed = pyqtSignal()
 
     def setup_ui(self):
         main_layout = QtWidgets.QVBoxLayout(self)
@@ -23,17 +27,11 @@ class UpgradeView(BaseView):
         log_group = QtWidgets.QGroupBox("升级日志")
         log_layout = QtWidgets.QVBoxLayout()
 
-        filter_row = QtWidgets.QHBoxLayout()
-        filter_row.addWidget(QtWidgets.QLabel("🔍 过滤:"))
-        self.log_filter = QtWidgets.QLineEdit()
-        self.log_filter.setPlaceholderText("输入关键字过滤日志")
-        filter_row.addWidget(self.log_filter)
-        self.auto_scroll_chk = QtWidgets.QCheckBox("自动滚动")
-        self.auto_scroll_chk.setChecked(True)
-        filter_row.addWidget(self.auto_scroll_chk)
-        filter_row.addWidget(TableButton("清空", "#6B7280", "🧹"))
-        filter_row.addStretch(1)
-        log_layout.addLayout(filter_row)
+        tool_row = QtWidgets.QHBoxLayout()
+        tool_row.addStretch(1)
+        self.clear_btn = TableButton("清空日志", "#6B7280", "🧹")
+        tool_row.addWidget(self.clear_btn)
+        log_layout.addLayout(tool_row)
 
         self.upgrade_log = QtWidgets.QTextEdit()
         self.upgrade_log.setReadOnly(True)
@@ -55,26 +53,28 @@ class UpgradeView(BaseView):
         # 升级包（单行，无 +/-）
         layout.addWidget(QtWidgets.QLabel("📦 升级包:"), 0, 0)
         self.upgrade_file = QtWidgets.QLineEdit()
-        self.upgrade_file.setPlaceholderText("选择升级包 (.zip / .bin)")
+        self.upgrade_file.setPlaceholderText("选择升级包 (.zip)")
         layout.addWidget(self.upgrade_file, 0, 1)
         self.upgrade_file_browse_btn = ModernButton("浏览", "#0EA5E9", "📂")
+        self.upgrade_file_browse_btn.clicked.connect(lambda: self.browse_file_signal.emit(self.upgrade_file, "选择升级包 (*.zip)"))
         layout.addWidget(self.upgrade_file_browse_btn, 0, 2)
 
         # Config file
         layout.addWidget(QtWidgets.QLabel("⚙️ 配置文件:"), 1, 0)
         self.config_file = QtWidgets.QLineEdit()
-        self.config_file.setPlaceholderText("选择升级配置 (.json / .yaml)")
+        self.config_file.setPlaceholderText("选择升级配置 (.json)")
         layout.addWidget(self.config_file, 1, 1)
         self.config_file_browse_btn = ModernButton("浏览", "#0EA5E9", "📂")
+        self.config_file_browse_btn.clicked.connect(lambda: self.browse_file_signal.emit(self.config_file, "选择升级配置 (*.json)"))
         layout.addWidget(self.config_file_browse_btn, 1, 2)
 
-        # Checksum / size info
-        layout.addWidget(QtWidgets.QLabel("🔐 校验信息:"), 2, 0)
-        self.checksum_label = QtWidgets.QLabel("未解析")
-        self.checksum_label.setStyleSheet("color:#6B7280;")
-        layout.addWidget(self.checksum_label, 2, 1)
-        self.checksum_refresh_btn = TableButton("重新解析", "#6B7280", "🔄")
-        layout.addWidget(self.checksum_refresh_btn, 2, 2)
+        # 进度条
+        layout.addWidget(QtWidgets.QLabel("⏳ 进度:"), 2, 0)
+        self.normal_progress = QtWidgets.QProgressBar()
+        self.normal_progress.setRange(0, 100)
+        self.normal_progress.setValue(0)
+        self.normal_progress.setTextVisible(True)
+        layout.addWidget(self.normal_progress, 2, 1, 1, 2)
 
         # Action buttons row（沿用原来的开始/停止按钮）
         action_row = QtWidgets.QHBoxLayout()
@@ -113,25 +113,26 @@ class UpgradeView(BaseView):
         # 压测配置文件
         layout.addWidget(QtWidgets.QLabel("⚙️ 配置文件:"), 1, 0)
         self.stress_config_file = QtWidgets.QLineEdit()
-        self.stress_config_file.setPlaceholderText("选择压测配置 (.json / .yaml)")
+        self.stress_config_file.setPlaceholderText("选择压测配置 (.json)")
         layout.addWidget(self.stress_config_file, 1, 1)
         self.stress_config_browse_btn = ModernButton("浏览", "#0EA5E9", "📂")
+        self.stress_config_browse_btn.clicked.connect(lambda: self.browse_file_signal.emit(self.stress_config_file, "选择压测配置 (*.json)"))
         layout.addWidget(self.stress_config_browse_btn, 1, 2)
 
-        # 压测校验信息
-        layout.addWidget(QtWidgets.QLabel("🔐 校验信息:"), 2, 0)
-        self.stress_checksum_label = QtWidgets.QLabel("未解析")
-        self.stress_checksum_label.setStyleSheet("color:#6B7280;")
-        layout.addWidget(self.stress_checksum_label, 2, 1)
-        self.stress_checksum_refresh_btn = TableButton("重新解析", "#6B7280", "🔄")
-        layout.addWidget(self.stress_checksum_refresh_btn, 2, 2)
-
         # 压测循环次数
-        layout.addWidget(QtWidgets.QLabel("🔁 压测循环次数:"), 3, 0)
+        layout.addWidget(QtWidgets.QLabel("🔁 压测循环次数:"), 2, 0)
         self.stress_loop_spin = QtWidgets.QSpinBox()
         self.stress_loop_spin.setRange(1, 1_000_000)
         self.stress_loop_spin.setValue(100)
-        layout.addWidget(self.stress_loop_spin, 3, 1)
+        layout.addWidget(self.stress_loop_spin, 2, 1)
+
+        # 进度条
+        layout.addWidget(QtWidgets.QLabel("⏳ 本次进度:"), 3, 0)
+        self.stress_progress = QtWidgets.QProgressBar()
+        self.stress_progress.setRange(0, 100)
+        self.stress_progress.setValue(0)
+        self.stress_progress.setTextVisible(True)
+        layout.addWidget(self.stress_progress, 3, 1, 1, 2)
 
         # 压测操作按钮
         action_row = QtWidgets.QHBoxLayout()
@@ -156,7 +157,7 @@ class UpgradeView(BaseView):
         row_layout.setSpacing(4)
 
         line_edit = QtWidgets.QLineEdit()
-        line_edit.setPlaceholderText("选择升级包 (.zip / .bin)")
+        line_edit.setPlaceholderText("选择升级包 (.zip)")
         browse_btn = ModernButton("浏览", "#0EA5E9", "📂")
 
         add_btn = ModernButton("➕", "#22C55E", "")
@@ -165,6 +166,8 @@ class UpgradeView(BaseView):
         # 这里只管理 UI 行；业务逻辑可在 controller 里统一接管
         add_btn.clicked.connect(self._add_stress_pkg_row)
         remove_btn.clicked.connect(lambda: self._remove_stress_pkg_row(row_widget))
+        browse_btn.clicked.connect(lambda: self.browse_file_signal.emit(line_edit, "选择升级包 (*.zip)"))
+        line_edit.textChanged.connect(lambda: self.stress_pkg_changed.emit())
 
         row_layout.addWidget(line_edit, 1)
         row_layout.addWidget(browse_btn)
@@ -173,6 +176,9 @@ class UpgradeView(BaseView):
 
         self.stress_pkg_layout.addWidget(row_widget)
         self.stress_pkg_rows.append((line_edit, browse_btn))
+
+        # Emit change signal to update start button state
+        self.stress_pkg_changed.emit()
 
     def _remove_stress_pkg_row(self, row_widget: QtWidgets.QWidget):
         """删除一行压测升级包，至少保留一行。"""
@@ -193,6 +199,39 @@ class UpgradeView(BaseView):
             btn = w.findChild(ModernButton)
             if le is not None and btn is not None:
                 self.stress_pkg_rows.append((le, btn))
+
+        self.stress_pkg_changed.emit()
+
+    def clear_stress_pkg_rows(self):
+        """Clears all dynamic package rows, resetting to a single empty row."""
+        # Remove all existing widgets in layout
+        while self.stress_pkg_layout.count():
+            item = self.stress_pkg_layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.setParent(None)
+
+        self.stress_pkg_rows = []
+        self._add_stress_pkg_row() # Add one initial row
+
+    def set_stress_pkg_paths(self, paths):
+        """Reconstructs the UI with the given list of file paths."""
+        if not paths:
+            return
+
+        # Clear existing except logic is tricky because we need at least one row
+        # So we clear all, then add specific ones
+        while self.stress_pkg_layout.count():
+            item = self.stress_pkg_layout.takeAt(0)
+            w = item.widget()
+            if w: w.setParent(None)
+        self.stress_pkg_rows = []
+
+        for p in paths:
+            self._add_stress_pkg_row()
+            # Last added is at end
+            last_edit = self.stress_pkg_rows[-1][0]
+            last_edit.setText(p)
 
     def show_device_targets(self, devices):
         """在升级界面显示目标设备信息（如设备名/IP等）"""
