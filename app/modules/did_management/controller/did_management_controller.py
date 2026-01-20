@@ -145,6 +145,7 @@ class DIDController(BaseController):
         self.view.value_detail_requested.connect(self._on_value_detail_requested)
         self.view.read_requested.connect(self._on_read_clicked)
         self.view.write_requested.connect(self._on_write_clicked)
+        self.view.clear_requested.connect(self._on_clear_clicked)
         self.view.add_row_requested.connect(self._on_add_row)
         self.view.remove_row_requested.connect(self._on_remove_row)
         self.view.move_up_requested.connect(self._on_move_up)
@@ -201,6 +202,22 @@ class DIDController(BaseController):
         if rows:
             self.model.set_did_rows(rows)
         self._loader_thread = None
+
+
+    def _on_clear_clicked(self) -> None:
+        """Handle clear button clicked."""
+        self.model.reset_raw_log()
+        self.model.clear_all_values()
+
+        # Manually clear text area in view if model change doesn't trigger it fast enough or if binding is missing
+        # The model.reset_raw_log() cleans model data, but we should make sure View is updated.
+        # on_model_changed calls view.raw_text.setText(self.model.raw_data)
+        # on_model_changed calls _rebuild_table()
+        # So it should be handled automatically by on_model_changed if connected properly.
+        # BaseController connects model.dataChanged to on_model_changed.
+        # Let's verify base_controller later, but assuming standard MV pattern here.
+
+        # Also clean up any lingering toast or errors if needed? No, just data.
 
 
     # ---------- delegate 选项提供 ----------
@@ -472,6 +489,10 @@ class DIDController(BaseController):
             MessageToast(self.view).show_toast("请先连接设备 (DoIP)", 1)
             return
 
+        # Clear value and status for selected rows before reading
+        for row_index, row in selected_rows:
+            self.model.update_row(row_index, value="", value_color=None)
+
         for row_index, row in selected_rows:
             self._process_did_row(row_index, row, is_write=False)
             QtWidgets.QApplication.processEvents()
@@ -490,6 +511,10 @@ class DIDController(BaseController):
         if not self._device_service.get_doip_client():
              MessageToast(self.view).show_toast("请先连接设备 (DoIP)", 1)
              return
+
+        # Clear status for selected rows before writing (keeping value as it is the input)
+        for row_index, row in selected_rows:
+            self.model.update_row(row_index, value_color=None)
 
         for row_index, row in selected_rows:
             self._process_did_row(row_index, row, is_write=True)
@@ -514,6 +539,7 @@ class DIDController(BaseController):
         """模型更新时刷表格与原始数据显示。"""
         self._rebuild_table()
         self.view.raw_text.setText(self.model.raw_data)
+        self.view.raw_text.moveCursor(QtGui.QTextCursor.End)
 
     def get_view(self):
         """返回视图实例供外部容器使用。"""

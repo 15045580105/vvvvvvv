@@ -4,6 +4,7 @@ from PyQt5 import QtWidgets, QtCore, QtGui
 from PyQt5.QtCore import Qt, pyqtSignal
 from PyQt5.QtGui import QStandardItemModel, QStandardItem
 
+from app.common.log.operation_log_manager import OperationLogManager
 from app.common.ui.widgets import ModernButton
 from app.modules.did_management.view.did_management_view import FullCellDelegate, ComboBoxDelegate
 
@@ -810,6 +811,7 @@ class UDSSequenceView(QtWidgets.QWidget):
         return self.response_edit.toPlainText().strip()
 
     def log_message(self, message: str):
+        OperationLogManager.instance().append_log("UDS指令编排", message)
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")
         self.exec_log.append(f"[{timestamp}] {message}")
         self.exec_log.moveCursor(QtGui.QTextCursor.End)

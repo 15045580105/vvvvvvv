@@ -3,6 +3,7 @@ from datetime import datetime
 from PyQt5 import QtWidgets, QtGui, QtCore
 from PyQt5.QtCore import Qt
 
+from app.common.log.operation_log_manager import OperationLogManager
 from app.common.ui.widgets import ModernButton
 from app.presentation.views.base_view import BaseView
 from app.modules.ecu_initialization.view.ecu_initialization_view import ECUInitView
@@ -230,6 +231,7 @@ class DIDView(BaseView):
     cell_clicked = QtCore.pyqtSignal(int, int)
     cell_double_clicked = QtCore.pyqtSignal(int, int)
     ecu_init_requested = QtCore.pyqtSignal()
+    clear_requested = QtCore.pyqtSignal()
 
     def setup_ui(self):
         # 存储待应用的像素宽度（在首次布局完成后应用）
@@ -260,10 +262,13 @@ class DIDView(BaseView):
         ctl.addStretch()
         self.read_btn = ModernButton("读取", "#0EA5E9", "")
         self.write_btn = ModernButton("写入", "#F97316", "")
+        self.clear_btn = ModernButton("清除", "#EF4444", "")
         self.read_btn.setFixedWidth(70)
         self.write_btn.setFixedWidth(70)
+        self.clear_btn.setFixedWidth(70)
         ctl.addWidget(self.read_btn)
         ctl.addWidget(self.write_btn)
+        ctl.addWidget(self.clear_btn)
 
         main_layout.addLayout(ctl)
 
@@ -373,6 +378,7 @@ class DIDView(BaseView):
         # 信号转发（仅界面层）
         self.read_btn.clicked.connect(self.read_requested.emit)
         self.write_btn.clicked.connect(self.write_requested.emit)
+        self.clear_btn.clicked.connect(self.clear_requested.emit)
         self.add_btn.clicked.connect(self.add_row_requested.emit)
         self.remove_btn.clicked.connect(self.remove_row_requested.emit)
         self.up_btn.clicked.connect(self.move_up_requested.emit)
@@ -402,6 +408,7 @@ class DIDView(BaseView):
 
     def append_log(self, message: str):
         """Append message to the raw text log area."""
+        OperationLogManager.instance().append_log("DID数据管理", message)
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")
         self.raw_text.append(f"[{timestamp}] {message}")
         self.raw_text.moveCursor(QtGui.QTextCursor.End)
