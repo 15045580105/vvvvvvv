@@ -202,6 +202,7 @@ class UDSSequenceView(QtWidgets.QWidget):
     add_command_requested = pyqtSignal(str)
     insert_command_requested = pyqtSignal(str)
     command_selected = pyqtSignal(str)
+    table_data_changed = pyqtSignal()
 
     def __init__(self, model, parent=None):
         super().__init__(parent)
@@ -692,6 +693,8 @@ class UDSSequenceView(QtWidgets.QWidget):
         # allow editing by double click (consistent with DID behavior that uses controller to open editors)
         self.data_table.setEditTriggers(QtWidgets.QAbstractItemView.DoubleClicked)
 
+        self.data_table.itemChanged.connect(lambda _: self.table_data_changed.emit())
+
         # ensure vertical header shows row numbers and a comfortable width
         try:
             vh = self.data_table.verticalHeader()
@@ -759,9 +762,11 @@ class UDSSequenceView(QtWidgets.QWidget):
 
     def reset_table(self):
         self.data_table.setRowCount(0)
+        self.table_data_changed.emit()
 
     def insert_table_row(self, row: int, param_name: str, param_value: str, description: str, addrtype: str = 'physical', checked: bool = True):
         """Insert a row at the specified index."""
+        self.data_table.blockSignals(True)
         self.data_table.insertRow(row)
 
         # first column: use QTableWidgetItem with CheckStateRole
@@ -783,6 +788,8 @@ class UDSSequenceView(QtWidgets.QWidget):
             self._apply_column_widths()
         except Exception:
             pass
+        self.data_table.blockSignals(False)
+        self.table_data_changed.emit()
 
     def append_table_row(self, param_name: str, param_value: str, description: str):
         """Append a row to the table."""
@@ -791,18 +798,22 @@ class UDSSequenceView(QtWidgets.QWidget):
     def remove_table_row(self, row: int):
         if 0 <= row < self.data_table.rowCount():
             self.data_table.removeRow(row)
+            self.table_data_changed.emit()
 
     def get_current_row(self) -> int:
         return self.data_table.currentRow()
 
     def swap_table_rows(self, row1: int, row2: int):
         cols = self.data_table.columnCount()
+        self.data_table.blockSignals(True)
         for col in range(cols):
             # Swap QTableWidgetItem for all columns (including checkbox column 0)
             item1 = self.data_table.takeItem(row1, col)
             item2 = self.data_table.takeItem(row2, col)
             self.data_table.setItem(row1, col, item2)
             self.data_table.setItem(row2, col, item1)
+        self.data_table.blockSignals(False)
+        self.table_data_changed.emit()
 
     def get_request_text(self) -> str:
         return self.request_edit.toPlainText().strip()

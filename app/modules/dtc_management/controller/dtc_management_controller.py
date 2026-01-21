@@ -1,3 +1,5 @@
+import json
+import os
 from datetime import datetime
 from PyQt5 import QtCore, QtWidgets
 from app.core.base_controller import BaseController
@@ -6,6 +8,15 @@ from app.modules.dtc_management.view.dtc_management_view import DTCView
 from app.core.dependency_injection import di_container
 from app.services.device_manage.device_service import DeviceService
 from app.services.diagnostic.dpt_service import DPTService
+from app.common.utils.path_utils import get_app_data_path
+
+_dtc_dir = os.path.join(get_app_data_path(), "DTC")
+if not os.path.exists(_dtc_dir):
+    try:
+        os.makedirs(_dtc_dir, exist_ok=True)
+    except OSError:
+        pass
+DTC_LIST_FILE = os.path.join(_dtc_dir, "dtc_list.json")
 
 
 class DTCController(BaseController):
@@ -37,8 +48,50 @@ class DTCController(BaseController):
         self.dpt_status_signal.connect(self.handle_dpt_status)
         self._dpt_service.add_status_callback(self._on_dpt_status)
 
-        # 加载保存的 DID 列表
+        # 加载保存的 DTC 列表
+        self.load_dtc_list()
         self.on_model_changed()
+
+    def load_dtc_list(self):
+        if not os.path.exists(DTC_LIST_FILE):
+             return
+
+        try:
+             with open(DTC_LIST_FILE, "r", encoding="utf-8") as f:
+                 data = json.load(f)
+                 # dtcs stored as list of lists in JSON, convert to list of tuples if needed,
+                 # but for now list of lists is compatible if we index it.
+                 # Python tuples become lists in JSON.
+                 self.model.dtcs = [tuple(x) for x in data.get("dtcs", [])]
+                 self.model.freeze_frames = data.get("freeze_frames", [])
+
+                 # Recalculate categories
+                 parsed_dtcs = self.model.dtcs
+                 total = len(parsed_dtcs)
+                 current = sum(1 for x in parsed_dtcs if x[4] == "当前故障")
+                 history = sum(1 for x in parsed_dtcs if x[4] == "历史故障")
+                 pending = sum(1 for x in parsed_dtcs if x[4] == "未决故障")
+
+                 self.model.categories = [
+                    f"全部故障 ({total})",
+                    f"当前故障 ({current})",
+                    f"历史故障 ({history})",
+                    f"未决故障 ({pending})",
+                 ]
+
+        except Exception as e:
+             self.view.append_log(f"Error loading DTC list: {e}")
+
+    def save_dtc_list(self):
+        data = {
+            "dtcs": self.model.dtcs,
+            "freeze_frames": self.model.freeze_frames
+        }
+        try:
+            with open(DTC_LIST_FILE, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=4, ensure_ascii=False)
+        except Exception as e:
+            self.view.append_log(f"Error saving DTC list: {e}")
 
     def _on_dpt_status(self, status, message):
         self.dpt_status_signal.emit(status, message)
@@ -187,6 +240,7 @@ class DTCController(BaseController):
 
             self.model.dataChanged.emit()
             self.view.append_log(f"Parsed {total} DTCs")
+            self.save_dtc_list()
 
         except Exception as e:
             self.view.append_log(f"Error parsing DTC response: {e}")
@@ -263,6 +317,7 @@ class DTCController(BaseController):
                     new_dtc = (dtc[0], dtc[1], dtc[2], dtc[3], dtc[4], status)
                     self.model.dtcs[i] = new_dtc
                 break
+        self.save_dtc_list()
 
     def handle_clear_dtcs(self):
         device_service = di_container.resolve(DeviceService)
@@ -290,6 +345,7 @@ class DTCController(BaseController):
         self.model.categories = ["全部故障 (0)", "当前故障 (0)", "历史故障 (0)", "未决故障 (0)"]
         self.model.dataChanged.emit()
         self.view.append_log("已发送清除故障码请求并清空界面")
+        self.save_dtc_list()
 
     def _get_filtered_dtcs(self):
         if self.current_filter == "all":
@@ -328,7 +384,7 @@ class DTCController(BaseController):
         # P0 -> 00, P1 -> 01, P2 -> 02, P3 -> 03
         # C0 -> 40, C1 -> 41, C2 -> 42, C3 -> 43
         # B0 -> 80, B1 -> 81, B2 -> 82, B3 -> 83
-        # U0 -> C0, U1 -> C1, U2 -> C2, U3 -> C3
+        # U0=C0, U1=C1, U2=C2, U3=C3
 
         if len(code) < 7:
             return bytes([0, 0, 0])

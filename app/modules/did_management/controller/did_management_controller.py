@@ -26,9 +26,16 @@ from app.modules.did_management.view.did_management_view import (
 from app.services.diagnostic.dpt_service import DPTService
 from app.common.utils.security_access_helper import SecurityAccessHelper
 from app.modules.ecu_initialization.controller.ecu_initialization_controller import ECUInitController
+from app.common.utils.path_utils import get_app_data_path
 
 
-DID_LIST_FILE = os.path.join(os.path.dirname(os.path.dirname(__file__)), "did_list.json")
+_did_dir = os.path.join(get_app_data_path(), "DID")
+if not os.path.exists(_did_dir):
+    try:
+        os.makedirs(_did_dir, exist_ok=True)
+    except OSError:
+        pass
+DID_LIST_FILE = os.path.join(_did_dir, "did_list.json")
 
 
 class DIDLoaderThread(QtCore.QThread):
@@ -300,7 +307,7 @@ class DIDController(BaseController):
 
         if not rx_session or rx_session[0] != 0x50:
              self.model.apply_update(rx=f"会话控制失败: {rx_session.hex(' ').upper() if rx_session else '无响应'}")
-             self.model.update_row(row_index, value_color="#EF4444")
+             self.model.update_row(row_index, value="", value_color="#EF4444")
              return
         self.model.apply_update(rx=f"会话控制成功: {rx_session.hex(' ').upper()}")
 
@@ -340,13 +347,13 @@ class DIDController(BaseController):
             self.model.apply_update(rx=f"收到种子: {rx_seed.hex(' ').upper()}")
             if not rx_seed or rx_seed[0] != 0x67:
                 self.model.apply_update(rx=f"请求种子失败: {rx_seed.hex(' ').upper() if rx_seed else '无响应'}")
-                self.model.update_row(row_index, value_color="#EF4444")
+                self.model.update_row(row_index, value="", value_color="#EF4444")
                 return
 
             # 计算密钥
             if len(rx_seed) < 3:
                  self.model.apply_update(rx=f"种子响应长度不足")
-                 self.model.update_row(row_index, value_color="#EF4444")
+                 self.model.update_row(row_index, value="", value_color="#EF4444")
                  return
 
             seed = rx_seed[2:]
@@ -365,12 +372,12 @@ class DIDController(BaseController):
 
                 if not rx_key or rx_key[0] != 0x67:
                     self.model.apply_update(rx=f"安全访问失败: {rx_key.hex(' ').upper() if rx_key else '无响应'}")
-                    self.model.update_row(row_index, value_color="#EF4444")
+                    self.model.update_row(row_index, value="", value_color="#EF4444")
                     return
                 self.model.apply_update(rx=f"安全访问成功: {rx_key.hex(' ').upper()}")
             else:
                 self.model.apply_update(rx=error_msg or "密钥计算失败")
-                self.model.update_row(row_index, value_color="#EF4444")
+                self.model.update_row(row_index, value="", value_color="#EF4444")
                 return
 
         # 3. 读/写 DID
@@ -409,7 +416,7 @@ class DIDController(BaseController):
 
             if not rx_bytes:
                 self.model.apply_update(rx="写入失败: 无响应")
-                self.model.update_row(row_index, value_color="#EF4444")
+                self.model.update_row(row_index, value="", value_color="#EF4444")
                 return
 
             self.model.apply_update(rx=f"写入响应: {rx_bytes.hex(' ').upper()}")

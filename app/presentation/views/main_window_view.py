@@ -1,9 +1,11 @@
-from PyQt5 import QtWidgets, QtCore
+from PyQt5 import QtWidgets, QtCore, QtGui
 from PyQt5.QtCore import Qt
 
 from app.modules.app_config.controller.app_config_controller import AppConfigController
 from app.presentation.views.welcome_view import WelcomeWidget
 from app.common.ui.guide_overlay import GuideOverlay
+from app.presentation.views.dpt_convert_dialog import DPTConvertDialog
+
 
 class MainView(QtWidgets.QMainWindow):
 
@@ -15,6 +17,8 @@ class MainView(QtWidgets.QMainWindow):
     def setup_ui(self):
         self.setWindowTitle("车载诊断工具平台 v1.0 ")
         self.setMinimumSize(1400, 900)
+
+
         self.toolbar = QtWidgets.QToolBar("快速操作")
         self.toolbar.setIconSize(QtCore.QSize(20,20))
         self.toolbar.setMovable(False)
@@ -31,6 +35,23 @@ class MainView(QtWidgets.QMainWindow):
         self.search_edit.setPlaceholderText("🔍 搜索功能...")
         self.search_edit.setMaximumWidth(280)
         self.toolbar.addWidget(self.search_edit)
+
+        # Tools Button
+        self.tools_btn = QtWidgets.QToolButton()
+        self.tools_btn.setText("🛠️ 工具")
+        self.tools_btn.setToolTip("实用工具箱")
+        self.tools_btn.setPopupMode(QtWidgets.QToolButton.InstantPopup)
+        self.tools_btn.setAutoRaise(True)
+        self.tools_btn.setCursor(QtGui.QCursor(Qt.PointingHandCursor))
+        self.toolbar.addWidget(self.tools_btn)
+
+        # Tools Menu
+        tools_menu = QtWidgets.QMenu(self)
+        dpt_action = QtWidgets.QAction("DPT文件转换", self)
+        dpt_action.triggered.connect(self.show_dpt_convert_tool)
+        tools_menu.addAction(dpt_action)
+        self.tools_btn.setMenu(tools_menu)
+
         # 添加弹性空间，使“软件设置”按钮居右
         spacer = QtWidgets.QWidget()
         spacer.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Preferred)
@@ -39,7 +60,7 @@ class MainView(QtWidgets.QMainWindow):
         self.settings_btn.setText("软件设置")
         self.settings_btn.setToolTip("打开软件设置页面")
         self.settings_btn.setAutoRaise(True)
-        self.settings_btn.setCursor(QtCore.Qt.PointingHandCursor)
+        self.settings_btn.setCursor(QtGui.QCursor(Qt.PointingHandCursor))
         self.toolbar.addWidget(self.settings_btn)
         self.settings_btn.clicked.connect(self.show_settings_dialog)
 
@@ -47,14 +68,14 @@ class MainView(QtWidgets.QMainWindow):
         self.guide_btn.setText("新手引导")
         self.guide_btn.setToolTip("查看功能指引")
         self.guide_btn.setAutoRaise(True)
-        self.guide_btn.setCursor(QtCore.Qt.PointingHandCursor)
+        self.guide_btn.setCursor(QtGui.QCursor(Qt.PointingHandCursor))
         self.toolbar.addWidget(self.guide_btn)
         self.guide_btn.clicked.connect(self.start_guide)
 
         # 搜索结果下拉列表
         self.search_result_list = QtWidgets.QListWidget()
-        self.search_result_list.setWindowFlags(QtCore.Qt.Popup)
-        self.search_result_list.setFocusPolicy(QtCore.Qt.NoFocus)
+        self.search_result_list.setWindowFlags(Qt.Popup)
+        self.search_result_list.setFocusPolicy(Qt.NoFocus)
         self.search_result_list.setMouseTracking(True)
         self.search_result_list.setMaximumWidth(self.search_edit.maximumWidth())
         self.search_result_list.hide()
@@ -67,7 +88,7 @@ class MainView(QtWidgets.QMainWindow):
         self.nav_tree.setHeaderHidden(True)
         self.nav_tree.setRootIsDecorated(True)
         self.nav_dock.setWidget(self.nav_tree)
-        self.addDockWidget(QtCore.Qt.LeftDockWidgetArea, self.nav_dock)
+        self.addDockWidget(Qt.LeftDockWidgetArea, self.nav_dock)
 
         self.toggle_nav_btn.clicked.connect(self.nav_dock.setVisible)
         self.nav_dock.visibilityChanged.connect(self.toggle_nav_btn.setChecked)
@@ -83,9 +104,9 @@ class MainView(QtWidgets.QMainWindow):
         self.workspace = QtWidgets.QTabWidget()
         self.workspace.setTabsClosable(True)
         self.workspace.setUsesScrollButtons(True)
-        self.workspace.tabBar().setElideMode(QtCore.Qt.ElideNone)
+        self.workspace.tabBar().setElideMode(Qt.ElideNone)
 
-        self.workspace.tabBar().setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
+        self.workspace.tabBar().setContextMenuPolicy(Qt.CustomContextMenu)
 
         self.central_stack.addWidget(self.workspace)
 
@@ -152,6 +173,11 @@ class MainView(QtWidgets.QMainWindow):
         self.settings_controller.view.show()
         self.settings_controller.view.raise_()
         self.settings_controller.view.activateWindow()
+
+    def show_dpt_convert_tool(self):
+        """显示DPT文件转换工具"""
+        dialog = DPTConvertDialog(self)
+        dialog.exec_()
 
     def start_guide(self):
         if not hasattr(self, 'guide_overlay'):

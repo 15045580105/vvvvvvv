@@ -1,10 +1,19 @@
 import json
 import os
 from app.core.base_model import BaseModel
+from app.common.utils.path_utils import get_app_data_path
+
+_uds_dir = os.path.join(get_app_data_path(), "UDS_SEQUENCE")
+if not os.path.exists(_uds_dir):
+    try:
+        os.makedirs(_uds_dir, exist_ok=True)
+    except OSError:
+        pass
+UDS_SEQ_FILE = os.path.join(_uds_dir, "uds_sequences.json")
 
 
 class UDSSequenceModel(BaseModel):
-    CONFIG_FILE = "uds_sequences.json"
+    CONFIG_FILE = UDS_SEQ_FILE
 
     def __init__(self, parent=None):
         super().__init__(parent)
