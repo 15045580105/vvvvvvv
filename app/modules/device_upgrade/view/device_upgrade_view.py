@@ -1,6 +1,6 @@
 # python
 from PyQt5 import QtWidgets, QtGui
-from PyQt5.QtCore import pyqtSignal
+from PyQt5.QtCore import pyqtSignal, Qt
 
 from app.common.ui.widgets import ModernButton, TableButton
 from app.presentation.views.base_view import BaseView
@@ -95,110 +95,203 @@ class UpgradeView(BaseView):
     def _init_stress_tab(self):
         """升级压测：支持多升级包、循环次数、配置文件和校验信息。"""
         stress_page = QtWidgets.QWidget()
-        layout = QtWidgets.QGridLayout(stress_page)
-        layout.setHorizontalSpacing(10)
-        layout.setVerticalSpacing(8)
+        layout = QtWidgets.QVBoxLayout(stress_page)
 
-        # 升级包（压测支持多包，为未来交替升级做准备）
-        layout.addWidget(QtWidgets.QLabel("📦 升级包:"), 0, 0)
-        self.stress_pkg_container = QtWidgets.QWidget()
-        self.stress_pkg_layout = QtWidgets.QVBoxLayout(self.stress_pkg_container)
-        self.stress_pkg_layout.setContentsMargins(0, 0, 0, 0)
-        self.stress_pkg_layout.setSpacing(4)
-        layout.addWidget(self.stress_pkg_container, 0, 1, 1, 2)
+        # 1. Top Toolbar for Table
+        top_bar = QtWidgets.QHBoxLayout()
+        top_bar.addWidget(QtWidgets.QLabel("📋 压测任务列表"))
+        top_bar.addStretch()
 
-        self.stress_pkg_rows = []  # list[tuple[QLineEdit, ModernButton]]
-        self._add_stress_pkg_row()
+        self.add_task_btn = ModernButton("添加任务", "#10B981", "➕")
+        self.add_task_btn.setFixedHeight(30)
+        self.add_task_btn.clicked.connect(self._add_stress_pkg_row)
 
-        # 压测配置文件
-        layout.addWidget(QtWidgets.QLabel("⚙️ 配置文件:"), 1, 0)
-        self.stress_config_file = QtWidgets.QLineEdit()
-        self.stress_config_file.setPlaceholderText("选择压测配置 (.json)")
-        layout.addWidget(self.stress_config_file, 1, 1)
-        self.stress_config_browse_btn = ModernButton("浏览", "#0EA5E9", "📂")
-        self.stress_config_browse_btn.clicked.connect(lambda: self.browse_file_signal.emit(self.stress_config_file, "选择压测配置 (*.json)"))
-        layout.addWidget(self.stress_config_browse_btn, 1, 2)
+        self.del_task_btn = ModernButton("删除选中", "#EF4444", "➖")
+        self.del_task_btn.setFixedHeight(30)
+        self.del_task_btn.clicked.connect(self._remove_selected_stress_row)
 
-        # 压测循环次数
-        layout.addWidget(QtWidgets.QLabel("🔁 压测循环次数:"), 2, 0)
+        top_bar.addWidget(self.add_task_btn)
+        top_bar.addWidget(self.del_task_btn)
+
+        layout.addLayout(top_bar)
+
+        # 2. Files Table
+        self.stress_table = QtWidgets.QTableWidget()
+        self.stress_table.setColumnCount(2)
+        self.stress_table.setHorizontalHeaderLabels(["📦 升级包路径 (.zip / .bin)", "⚙️ 配置文件路径 (.json)"])
+        self.stress_table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
+        self.stress_table.setSelectionMode(QtWidgets.QAbstractItemView.SingleSelection)
+
+        # Column setup
+        header = self.stress_table.horizontalHeader()
+        header.setSectionResizeMode(0, QtWidgets.QHeaderView.Stretch)
+        header.setSectionResizeMode(1, QtWidgets.QHeaderView.Stretch)
+
+        self.stress_table.verticalHeader().setVisible(True)
+        self.stress_table.verticalHeader().setDefaultSectionSize(55)
+        self.stress_table.setAlternatingRowColors(True)
+        layout.addWidget(self.stress_table)
+
+        # 3. Bottom Controls Panel
+        bottom_panel = QtWidgets.QFrame()
+        bottom_panel.setStyleSheet(".QFrame { background-color: #F9FAFB; border-top: 1px solid #E5E7EB; }")
+        bottom_layout = QtWidgets.QGridLayout(bottom_panel)
+        bottom_layout.setContentsMargins(10, 10, 10, 10)
+        bottom_layout.setHorizontalSpacing(20)
+
+        # Loop Count
+        loop_container = QtWidgets.QHBoxLayout()
+        loop_container.addWidget(QtWidgets.QLabel("🔁 压测循环次数:"))
         self.stress_loop_spin = QtWidgets.QSpinBox()
         self.stress_loop_spin.setRange(1, 1_000_000)
         self.stress_loop_spin.setValue(100)
-        layout.addWidget(self.stress_loop_spin, 2, 1)
+        self.stress_loop_spin.setFixedWidth(120)
+        self.stress_loop_spin.setFixedHeight(35)
+        loop_container.addWidget(self.stress_loop_spin)
+        bottom_layout.addLayout(loop_container, 0, 0)
 
-        # 进度条
-        layout.addWidget(QtWidgets.QLabel("⏳ 本次进度:"), 3, 0)
+        # Progress
+        progress_container = QtWidgets.QHBoxLayout()
+        progress_container.addWidget(QtWidgets.QLabel("⏳ 总体进度:"))
         self.stress_progress = QtWidgets.QProgressBar()
         self.stress_progress.setRange(0, 100)
-        self.stress_progress.setValue(0)
-        self.stress_progress.setTextVisible(True)
-        layout.addWidget(self.stress_progress, 3, 1, 1, 2)
+        self.stress_progress.setFixedHeight(25)
+        progress_container.addWidget(self.stress_progress)
+        bottom_layout.addLayout(progress_container, 0, 1)
 
-        # 压测操作按钮
-        action_row = QtWidgets.QHBoxLayout()
-        action_row.setSpacing(12)
-        action_row.addStretch(1)
+        # Buttons
+        btn_container = QtWidgets.QHBoxLayout()
+        btn_container.addStretch()
         self.stress_start_btn = ModernButton("开始压测", "#0F766E", "🔥")
         self.stress_stop_btn = ModernButton("停止压测", "#DC2626", "⏹️")
+        self.stress_start_btn.setFixedHeight(36)
+        self.stress_stop_btn.setFixedHeight(36)
         self.stress_start_btn.setEnabled(False)
         self.stress_stop_btn.setEnabled(False)
-        action_row.addWidget(self.stress_start_btn)
-        action_row.addWidget(self.stress_stop_btn)
 
-        layout.addLayout(action_row, 4, 0, 1, 3)
+        btn_container.addWidget(self.stress_start_btn)
+        btn_container.addWidget(self.stress_stop_btn)
+
+        bottom_layout.addLayout(btn_container, 1, 0, 1, 2)
+
+        layout.addWidget(bottom_panel)
 
         self.tab.addTab(stress_page, "升级压测")
 
+        # Initialize with one empty row
+        self._add_stress_pkg_row()
+
     # -------------------- 升级压测：多包行管理 --------------------
-    def _add_stress_pkg_row(self):
-        row_widget = QtWidgets.QWidget()
-        row_layout = QtWidgets.QHBoxLayout(row_widget)
-        row_layout.setContentsMargins(0, 0, 0, 0)
-        row_layout.setSpacing(4)
+    def _create_file_selector(self, placeholder, filter_str):
+        """Helper to create a cell widget with QLineEdit + Browse Button"""
+        widget = QtWidgets.QWidget()
+        layout = QtWidgets.QHBoxLayout(widget)
+        layout.setContentsMargins(2, 2, 2, 2)
+        layout.setSpacing(6)
 
         line_edit = QtWidgets.QLineEdit()
-        line_edit.setPlaceholderText("选择升级包 (.zip)")
-        browse_btn = ModernButton("浏览", "#0EA5E9", "📂")
+        line_edit.setPlaceholderText(placeholder)
+        line_edit.setStyleSheet("QLineEdit { border: 1px solid #D1D5DB; border-radius: 3px; padding: 2px; }")
 
-        add_btn = ModernButton("➕", "#22C55E", "")
-        remove_btn = ModernButton("➖", "#EF4444", "")
+        # Optimization: Select row when clicking/focusing the editable line edit
+        orig_focus_in = line_edit.focusInEvent
+        def focus_handler(event):
+            orig_focus_in(event)
+            container = line_edit.parent()
+            for r in range(self.stress_table.rowCount()):
+                if self.stress_table.cellWidget(r, 0) == container or \
+                   self.stress_table.cellWidget(r, 1) == container:
+                    self.stress_table.selectRow(r)
+                    break
+        line_edit.focusInEvent = focus_handler
 
-        # 这里只管理 UI 行；业务逻辑可在 controller 里统一接管
-        add_btn.clicked.connect(self._add_stress_pkg_row)
-        remove_btn.clicked.connect(lambda: self._remove_stress_pkg_row(row_widget))
-        browse_btn.clicked.connect(lambda: self.browse_file_signal.emit(line_edit, "选择升级包 (*.zip)"))
+        browse_btn = ModernButton("📂", "#0EA5E9") # Icon only for compactness
+        browse_btn.setFixedSize(32, 30)
+        browse_btn.setToolTip("浏览文件")
+
+        browse_btn.clicked.connect(lambda: self.browse_file_signal.emit(line_edit, filter_str))
         line_edit.textChanged.connect(lambda: self.stress_pkg_changed.emit())
 
-        row_layout.addWidget(line_edit, 1)
-        row_layout.addWidget(browse_btn)
-        row_layout.addWidget(add_btn)
-        row_layout.addWidget(remove_btn)
+        layout.addWidget(line_edit, 1) # Edit stretches
+        layout.addWidget(browse_btn)
 
-        self.stress_pkg_layout.addWidget(row_widget)
-        self.stress_pkg_rows.append((line_edit, browse_btn))
+        return widget
+
+    def _add_stress_pkg_row(self):
+        row_idx = self.stress_table.rowCount()
+        self.stress_table.insertRow(row_idx)
+
+        # 1. Package Selector
+        pkg_widget = self._create_file_selector("选择升级包...", "选择升级包 (*.zip *.bin)")
+        self.stress_table.setCellWidget(row_idx, 0, pkg_widget)
+
+        # 2. Config Selector
+        cfg_widget = self._create_file_selector("选择配置...", "选择升级配置 (*.json)")
+        self.stress_table.setCellWidget(row_idx, 1, cfg_widget)
 
         # Emit change signal to update start button state
         self.stress_pkg_changed.emit()
 
-    def _remove_stress_pkg_row(self, row_widget: QtWidgets.QWidget):
-        """删除一行压测升级包，至少保留一行。"""
-        if len(self.stress_pkg_rows) <= 1:
+    def _remove_selected_stress_row(self):
+        """删除选中行，至少保留一行（或允许删光由业务决定，这里尽量保留一行空行如果是初始状态）。"""
+        # Get selected rows
+        selected_rows = sorted(set(index.row() for index in self.stress_table.selectedIndexes()), reverse=True)
+
+        # If no selection, remove the last one? Or do nothing?
+        # User expectation might be delete last added if nothing selected
+        if not selected_rows:
+            if self.stress_table.rowCount() > 0:
+                selected_rows = [self.stress_table.rowCount() - 1]
+
+        if not selected_rows:
             return
 
-        self.stress_pkg_layout.removeWidget(row_widget)
-        row_widget.setParent(None)
+        for row in selected_rows:
+            # Prevent removing the last remaining row ?
+            # Or just remove it and if empty, maybe add a new empty one?
+            # Current logic: keep at least 1 row?
+            if self.stress_table.rowCount() <= 1:
+                # If it's the last one, maybe just clear contents?
+                # But simplify: just don't delete if it's the only one
+                return
 
-        # 重建 rows 列表（扫描现有行）
-        self.stress_pkg_rows = []
-        for i in range(self.stress_pkg_layout.count()):
-            item = self.stress_pkg_layout.itemAt(i)
-            w = item.widget()
-            if w is None:
-                continue
-            le = w.findChild(QtWidgets.QLineEdit)
-            btn = w.findChild(ModernButton)
-            if le is not None and btn is not None:
-                self.stress_pkg_rows.append((le, btn))
+            self.stress_table.removeRow(row)
+
+        self.stress_pkg_changed.emit()
+
+    def get_stress_task_list(self):
+        """Retrieve list of tasks from table. Returns list of dicts {'pkg': path, 'cfg': path}."""
+        tasks = []
+        for i in range(self.stress_table.rowCount()):
+            pkg_container = self.stress_table.cellWidget(i, 0)
+            cfg_container = self.stress_table.cellWidget(i, 1)
+
+            p_edit = pkg_container.findChild(QtWidgets.QLineEdit) if pkg_container else None
+            c_edit = cfg_container.findChild(QtWidgets.QLineEdit) if cfg_container else None
+
+            if p_edit and c_edit:
+                tasks.append({
+                    'pkg': p_edit.text().strip(),
+                    'cfg': c_edit.text().strip()
+                })
+        return tasks
+
+    def set_stress_task_list(self, tasks):
+        """Populate table from list of dicts."""
+        self.stress_table.setRowCount(0)
+        for t in tasks:
+            self._add_stress_pkg_row() # Adds an empty row at end
+            last_row = self.stress_table.rowCount() - 1
+
+            pkg_container = self.stress_table.cellWidget(last_row, 0)
+            cfg_container = self.stress_table.cellWidget(last_row, 1)
+
+            p_edit = pkg_container.findChild(QtWidgets.QLineEdit)
+            c_edit = cfg_container.findChild(QtWidgets.QLineEdit)
+
+            if p_edit: p_edit.setText(t.get('pkg', ''))
+            if c_edit: c_edit.setText(t.get('cfg', ''))
+
 
         self.stress_pkg_changed.emit()
 

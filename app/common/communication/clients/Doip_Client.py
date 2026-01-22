@@ -189,6 +189,11 @@ class DoIPClientHandler:
                 # 仍然尝试接收诊断消息（有些 ECUs 可能不发 ACK 但直接返回数据）
             except IOError as e:
                 logger.error(f"send_diagnostic 返回 IO 错误: {e}")
+                self.connected = False
+                try:
+                    self.doip_client.close()
+                except Exception:
+                    pass
                 return None if not return_all else []
 
             # 发送后在 timeout 窗口内循环接收 DiagnosticMessage，以收集多条回复

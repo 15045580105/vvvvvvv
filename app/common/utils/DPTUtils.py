@@ -19,6 +19,7 @@ class DPTFieldDef:
     conversion: Any = None
     bit_fields: Dict[str, Any] = field(default_factory=dict)
     fixed_value: Any = None
+    group: str = ""
 
     # 内部使用
     key: str = "" # JSON key
@@ -33,6 +34,8 @@ class DPTFieldValue:
     parsed_value: str # Parsed/Converted value
     encoding: str = "" # Encoding format
     status: str = "" # Additional status info
+    group: str = ""
+    unit: str = "" # Added unit field
 
 
 @dataclass
@@ -53,9 +56,13 @@ class DPTParseResult:
         """
         rows: List[List[str]] = []
         for f in self.fields:
+            name_display = f.name
+            if f.group:
+                name_display = f"[{f.group}] {f.name}"
+
             rows.append([
                 f.range_str,
-                f.name,
+                name_display,
                 f.raw_hex,
                 f.parsed_value,
             ])
@@ -100,7 +107,8 @@ class DPTParser:
                         encoding=item.get("encoding", "Unsigned"),
                         conversion=item.get("conversion"),
                         bit_fields=item.get("bit_fields", {}),
-                        fixed_value=item.get("fixed_value")
+                        fixed_value=item.get("fixed_value"),
+                        group=item.get("group", "")
                     )
                 )
         else:
@@ -118,7 +126,8 @@ class DPTParser:
                         encoding=item.get("encoding", "Unsigned"),
                         conversion=item.get("conversion"),
                         bit_fields=item.get("bit_fields", {}),
-                        fixed_value=item.get("fixed_value")
+                        fixed_value=item.get("fixed_value"),
+                        group=item.get("group", "")
                     )
                 )
         return cls(fields)
@@ -163,6 +172,7 @@ class DPTParser:
 
         # Parsed Value (Status/Unit Column)
         parsed_val = ""
+        unit = ""
 
         # Normalize Encoding
         enc = str(fdef.encoding).strip().upper() if fdef.encoding else "UNSIGNED"
@@ -203,6 +213,11 @@ class DPTParser:
                             parsed_val = str(int(phy_val))
                         else:
                             parsed_val = f"{phy_val:.6f}".rstrip('0').rstrip('.')
+
+                        # Handle unit if present in config
+                        if "unit" in conv:
+                            unit = conv["unit"]
+                            parsed_val += f" {unit}"
                     else:
                         # Enum / Map
                         # Try exact match for stringified integer
@@ -228,6 +243,7 @@ class DPTParser:
                 elif isinstance(conv, str):
                     # Simple String = Unit
                     if conv.upper() != "NONE":
+                        unit = conv
                         # If long field and just a unit string, displaying huge int + unit is weird.
                         # Maybe still show Hex? Or trust the user wanted a unit.
                         # Usually long fields with units are rare.
@@ -262,7 +278,9 @@ class DPTParser:
             range_str=range_str,
             raw_hex=raw_hex,
             parsed_value=parsed_val,
-            encoding=fdef.encoding or "Unsigned"
+            encoding=fdef.encoding or "Unsigned",
+            group=fdef.group,
+            unit=unit
         ))
 
     def _parse_bit_fields(self, fdef: DPTFieldDef, chunk: bytes, result: DPTParseResult):
@@ -290,6 +308,7 @@ class DPTParser:
             range_str = f"{current_byte_offset}/{bit_idx}"
             raw_hex = str(bit_val)
             parsed_val = str(bit_val)
+            unit = ""
 
             conversion = bit_def.get("conversion")
             if conversion:
@@ -303,6 +322,10 @@ class DPTParser:
                             parsed_val = str(int(phy_val))
                         else:
                             parsed_val = f"{phy_val:.6f}".rstrip('0').rstrip('.')
+
+                        if "unit" in conversion:
+                            unit = conversion["unit"]
+                            parsed_val += f" {unit}"
                     else:
                         # Enum - strict mapping
                         val_str = str(bit_val)
@@ -319,6 +342,7 @@ class DPTParser:
                 elif isinstance(conversion, str):
                     # Unit string - only append if not empty
                     if conversion.strip().upper() != "NONE":
+                        unit = conversion
                         parsed_val = f"{bit_val} {conversion}"
 
             description = bit_def.get("description", "")
@@ -328,7 +352,9 @@ class DPTParser:
                 range_str=range_str,
                 raw_hex=raw_hex,
                 parsed_value=parsed_val,
-                encoding="Bit"
+                encoding="Bit",
+                group=fdef.group,
+                unit=unit
             ))
 
 

@@ -201,23 +201,76 @@ class ValueCellWidget(QtWidgets.QWidget):
     def text(self) -> str:
         return self.line_edit.text()
 
-    def set_placeholder(self, text: str) -> None:
-        self.line_edit.setPlaceholderText(text or "Value")
 
-    def set_text_color(self, color: Optional[QtGui.QColor]) -> None:
-        palette = self.line_edit.palette()
-        target = color or self.style().standardPalette().color(QtGui.QPalette.Text)
-        palette.setColor(QtGui.QPalette.Text, target)
-        self.line_edit.setPalette(palette)
+class CheckBoxHeader(QtWidgets.QHeaderView):
+    checkBoxClicked = QtCore.pyqtSignal(int, bool)
 
-    def focus_editor(self, select_all: bool = False) -> None:
-        self.line_edit.setFocus(Qt.TabFocusReason)
-        if select_all:
-            self.line_edit.selectAll()
+    def __init__(self, orientation, parent=None):
+        super().__init__(orientation, parent)
+        self.checkBoxStates = {0: False, 4: False}
 
-    def detail_button(self) -> QtWidgets.QPushButton:
-        """Return the embedded detail button for popup anchoring."""
-        return self.button
+    def paintSection(self, painter, rect, logicalIndex):
+        painter.save()
+        super().paintSection(painter, rect, logicalIndex)
+        painter.restore()
+
+        if logicalIndex in self.checkBoxStates:
+            style = self.style()
+            option = QtWidgets.QStyleOptionViewItem()
+            option.initFrom(self)
+
+            # 获取适应 DPI 的尺寸
+            chk_width = style.pixelMetric(QtWidgets.QStyle.PM_IndicatorWidth, option, self)
+            chk_height = style.pixelMetric(QtWidgets.QStyle.PM_IndicatorHeight, option, self)
+
+            # Col 0: Center. Col 4: Left (with padding)
+            if logicalIndex == 0:
+                x = rect.x() + (rect.width() - chk_width) // 2
+            else:                x = rect.x() + 7 # Align with cell padding (6px) + margin
+
+            y = rect.y() + (rect.height() - chk_height) // 2
+
+            option.rect = QtCore.QRect(x, y, chk_width, chk_height)
+            option.state = QtWidgets.QStyle.State_Enabled | QtWidgets.QStyle.State_Active
+            if self.checkBoxStates[logicalIndex]:
+                option.state |= QtWidgets.QStyle.State_On
+                option.checkState = Qt.Checked
+            else:
+                option.state |= QtWidgets.QStyle.State_Off
+                option.checkState = Qt.Unchecked
+
+            style.drawPrimitive(QtWidgets.QStyle.PE_IndicatorItemViewItemCheck, option, painter, self)
+
+    def mousePressEvent(self, event):
+        if event.button() == QtCore.Qt.LeftButton:
+            logicalIndex = self.logicalIndexAt(event.pos())
+            if logicalIndex in self.checkBoxStates:
+                headerPos = self.sectionViewportPosition(logicalIndex)
+                sec_width = self.sectionSize(logicalIndex)
+
+                style = self.style()
+                option = QtWidgets.QStyleOptionViewItem()
+                option.initFrom(self)
+
+                chk_width = style.pixelMetric(QtWidgets.QStyle.PM_IndicatorWidth, option, self)
+                chk_height = style.pixelMetric(QtWidgets.QStyle.PM_IndicatorHeight, option, self)
+
+                if logicalIndex == 0:
+                    x = headerPos + (sec_width - chk_width) // 2
+                else:
+                    x = headerPos + 7
+
+                y = (self.height() - chk_height) // 2
+
+                # 增加一点点击区域容错
+                checkRect = QtCore.QRect(x - 2, y - 2, chk_width + 4, chk_height + 4)
+
+                if checkRect.contains(event.pos()):
+                    self.checkBoxStates[logicalIndex] = not self.checkBoxStates[logicalIndex]
+                    self.viewport().update()
+                    self.checkBoxClicked.emit(logicalIndex, self.checkBoxStates[logicalIndex])
+                    return
+        super().mousePressEvent(event)
 
 
 class DIDView(BaseView):
@@ -310,7 +363,8 @@ class DIDView(BaseView):
                 pass
         except Exception:
             pass
-        header = self.table.horizontalHeader()
+        header = CheckBoxHeader(Qt.Horizontal, self.table)
+        self.table.setHorizontalHeader(header)
         # 允许用户交互调整列宽
         header.setSectionResizeMode(QtWidgets.QHeaderView.Interactive)
         header.setSectionsClickable(True)

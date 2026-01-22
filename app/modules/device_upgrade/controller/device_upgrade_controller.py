@@ -410,27 +410,21 @@ class UpgradeController(BaseController):
                 self.view.config_file.setText(normal_cfg)
 
             # Stress Tab
-            stress_cfg = self.settings.value("stress_config_file", "")
             stress_loop = self.settings.value("stress_loop_count", 100)
-            if stress_cfg and os.path.exists(stress_cfg):
-                self.view.stress_config_file.setText(stress_cfg)
-
             try:
                 self.view.stress_loop_spin.setValue(int(stress_loop))
             except:
                 pass
 
-            # Restore Stress Package List
-            # Provide as a JSON list string
-            stress_pkgs_json = self.settings.value("stress_pkg_list_json", "[]")
-            if stress_pkgs_json:
+            # Restore Stress Tasks
+            stress_tasks_json = self.settings.value("stress_tasks_json", "[]")
+            if stress_tasks_json:
                 try:
-                    paths = json.loads(stress_pkgs_json)
-                    valid_paths = [p for p in paths if p and os.path.exists(p)]
-                    if valid_paths:
-                        self.view.set_stress_pkg_paths(valid_paths)
+                    tasks = json.loads(stress_tasks_json)
+                    if tasks:
+                        self.view.set_stress_task_list(tasks)
                 except Exception as e:
-                    self._log(f"Error loading stress packages: {e}", is_info=True)
+                    self._log(f"Error loading stress tasks: {e}", is_info=True)
 
         except Exception as e:
             self._log(f"Failed to load settings: {e}", is_info=True)
@@ -439,15 +433,11 @@ class UpgradeController(BaseController):
         """Persist current paths to QSettings"""
         self.settings.setValue("normal_upgrade_file", self.view.upgrade_file.text())
         self.settings.setValue("normal_config_file", self.view.config_file.text())
-        self.settings.setValue("stress_config_file", self.view.stress_config_file.text())
         self.settings.setValue("stress_loop_count", self.view.stress_loop_spin.value())
 
-        # Serialize stress package list
-        paths = []
-        for row in self.view.stress_pkg_rows:
-            txt = row[0].text().strip()
-            if txt: paths.append(txt)
-        self.settings.setValue("stress_pkg_list_json", json.dumps(paths))
+        # Serialize stress task list
+        tasks = self.view.get_stress_task_list()
+        self.settings.setValue("stress_tasks_json", json.dumps(tasks))
 
     def _auto_load_defaults(self):
         """Try to automatically find and set upgrade files from the update directory (recursive)."""
@@ -477,13 +467,26 @@ class UpgradeController(BaseController):
             if pkg_candidates:
                 pkg_path = pkg_candidates[0]
                 self.view.upgrade_file.setText(pkg_path)
-                if self.view.stress_pkg_rows:
-                     self.view.stress_pkg_rows[0][0].setText(pkg_path)
+                # Ensure at least one row for stress
+                tasks = self.view.get_stress_task_list()
+                if not tasks:
+                     # View initializes with one row, so this should usually have one empty or partial
+                     # But we can force set
+                     pass
 
-            if cfg_candidates:
-                cfg_path = cfg_candidates[0]
-                self.view.config_file.setText(cfg_path)
-                self.view.stress_config_file.setText(cfg_path)
+                # Update first row
+                if tasks:
+                     tasks[0]['pkg'] = pkg_path
+                else:
+                     tasks.append({'pkg': pkg_path, 'cfg': ''})
+
+                if cfg_candidates:
+                    cfg_path = cfg_candidates[0]
+                    self.view.config_file.setText(cfg_path)
+                    if tasks:
+                        tasks[0]['cfg'] = cfg_path
+
+                self.view.set_stress_task_list(tasks)
 
         except Exception as e:
             self._log(f"Error auto-loading defaults: {e}", is_info=True)
@@ -497,7 +500,6 @@ class UpgradeController(BaseController):
         self.view.upgrade_file.textChanged.connect(self._save_settings)
 
         self.view.config_file.textChanged.connect(self._save_settings)
-        self.view.stress_config_file.textChanged.connect(self._save_settings)
         self.view.stress_loop_spin.valueChanged.connect(self._save_settings)
 
         self.view.stress_pkg_changed.connect(self._check_stress_ready)
@@ -544,11 +546,11 @@ class UpgradeController(BaseController):
         self.view.start_btn.setEnabled(has_file)
 
     def _check_stress_ready(self):
-        # Start enabled if at least one file set
-        # We primarily check the first one or iterate all
-        # Simplified: check first one
-        first_row_edit = self.view.stress_pkg_rows[0][0]
-        has_file = bool(first_row_edit.text().strip())
+        # Start enabled if at least one task is configured
+        tasks = self.view.get_stress_task_list()
+        has_file = False
+        if tasks:
+            has_file = bool(tasks[0]['pkg'].strip())
         self.view.stress_start_btn.setEnabled(has_file)
 
     def _start_normal_upgrade(self):
@@ -592,11 +594,9 @@ class UpgradeController(BaseController):
         self.thread.start()
 
     def _prepare_upgrade(self):
-        """Common preparation for both normal and stress upgrade."""
+        """Preparation for normal upgrade."""
         # Load config to generate steps
         config_path = self.view.config_file.text()
-        if self.is_stress_mode:
-            config_path = self.view.stress_config_file.text()
 
         if not config_path or not os.path.exists(config_path):
             self._log("错误: 未找到配置文件", is_info=True)
@@ -625,8 +625,6 @@ class UpgradeController(BaseController):
 
         # Resolve relative to config file directory
         config_path = self.view.config_file.text()
-        if self.is_stress_mode:
-            config_path = self.view.stress_config_file.text()
 
         # If absolute, verify. If not exists, try relative to config dir.
         if os.path.isabs(fname) and os.path.exists(fname):
@@ -704,8 +702,6 @@ class UpgradeController(BaseController):
         self.is_stress_mode = True
         self._log(f"Start Stress Upgrade Loop", is_info=True)
 
-        if not self._prepare_upgrade(): return
-
         # Check DoIP
         device_service: DeviceService = di_container.resolve(DeviceService)
         doip_handler = device_service.get_doip_client()
@@ -713,15 +709,31 @@ class UpgradeController(BaseController):
              self._log("错误: DoIP未连接", is_info=True)
              return
 
-        # Collect Package List
-        self.stress_pkg_list = []
-        for row in self.view.stress_pkg_rows:
-            p = row[0].text().strip()
-            if p and os.path.exists(p):
-                self.stress_pkg_list.append(p)
+        # Collect Task List (Pkg + Config)
+        self.stress_task_list = []
+        has_errors = False
 
-        if not self.stress_pkg_list:
-             self._log("错误: 未指定有效的升级包", is_info=True)
+        ui_tasks = self.view.get_stress_task_list()
+
+        for idx, task in enumerate(ui_tasks):
+            # task: {'pkg': ..., 'cfg': ...}
+            pkg_path = task['pkg'].strip()
+            cfg_path = task['cfg'].strip()
+
+            if not pkg_path or not os.path.exists(pkg_path):
+                self._log(f"错误: 第 {idx+1} 行未指定有效的升级包", is_info=True)
+                has_errors = True
+
+            if not cfg_path or not os.path.exists(cfg_path):
+                self._log(f"错误: 第 {idx+1} 行未指定有效的配置文件", is_info=True)
+                has_errors = True
+
+            if not has_errors:
+                self.stress_task_list.append({'pkg': pkg_path, 'cfg': cfg_path})
+
+        if has_errors or not self.stress_task_list:
+             self._log("错误: 升级任务配置有误，无法开始", is_info=True)
+             self.is_stress_mode = False
              return
 
         # Initialize Stress Context
@@ -730,11 +742,11 @@ class UpgradeController(BaseController):
         self.stress_pkg_index = 0
 
         # Calculate Total Size
-        total_size_per_loop = sum(os.path.getsize(p) for p in self.stress_pkg_list)
+        total_size_per_loop = sum(os.path.getsize(t['pkg']) for t in self.stress_task_list)
         self.stress_total_bytes = total_size_per_loop * self.stress_target_loop
         self.stress_completed_bytes = 0 # Approximate
 
-        self._log(f"压测任务: {len(self.stress_pkg_list)} 个文件, {self.stress_target_loop} 轮循环, 总大小: {self.stress_total_bytes/1024/1024:.2f} MB", is_info=True)
+        self._log(f"压测任务: {len(self.stress_task_list)} 个任务组合, {self.stress_target_loop} 轮循环, 总大小: {self.stress_total_bytes/1024/1024:.2f} MB", is_info=True)
 
         self.view.stress_start_btn.setEnabled(False)
         self.view.stress_stop_btn.setEnabled(True)
@@ -747,8 +759,8 @@ class UpgradeController(BaseController):
         """Execute next package in the list, or loop."""
         if not self.is_stress_mode: return
 
-        # Check if we finished all packages in current loop
-        if self.stress_pkg_index >= len(self.stress_pkg_list):
+        # Check if we finished all tasks in current loop
+        if self.stress_pkg_index >= len(self.stress_task_list):
             self.stress_current_loop += 1
             self.stress_pkg_index = 0
             self._log(f"=== 完成第 {self.stress_current_loop} 轮循环 ===", is_info=True)
@@ -761,11 +773,16 @@ class UpgradeController(BaseController):
              self.is_stress_mode = False
              return
 
-        # Prepare Next Package
-        current_pkg_path = self.stress_pkg_list[self.stress_pkg_index]
-        self._log(f"正在执行: Loop {self.stress_current_loop + 1}/{self.stress_target_loop} - File {self.stress_pkg_index + 1}/{len(self.stress_pkg_list)}: {os.path.basename(current_pkg_path)}", is_info=True)
+        # Prepare Next Task
+        current_task = self.stress_task_list[self.stress_pkg_index]
+        pkg_path = current_task['pkg']
+        cfg_path = current_task['cfg']
 
-        # Advance index for next time (or do it after finish? do it here so next call knows)
+        self._log(f"正在执行: Loop {self.stress_current_loop + 1}/{self.stress_target_loop} - Task {self.stress_pkg_index + 1}/{len(self.stress_task_list)}", is_info=True)
+        self._log(f"  Pkg: {os.path.basename(pkg_path)}", is_info=True)
+        self._log(f"  Cfg: {os.path.basename(cfg_path)}", is_info=True)
+
+        # Advance index for next time
         self.stress_pkg_index += 1
 
         # Check DoIP again (in case dropped)
@@ -773,17 +790,25 @@ class UpgradeController(BaseController):
         doip_handler = device_service.get_doip_client()
         if not doip_handler or not doip_handler.connected:
              # Try reconnect? Rely on Service auto-reconnect or fail?
-             # User asked for auto-reconnect in DeviceService, so we assume it works or we fail.
              if not doip_handler or not doip_handler.connected:
                  self._log("错误: DoIP断开，停止压测", is_info=True)
                  self._stop_stress_upgrade()
                  return
 
+        # Load config for this step
+        try:
+            with open(cfg_path, 'r', encoding='utf-8') as f:
+                self.upgrade_config = json.load(f)
+        except Exception as e:
+            self._log(f"加载任务配置失败: {e}", is_info=True)
+            self._stop_stress_upgrade()
+            return
+
         # Start Worker
         if self.thread and self.thread.isRunning():
             self.thread.wait() # Ensure clean
 
-        self.thread = UpgradeWorker(self.upgrade_config, current_pkg_path, doip_handler)
+        self.thread = UpgradeWorker(self.upgrade_config, pkg_path, doip_handler)
         self.thread.log_signal.connect(self._log)
         self.thread.progress_signal.connect(self._on_worker_progress)
         self.thread.finished_signal.connect(self._on_worker_finished)

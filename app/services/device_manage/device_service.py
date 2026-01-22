@@ -383,21 +383,26 @@ class DeviceService(QObject):
                 prefer_last=prefer_last,
             )
 
-            # 2. 如果发送失败且发现连接已断开（send_doip_message 内部捕获异常后会置 disconnected），
-            #    则尝试重连并重发一次
-            if resp is None and not client.connected and self._last_connected_device:
-                self.log_signal.emit("发送过程中发现连接断开，尝试自动重连并重发...")
-                self._connect_doip(self._last_connected_device)
-                client = self.get_doip_client()
+            # 2. 如果发送失败，检查连接状态
+            # 用户需求：发送时检查一下链接状态，确认已经断联后要尝试重新链接doipclient
+            if resp is None:
+                if not client.connected and self._last_connected_device:
+                    self.log_signal.emit("发送失败且发现连接已断开，尝试自动重连并重发...")
+                    self._connect_doip(self._last_connected_device)
+                    client = self.get_doip_client()
 
-                if client and client.connected:
-                    resp = client.send_doip_message(
-                        payload,
-                        timeout=timeout,
-                        response_index=response_index,
-                        target_did=target_did,
-                        prefer_last=prefer_last,
-                    )
+                    if client and client.connected:
+                        self.log_signal.emit("重连成功，正在重发报文...")
+                        resp = client.send_doip_message(
+                            payload,
+                            timeout=timeout,
+                            response_index=response_index,
+                            target_did=target_did,
+                            prefer_last=prefer_last,
+                        )
+                    else:
+                        self.log_signal.emit("重连失败，维持断开状态")
+                # else: 发送失败但状态显示仍连接(如超时)，维持现状，返回 None
 
             return resp
 

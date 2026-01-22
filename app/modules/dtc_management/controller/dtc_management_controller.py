@@ -273,6 +273,10 @@ class DTCController(BaseController):
         self.view.append_log(f"开始读取冻结帧: {dtc_code}")
         self.view.update_freeze_read_status(row_index, False) # Set to reading/failed initially? Or just keep as is.
 
+        # Clear previous freeze frames to show only latest
+        self.model.freeze_frames = []
+        self.model.dataChanged.emit()
+
         device_service = di_container.resolve(DeviceService)
         if not device_service:
              self.view.append_log("DeviceService not found")
@@ -482,79 +486,113 @@ class DTCController(BaseController):
         if resp[0] != 0x59 or resp[1] != 0x04:
             return False
 
-        # We can try to parse multiple records if present, but usually we ask for FF (all) or specific.
-        # If we asked for FF, we might get multiple.
+        # Extract info
+        # dtc_bytes = resp[2:5]
+        status = resp[5] # Status of DTC
 
-        # Let's just take the payload and display it as one "Raw Data" item if we can't parse structure.
-        # Or try to parse one DID.
+        offset = 6
+        success = False
 
-        # Offset 2: DTC (3 bytes)
-        # Offset 5: Status (1 byte)
-        # Offset 6: Record Number (1 byte) (If present? Standard says yes)
-        # Offset 7: Number of Identifiers (1 byte)
-        # Offset 8: DID (2 bytes)
-        # Offset 10: Data...
+        # Determine Fault Type from Status? Or just uses Status byte.
+        # User screenshot shows "Type A" in Type column.
+        # Usually UDS doesn't provide "Type A" explicitly in 19 04.
+        # Maybe it comes from parsed DTC info or just hardcoded for valid snapshot?
+        # Let's show Status Hex for now or mapping if we had one.
+        type_str = f"Status 0x{status:02X}"
 
-        # Check if response matches requested DTC
-        resp_dtc = self._bytes_to_dtc_code(resp[2:5])
-        # Note: resp_dtc might match dtc_code.
+        # Loop over records
+        while offset < len(resp):
+            if offset + 2 > len(resp):
+                break
 
-        # Let's assume one record for now.
-        try:
-            num_ids = resp[7]
-            current_idx = 8
+            rec_num = resp[offset]
+            num_ids = resp[offset+1]
+            offset += 2
 
-            params = []
-
-            for i in range(num_ids):
-                if current_idx + 2 > len(resp):
+            # For each DID in this record
+            for _ in range(num_ids):
+                if offset + 2 > len(resp):
                     break
-                did = (resp[current_idx] << 8) | resp[current_idx+1]
-                current_idx += 2
 
-                # We don't know length of data for this DID.
-                # This is the problem.
-                # Unless we assume the rest is data for this DID (if num_ids=1).
-                if num_ids == 1:
-                    data_bytes = resp[current_idx:]
-                    val_str = " ".join([f"{b:02X}" for b in data_bytes])
-                    params.append({
-                        "byte": "All", "bit": "All",
-                        "name": "Raw Data",
-                        "value": val_str,
-                        "unit": "Hex"
-                    })
-                    break
+                did_val = (resp[offset] << 8) | resp[offset+1]
+                offset += 2
+                did_hex = f"{did_val:04X}"
+
+                did_len = 0
+                params = []
+
+                # Check DPT
+                parser = None
+                if self._dpt_service:
+                    parser = self._dpt_service.get_parser(did_hex)
+
+                if parser:
+                    # Calculate expected length
+                    if parser._fields:
+                        did_len = max(f.byte_offset + f.byte_length for f in parser._fields)
+
+                    if offset + did_len > len(resp):
+                         self.view.append_log(f"Truncated data for DID {did_hex}")
+                         break
+
+                    chunk = resp[offset : offset + did_len]
+                    offset += did_len
+
+                    # Parse
+                    result = parser.parse_bytes(chunk)
+
+                    for f in result.fields:
+                         # Split range
+                         byte_str = "All"
+                         bit_str = "All"
+                         if "/" in f.range_str:
+                             parts = f.range_str.split("/")
+                             byte_str = parts[0]
+                             if len(parts) > 1:
+                                 bit_str = parts[1]
+
+                         # Separate Value/Unit
+                         val_txt = f.parsed_value
+                         unit_txt = f.unit
+
+                         if unit_txt and val_txt.endswith(" " + unit_txt):
+                             val_txt = val_txt[:-len(unit_txt)-1]
+                         elif unit_txt and val_txt.endswith("(" + unit_txt + ")"):
+                              val_txt = val_txt[:-len(unit_txt)-2].strip()
+
+                         params.append({
+                             "byte": byte_str,
+                             "bit": bit_str,
+                             "name": f.name if not f.group else f"[{f.group}] {f.name}",
+                             "value": val_txt,
+                             "unit": unit_txt
+                         })
                 else:
-                    # Can't parse multiple without length info.
+                    # Unknown DID - Strategy: Stop parsing record?
+                    # If we don't know length, we can't continue to next DID.
+                    # We consume rest of buffer if it looks like end?
+                    # Or just fail this record.
+                    self.view.append_log(f"Unknown DID found in freeze frame: {did_hex}. Cannot proceed parsing stream.")
                     params.append({
                         "byte": "?", "bit": "?",
-                        "name": f"DID 0x{did:04X}",
-                        "value": "Unknown Length",
-                        "unit": "?"
+                        "name": f"DID 0x{did_hex} (Unknown)",
+                        "value": "Structure Unknown",
+                        "unit": ""
                     })
-                    break # Stop
+                    # Force break outer loop as we are desynchronized
+                    offset = len(resp)
+                    break
 
-            # Create record
-            record = {
-                "code": dtc_code,
-                "desc": dtc_desc,
-                "type": "Snapshot",
-                "did": f"0x{resp[6]:02X}", # Using Record Number as DID field for display? Or the DID we found?
-                # The table expects "DID". In freeze frame context, usually we have DID (Data Identifier).
-                # But here we have Record Number.
-                # Let's use Record Number as DID column or just "Rec " + num.
-                "length": len(resp) - 6,
-                "params": params
-            }
+                # Add Entry per DID
+                self.model.freeze_frames.append({
+                    "code": dtc_code,
+                    "desc": dtc_desc,
+                    "type": type_str,
+                    "did": f"0x{did_hex}",
+                    "length": did_len,
+                    "params": params
+                })
+                success = True
 
-            # Append to model
-            self.model.freeze_frames.append(record)
-            self.model.dataChanged.emit()
-            return True
-
-        except Exception as e:
-            self.view.append_log(f"Parse error: {e}")
-            return False
-
-
+        self.model.dataChanged.emit()
+        return success
