@@ -17,13 +17,17 @@ class UpgradeView(BaseView):
         main_layout.setSpacing(12)
         main_layout.setContentsMargins(12, 12, 12, 12)
 
+        # Create a splitter for vertical resizing
+        splitter = QtWidgets.QSplitter(Qt.Vertical)
+        main_layout.addWidget(splitter)
+
         # --- Tab widget 包含：常规升级 / 升级压测 ---
         self.tab = QtWidgets.QTabWidget()
         self._init_normal_upgrade_tab()
         self._init_stress_tab()
-        main_layout.addWidget(self.tab)
+        splitter.addWidget(self.tab)
 
-        # --- Log panel 保持不变 ---
+        # --- Log panel ---
         log_group = QtWidgets.QGroupBox("升级日志")
         log_layout = QtWidgets.QVBoxLayout()
 
@@ -36,11 +40,17 @@ class UpgradeView(BaseView):
         self.upgrade_log = QtWidgets.QTextEdit()
         self.upgrade_log.setReadOnly(True)
         self.upgrade_log.setFont(QtGui.QFont("Consolas", 9))
-        self.upgrade_log.setMinimumHeight(180)
+        self.upgrade_log.setMinimumHeight(100) # Reduced min height for splitter
         log_layout.addWidget(self.upgrade_log)
 
         log_group.setLayout(log_layout)
-        main_layout.addWidget(log_group, 1)
+        splitter.addWidget(log_group)
+
+        # Set initial sizes (Tab 1/3, Log 2/3)
+        splitter.setStretchFactor(0, 1) # Tab
+        splitter.setStretchFactor(1, 2) # Log
+        splitter.setCollapsible(1, False)
+        splitter.setSizes([300, 600])
 
     # -------------------- 常规升级 Tab --------------------
     def _init_normal_upgrade_tab(self):

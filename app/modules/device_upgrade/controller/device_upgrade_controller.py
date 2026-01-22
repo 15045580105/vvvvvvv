@@ -13,6 +13,7 @@ from app.modules.device_upgrade.view.device_upgrade_view import UpgradeView
 from app.core.dependency_injection import di_container
 from app.services.device_manage.device_service import DeviceService
 from app.common.utils.security_access_helper import SecurityAccessHelper
+from app.common.utils.path_utils import get_app_data_path
 
 
 class UpgradeWorker(QThread):
@@ -387,8 +388,6 @@ class UpgradeController(BaseController):
         self.is_stress_mode = False
         self.thread = None
 
-        self.settings = QSettings("VCC_Team", "VCC_DeviceUpgrade")
-
         self._setup_connections()
 
         # Load persisted settings
@@ -398,31 +397,45 @@ class UpgradeController(BaseController):
         if not self.view.upgrade_file.text().strip():
              QTimer.singleShot(100, self._auto_load_defaults)
 
+    def _get_config_file_path(self):
+        root = os.path.join(get_app_data_path(), "DeviceUpgrade")
+        if not os.path.exists(root):
+            try:
+                os.makedirs(root, exist_ok=True)
+            except:
+                pass
+        return os.path.join(root, "upgrade_config.json")
+
     def _load_settings(self):
-        """Restore previous session paths from QSettings"""
+        """Restore previous session paths from JSON config file"""
         try:
+            config_file = self._get_config_file_path()
+            if not os.path.exists(config_file):
+                return
+
+            with open(config_file, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+
             # Normal Tab
-            normal_pkg = self.settings.value("normal_upgrade_file", "")
-            normal_cfg = self.settings.value("normal_config_file", "")
+            normal_pkg = data.get("normal_upgrade_file", "")
+            normal_cfg = data.get("normal_config_file", "")
             if normal_pkg and os.path.exists(normal_pkg):
                 self.view.upgrade_file.setText(normal_pkg)
             if normal_cfg and os.path.exists(normal_cfg):
                 self.view.config_file.setText(normal_cfg)
 
             # Stress Tab
-            stress_loop = self.settings.value("stress_loop_count", 100)
+            stress_loop = data.get("stress_loop_count", 100)
             try:
                 self.view.stress_loop_spin.setValue(int(stress_loop))
             except:
                 pass
 
             # Restore Stress Tasks
-            stress_tasks_json = self.settings.value("stress_tasks_json", "[]")
-            if stress_tasks_json:
+            stress_tasks = data.get("stress_tasks", [])
+            if stress_tasks:
                 try:
-                    tasks = json.loads(stress_tasks_json)
-                    if tasks:
-                        self.view.set_stress_task_list(tasks)
+                    self.view.set_stress_task_list(stress_tasks)
                 except Exception as e:
                     self._log(f"Error loading stress tasks: {e}", is_info=True)
 
@@ -430,14 +443,21 @@ class UpgradeController(BaseController):
             self._log(f"Failed to load settings: {e}", is_info=True)
 
     def _save_settings(self):
-        """Persist current paths to QSettings"""
-        self.settings.setValue("normal_upgrade_file", self.view.upgrade_file.text())
-        self.settings.setValue("normal_config_file", self.view.config_file.text())
-        self.settings.setValue("stress_loop_count", self.view.stress_loop_spin.value())
+        """Persist current paths to JSON config file"""
+        try:
+            data = {
+                "normal_upgrade_file": self.view.upgrade_file.text(),
+                "normal_config_file": self.view.config_file.text(),
+                "stress_loop_count": self.view.stress_loop_spin.value(),
+                "stress_tasks": self.view.get_stress_task_list()
+            }
 
-        # Serialize stress task list
-        tasks = self.view.get_stress_task_list()
-        self.settings.setValue("stress_tasks_json", json.dumps(tasks))
+            config_file = self._get_config_file_path()
+            with open(config_file, 'w', encoding='utf-8') as f:
+                json.dump(data, f, indent=4, ensure_ascii=False)
+
+        except Exception as e:
+            self._log(f"Failed to save settings: {e}", is_info=True)
 
     def _auto_load_defaults(self):
         """Try to automatically find and set upgrade files from the update directory (recursive)."""
