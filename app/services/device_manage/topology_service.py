@@ -387,17 +387,36 @@ class TopologyService:
         return "Unknown"
 
     # --- SomeIP Helpers ---
-    def _someip_request_sync(self, service, method, payload=b'', timeout=2.0) -> Optional[Any]:
+    def _someip_request_sync(self, service: int, method: int, payload: bytes = b'', timeout: float = 2.0, target_port: int = 30500) -> Optional[bytes]:
         client = self._device_service.get_someip_client()
         if not client:
             return None
 
+        # 1. 获取目标IP
+        target_ip = self._device_service.get_current_device_ip()
+        if not target_ip:
+            # 未知IP时尝试使用默认值
+            target_ip = "10.1.0.79"
+
+        # 记录详细的发送参数
+        if hasattr(self, '_log_callback') and self._log_callback:
+            self._log_callback(f"[Debug] Sending SOME/IP to {target_ip}:{target_port}")
+
         result = None
         event = threading.Event()
 
+        # 2. 定义回调
         def cb(pkt):
             nonlocal result
-            result = pkt
+            try:
+                # 尝试提取 load
+                if hasattr(pkt, 'payload') and hasattr(pkt.payload, 'load'):
+                     result = pkt.payload.load
+                else:
+                     # 兜底转换
+                     result = bytes(pkt.payload)
+            except:
+                result = b''
             event.set()
 
         # 注册回调
@@ -412,16 +431,60 @@ class TopologyService:
             # 我们没有 device IP 在这里。
             # 这是一个问题。SomeIP 需要目标 IP。
             # 暂时使用 '127.0.0.1' 模拟或者需要 device_info 中的 IP
-            target_ip = "127.0.0.1" # Placeholder
-            client.send_request(service, method, payload, target_ip=target_ip)
+            # 发送请求
+            client.send_request(service, method, payload, target_ip=target_ip, target_port=target_port)
             event.wait(timeout)
         finally:
-            # 清理回调 (SomeIPClient 暂无 unregister，可能会累积)
-            pass
+            # 清理回调
+            client.unregister_callback(service, method)
 
         return result
 
     def _get_user_mode(self, log_callback: Optional[Callable[[str], None]] = None) -> str:
+        # 保存 callback 引用，以便 _someip_request_sync 可以使用它来打印调试信息
+        self._log_callback = log_callback
+
+        if log_callback: log_callback("-->读取用户模式<--")
+        try:
+            client = self._device_service.get_someip_client()
+        except Exception:
+            client = None
+        if not client:
+            if log_callback: log_callback("SomeIP Client 未就绪或未注入")
+            return "SomeIP Client未就绪"
+
+        # 约定端口
+        target_port = 30500
+
+        if log_callback:
+            log_callback(f"发送 SOME/IP 请求: Service=0x1055 Method=0x9000 Port={target_port}")
+
+        try:
+            resp = self._someip_request_sync(0x1055, 0x9000, timeout=3.0, target_port=target_port)
+        except Exception as e:
+            if log_callback: log_callback(f"请求出错: {e}")
+            return "读取失败"
+
+        if resp is None:
+            if log_callback: log_callback(f"未收到 SOME/IP 响应 (超时) - 请检查 {target_port} 端口防火墙")
+            return "未收到UserMode响应"
+
+        # 收到响应—日志风格
+        try:
+            if log_callback: log_callback(f"收到 SOME/IP 响应: {resp.hex().upper()}")
+        except:
+            pass
+        # 简单解析：优先 UTF-8，再单字节映射，否则返回 hex
+        parsed = None
+        try:
+            parsed_text = resp.decode('utf-8').strip()
+            if parsed_text:
+                parsed = parsed_text
+        except Exception:
+            pass
+
+        if log_callback: log_callback(f"用户模式解析结果: {parsed}")
+        return parsed
         # Service 0x1055, Event 0x9001.
         # 这是一个 Event，通常需要 Subscribe。
         # 这里简化为尝试等待 Event，如果 client 已经 subscribe 了。

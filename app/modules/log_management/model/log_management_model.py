@@ -1,4 +1,3 @@
-import random
 from dataclasses import dataclass
 from typing import List, Dict, Any
 
@@ -27,91 +26,117 @@ class LogDownloadModel(BaseModel):
     - create_time: 创建时间
     - modified_time: 修改时间
     - progress: 下载进度（0-100）
-    - status: 状态（等待/下载中/已完成/失败）
+    - status: 状态（未下载/下载中/已下载/下载失败/已取消）
     """
+
+    # 新增信号：path, status, progress, speed
+    progressChanged = QtCore.pyqtSignal(str, str, int, str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.files: List[Dict[str, Any]] = []
+        self.file_map: Dict[str, Dict[str, Any]] = {}
+        # 缓存过滤后的结果，避免每次 get_page 都重新过滤
+        self.filtered_files: List[Dict[str, Any]] = []
+        # 缓存 APPID 列表
+        self.unique_appids: List[str] = []
+        self.sort_column: str = ""
+        self.sort_order = QtCore.Qt.AscendingOrder
         self.page: int = 1
-        self.page_size: int = 10
+        #默认每页显示 1000 条
+        self.page_size: int = 1000
         self.filter_criteria: Dict[str, Any] = {}
-        self.load_mock()
+        # self.load_mock() # Removed mock loading by default
+
+    def set_file_list(self, new_file_list: List[Dict[str, Any]], notify: bool = True):
+        """设置全量文件列表，并进行状态合并
+
+        参数:
+            new_file_list: 来自 Manager 的完整文件列表（每项为 dict）
+            notify: 是否在更新完成后发出 self.dataChanged 信号（默认为 True）。
+                在某些场景（Controller 同时要更新 filter）可以设置为 False
+                以避免产生两次重复的刷新。
+        """
+        # new_file_list 已经是 Manager 根据业务规则处理好的标准对象列表
+
+        updated_map = {}
+        unique_appids = set()
+
+        for item in new_file_list:
+            path = item.get("path")
+            if not path:
+                continue
+
+            # Check if exists to preserve status
+            existing = self.file_map.get(path)
+            if existing:
+                item["status"] = existing.get("status", "未下载")
+                item["progress"] = existing.get("progress", 0)
+                # Keep speed if downloading
+                if item["status"] == "下载中":
+                    item["speed"] = existing.get("speed", "")
+
+            updated_map[path] = item
+
+            # 收集 APPID
+            aid = item.get("appid")
+            if aid:
+                unique_appids.add(str(aid))
+
+        self.file_map = updated_map
+        self.files = list(self.file_map.values())
+        self.unique_appids = sorted(list(unique_appids))
+
+        # Apply filter immediately to update cache
+        self._apply_filter()
+
+        if notify:
+            self.dataChanged.emit()
+
+    def update_file_status(self, path: str, status: str, progress: int = 0, speed: str = ""):
+        if path in self.file_map:
+            self.file_map[path]["status"] = status
+            self.file_map[path]["progress"] = progress
+            if speed:
+                self.file_map[path]["speed"] = speed
+            elif status in ["已下载", "下载失败", "已取消"]:
+                self.file_map[path]["speed"] = ""
+            # 改为发射进度信号，避免触发全量刷新导致 View 勾选丢失
+            self.progressChanged.emit(path, status, progress, speed)
+
+    def get_unique_appids(self) -> List[str]:
+        return self.unique_appids
+
+    def get_file_by_row(self, row_index: int) -> Dict[str, Any] | None:
+        """Get file object by current page row index"""
+        # use cached filtered result
+        start = (self.page - 1) * self.page_size
+        actual_index = start + row_index
+        if 0 <= actual_index < len(self.filtered_files):
+            return self.filtered_files[actual_index]
+        return None
+
+    def get_file_by_path(self, path: str) -> Dict[str, Any] | None:
+        """Get file object by path (stable identifier)"""
+        return self.file_map.get(path)
 
     # ---- 数据源 ----
     def load_mock(self):
         """加载一些模拟数据，供界面展示。"""
-        base_path_app = "/var/logs/app/"
-        base_path_err = "/var/logs/error/"
-
-        self.files = [
-            {
-                "filename": "system.log",
-                "path": base_path_app,
-                "appid": "APP001",
-                "size_kb": 2400,  # 约 2.4 MB
-                "create_time": "2024-11-19 10:00:00",
-                "modified_time": "2024-11-19 14:30:22",
-                "progress": 100,
-                "status": "已完成",
-            },
-            {
-                "filename": "diagnostic_trace_001.log",
-                "path": base_path_app,
-                "appid": "APP001",
-                "size_kb": 15800,  # 约 15.8 MB
-                "create_time": "2024-11-19 12:00:00",
-                "modified_time": "2024-11-19 13:15:10",
-                "progress": 60,
-                "status": "下载中",
-            },
-            {
-                "filename": "error_dump_20241119.log",
-                "path": base_path_err,
-                "appid": "APP002",
-                "size_kb": 8200,  # 约 8.2 MB
-                "create_time": "2024-11-19 11:30:00",
-                "modified_time": "2024-11-19 12:45:33",
-                "progress": 0,
-                "status": "等待",
-            },
-            {
-                "filename": "network_status.log",
-                "path": base_path_app,
-                "appid": "APP003",
-                "size_kb": 1100,
-                "create_time": "2024-11-19 09:10:00",
-                "modified_time": "2024-11-19 11:20:15",
-                "progress": 100,
-                "status": "已完成",
-            },
-            {
-                "filename": "app_performance_data.log",
-                "path": base_path_app,
-                "appid": "APP001",
-                "size_kb": 5600,
-                "create_time": "2024-11-19 08:30:00",
-                "modified_time": "2024-11-19 10:55:42",
-                "progress": 25,
-                "status": "下载中",
-            },
-        ]
-
-        # 通知视图刷新
-        self.dataChanged.emit()
+        # ... (mock data logic if needed, but we assume empty init usually)
+        pass
 
     def set_files(self, files: List[Dict[str, Any]]):
         """外部设置文件列表（若将来改为真实数据源可复用此接口）。"""
-        self.files = [self._normalize(it) for it in files]
-        self.page = 1
-        self.dataChanged.emit()
+        self.set_file_list(files)
 
     # ---- 过滤与分页 API ----
     def set_filter(self, criteria: Dict[str, Any]):
-        """设置过滤条件，不立即分页，分页在 get_page 时进行。"""
+        """设置过滤条件，更新缓存。"""
         self.filter_criteria = criteria or {}
         # 重置到第一页
         self.page = 1
+        self._apply_filter()
         self.dataChanged.emit()
 
     def set_page_size(self, page_size: int):
@@ -124,31 +149,180 @@ class LogDownloadModel(BaseModel):
         self.page = max(1, int(page) or 1)
         self.dataChanged.emit()
 
+    def set_sort(self, column: str, order: QtCore.Qt.SortOrder):
+        self.sort_column = column
+        self.sort_order = order
+        # reset page to 1 when sort changes
+        self.page = 1
+        self._apply_filter() # Filter applies sort at the end
+        self.dataChanged.emit()
+
     def get_page(self, page: int | None = None) -> PageResult:
         """根据当前过滤条件和分页参数返回一页数据。"""
         if page is not None:
             self.page = max(1, int(page) or 1)
 
-        filtered = [
-            self._normalize(it)
-            for it in self.files
-            if self._match_item(it, self.filter_criteria)
-        ]
-
-        total = len(filtered)
+        total = len(self.filtered_files)
         page_size = self.page_size
         page_count = max(1, (total + page_size - 1) // page_size)
-        page = max(1, min(self.page, page_count))
 
-        start = (page - 1) * page_size
+        # 修正当前页码，防止超出范围
+        self.page = max(1, min(self.page, page_count))
+
+        start = (self.page - 1) * page_size
         end = min(start + page_size, total)
-        rows = filtered[start:end]
+        rows = self.filtered_files[start:end]
 
-        return PageResult(rows=rows, page=page, page_count=page_count, total=total, page_size=page_size)
+        return PageResult(rows=rows, page=self.page, page_count=page_count, total=total, page_size=page_size)
+
+    def _apply_filter(self):
+        """执行过滤操作，更新 self.filtered_files"""
+        criteria = self.filter_criteria
+
+        # 预先解析搜索条件
+        path_kw = (criteria.get("path_kw") or "").strip().lower()
+        name_kw = (criteria.get("name_kw") or "").strip().lower()
+        app_kw = (criteria.get("app_kw") or "").strip()
+        status_sel = criteria.get("status") or "全部"
+        date_from = criteria.get("date_from")
+        date_to = criteria.get("date_to")
+
+        # 转换时间范围为 timestamp 以加速比较
+        # 注意: QDateTime.toSecsSinceEpoch() 返回 int, 为了兼容 float timestamp, 我们都视为数字比较
+        ts_from = date_from.toSecsSinceEpoch() if isinstance(date_from, QtCore.QDateTime) and date_from.isValid() else None
+        ts_to = date_to.toSecsSinceEpoch() if isinstance(date_to, QtCore.QDateTime) and date_to.isValid() else None
+
+        filtered = []
+        for item in self.files:
+            # 1. Status (Fastest check)
+            if status_sel != "全部" and status_sel and item.get("status") != status_sel:
+                continue
+
+            # 2. AppID (Exact match)
+            if app_kw != "全部" and app_kw and app_kw != str(item.get("appid", "")):
+                continue
+
+            # 3. Path/Name (Pre-calc lower check)
+            if path_kw and path_kw not in item.get("_search_path", ""):
+                continue
+            if name_kw and name_kw not in item.get("_search_name", ""):
+                continue
+
+            # 4. Time range (Number compare)
+            if ts_from is not None and ts_to is not None:
+                f_create = item.get("_ts_create")
+                f_mod = item.get("_ts_modified")
+
+                # Logic: intersection
+                f_start = f_create if f_create is not None else f_mod
+                if f_start is None: continue
+
+                f_end = f_mod if f_mod is not None else f_start
+
+                # [f_start, f_end] vs [ts_from, ts_to]
+                # intersection exists if not (end < from or start > to)
+                if f_end < ts_from or f_start > ts_to:
+                    continue
+
+            filtered.append(item)
+
+        # Apply Sorting if active
+        if self.sort_column:
+             reverse = (self.sort_order == QtCore.Qt.DescendingOrder)
+             # Map view column index/name to model field key
+             key_map = {
+                 "filename": lambda x: x["_search_name"], # use lower for case-insensitive sort
+                 "path":     lambda x: x["_search_path"],
+                 "appid":    lambda x: x["appid"],
+                 "size_kb":  lambda x: x["_sort_size"],
+                 "create_time": lambda x: x["_ts_create"] or 0,
+                 "modified_time": lambda x: x["_ts_modified"] or 0,
+             }
+
+             key_func = key_map.get(self.sort_column)
+             # 确保 sort stable
+             if key_func:
+                 filtered.sort(key=key_func, reverse=reverse)
+
+        self.filtered_files = filtered
+
 
     # ---- 内部辅助 ----
-    def _normalize(self, it: Dict[str, Any]) -> Dict[str, Any]:
-        """将任意来源的数据统一成视图使用的字段结���。"""
+    @staticmethod
+    def _parse_time_static(time_str: str) -> float | None:
+        """静态解析时间返回时间戳(float)，用于快速过滤。失败返回 None"""
+        if not time_str:
+            return None
+        # 简单尝试转 float
+        try:
+            return float(time_str)
+        except ValueError:
+            pass
+        return None  # 更复杂的格式比较耗时，这里只处理最简单的 float timestamp
+
+    @staticmethod
+    def try_parse_datetime(time_str: str) -> QtCore.QDateTime:
+        """尝试多种格式解析时间字符串 (Logic moved from View)"""
+        if not time_str:
+            return QtCore.QDateTime()
+
+        # 0. 尝试 Compact 格式 (yyyyMMdd_HHmmss)
+        dt = QtCore.QDateTime.fromString(time_str, "yyyyMMdd_HHmmss")
+        if dt.isValid(): return dt
+
+        # 1. 尝试标准格式
+        dt = QtCore.QDateTime.fromString(time_str, "yyyy-MM-dd HH:mm:ss")
+        if dt.isValid(): return dt
+
+        # 2. 尝试 Unix 时间戳
+        try:
+            ts = float(time_str)
+            return QtCore.QDateTime.fromSecsSinceEpoch(int(ts))
+        except (ValueError, TypeError):
+            pass
+
+        # 3. 尝试 ls -l 格式 (英文月份，如 "Nov 19 14:30" 或 "Nov 19 2024")
+        # 需要 English Locale
+        locale = QtCore.QLocale(QtCore.QLocale.English)
+
+        # 3a. MMM d HH:mm 或 MMM dd HH:mm (无年份)
+        dt = locale.toDateTime(time_str, "MMM d HH:mm")
+        if not dt.isValid():
+            dt = locale.toDateTime(time_str, "MMM dd HH:mm")
+
+        if dt.isValid():
+            # 补全年份逻辑
+            now = QtCore.QDateTime.currentDateTime()
+            current_year = now.date().year()
+            new_date = dt.date()
+            new_date.setDate(current_year, new_date.month(), new_date.day())
+            dt.setDate(new_date)
+            # 如果得到的时间在未来且偏差较大，则减去一年
+            if dt > now.addDays(2):
+                new_date.setDate(current_year - 1, new_date.month(), new_date.day())
+                dt.setDate(new_date)
+
+            t = dt.time()
+            t.setHMS(t.hour(), t.minute(), 59)
+            dt.setTime(t)
+            return dt
+
+        # 3b. MMM d yyyy 或 MMM dd yyyy
+        dt = locale.toDateTime(time_str, "MMM d yyyy")
+        if not dt.isValid():
+             dt = locale.toDateTime(time_str, "MMM dd yyyy")
+
+        if dt.isValid():
+            return dt
+
+        return QtCore.QDateTime()
+
+    @staticmethod
+    def static_normalize(it: Any) -> Dict[str, Any]:
+        """将任意来源的数据统一成标准结构，并进行格式化预处理。"""
+        if isinstance(it, dict) and it.get("_is_normalized"):
+            return it
+
         if not isinstance(it, dict):
             try:
                 seq = list(it)
@@ -162,63 +336,179 @@ class LogDownloadModel(BaseModel):
                 "create_time": seq[4] if len(seq) > 4 else "",
                 "modified_time": seq[5] if len(seq) > 5 else "",
                 "progress": seq[6] if len(seq) > 6 else 0,
-                "status": seq[7] if len(seq) > 7 else "等待",
+                "status": seq[7] if len(seq) > 7 else "未下载",
             }
 
+        # 处理 Size(KB)
+        raw_size = it.get("size_kb") or it.get("size") or it.get("filesize") or ""
+        final_size_kb = ""
+        sort_size = 0 # 用于排序的数值
+
+        if isinstance(raw_size, (int, float)):
+             # 假设数值型全是字节，转 KB
+             sort_size = int(raw_size)
+             final_size_kb = str(int(raw_size / 1024))
+        elif isinstance(raw_size, str) and raw_size:
+             # 如果包含单位，比如 "1024 KB" 或 "2 MB"
+             s = raw_size.upper().replace(",", "")
+             # 简单粗暴提取数字
+             import re
+             m = re.match(r"([\d\.]+)", s)
+             if m:
+                 val = float(m.group(1))
+                 if "GB" in s: val *= 1024 * 1024 * 1024
+                 elif "MB" in s: val *= 1024 * 1024
+                 elif "KB" in s: val *= 1024
+                 else: val /= 1 # 默认直接 parse 出来视为字节? 或者看上面逻辑 val /= 1024 是转KB
+                 # 修正逻辑：上面原代码 val 视为字节。
+                 # 假设 raw 是 "2048" (无单位)，通常视作字节。
+                 # 如果 raw 是 "1 KB", val=1, 那么是 1024 字节
+                 if "B" not in s and "KB" not in s and "MB" not in s:
+                      # 纯数字字符串，视为字节
+                      pass
+
+                 # 统一转为字节存入 sort_size
+                 sort_size = int(val)
+                 final_size_kb = str(int(sort_size / 1024))
+             else:
+                 final_size_kb = raw_size
+
+        # 预处理搜索字段
+        filename = it.get("filename") or it.get("name") or ""
+        path = it.get("path", "")
+
+        # 预处理时间
+        create_time_raw = it.get("create_time") or it.get("ctime") or it.get("created_at") or ""
+        modified_time_raw = it.get("modified_time") or it.get("mtime") or it.get("time") or ""
+
+        # 使用增强的解析逻辑
+        dt_create = LogDownloadModel.try_parse_datetime(str(create_time_raw))
+        dt_modified = LogDownloadModel.try_parse_datetime(str(modified_time_raw))
+
+        create_time_str = dt_create.toString("yyyyMMdd_HHmmss") if dt_create.isValid() else str(create_time_raw)
+        modified_time_str = dt_modified.toString("yyyyMMdd_HHmmss") if dt_modified.isValid() else str(modified_time_raw)
+
+        # 补充 timestamp 用于排序
+        ts_create = dt_create.toSecsSinceEpoch() if dt_create.isValid() else None
+        ts_modified = dt_modified.toSecsSinceEpoch() if dt_modified.isValid() else None
+
         return {
-            "filename": it.get("filename") or it.get("name") or "",
-            "path": it.get("path", ""),
+            "filename": filename,
+            "path": path,
             "appid": it.get("appid") or it.get("app_id") or "",
-            "size_kb": it.get("size_kb") or it.get("size") or it.get("filesize") or "",
-            "create_time": it.get("create_time") or it.get("ctime") or it.get("created_at") or "",
-            "modified_time": it.get("modified_time") or it.get("mtime") or it.get("time") or "",
+            "size_kb": final_size_kb,
+            "create_time": create_time_str,
+            "modified_time": modified_time_str,
             "progress": int(it.get("progress") or 0),
-            "status": it.get("status") or "等待",
+            "status": it.get("status") or "未下载",
+            "speed": it.get("speed") or "",
+            "_is_normalized": True,
+            # 内部加速字段
+            "_search_name": str(filename).lower(),
+            "_search_path": str(path).lower(),
+            "_ts_create": ts_create,
+            "_ts_modified": ts_modified,
+            "_sort_size": sort_size,
         }
 
-    def _match_item(self, it: Dict[str, Any], criteria: Dict[str, Any]) -> bool:
-        """根据给定 criteria 判断一条记录是否匹配。"""
-        crit = criteria or {}
-        path_kw = (crit.get("path_kw") or "").strip().lower()
-        app_kw = (crit.get("app_kw") or "").strip().lower()
-        name_kw = (crit.get("name_kw") or "").strip().lower()
-        status_sel = crit.get("status") or "全部"
-        date_from = crit.get("date_from")  # 可以是 QDateTime 或 None
-        date_to = crit.get("date_to")
+class LogTableModel(QtCore.QAbstractTableModel):
+    """专门用于 QTableView 的数据模型"""
+    def __init__(self, rows=[], parent=None):
+        super().__init__(parent)
+        self._rows = rows
+        self._headers = ["选择", "序号", "FileName", "Path", "APPID", "Size(KB)", "CreateTime", "ModifiedTime", "下载进度", "状态", "操作"]
+        # 保存复选框状态 {row_index: bool} - 注意这里 row_index 是针对当前页的
+        self._checks = {}
 
-        item = self._normalize(it)
-        filename = item["filename"]
-        path = item["path"]
-        appid = item["appid"]
-        size_kb = str(item["size_kb"])
-        create_time = item["create_time"]
-        modified_time = item["modified_time"]
-        status = item["status"] or "等待"
+    def set_rows(self, rows):
+        self.beginResetModel()
+        self._rows = rows
+        self._checks = {} # 换页/刷新清空选择
+        self.endResetModel()
 
-        # 时间过滤：仅当传入的是 QDateTime 且有意义时生效
-        if isinstance(date_from, QtCore.QDateTime) and isinstance(date_to, QtCore.QDateTime):
-            try:
-                dt = QtCore.QDateTime.fromString(create_time, "yyyy-MM-dd HH:mm:ss")
-                if dt.isValid():
-                    if dt < date_from or dt > date_to:
-                        return False
-            except Exception:
-                pass
+    def get_rows(self):
+        return self._rows
 
-        # 状态过滤
-        if status_sel and status_sel != "全部" and status != status_sel:
-            return False
+    def rowCount(self, parent=QtCore.QModelIndex()):
+        return len(self._rows)
 
-        # 关键字过滤
-        if path_kw and path_kw not in path.lower():
-            return False
-        if app_kw and app_kw not in appid.lower():
-            return False
-        if name_kw and name_kw not in filename.lower():
-            return False
+    def columnCount(self, parent=QtCore.QModelIndex()):
+        return len(self._headers)
 
-        return True
+    def data(self, index, role=QtCore.Qt.DisplayRole):
+        if not index.isValid(): return None
+        row = index.row()
+        col = index.column()
+        item = self._rows[row]
 
-    def random_speed(self) -> str:
-        """保留原来的随机速度方法，后续如要在视图里展示下载速度可以继续使用。"""
-        return f"{random.uniform(0.5, 5.0):.1f} MB/s"
+        if role == QtCore.Qt.DisplayRole:
+            if col == 1: return str(item.get("_seq_idx", row + 1))
+            if col == 2: return item.get("filename", "")
+            if col == 3: return item.get("path", "")
+            if col == 4: return item.get("appid", "")
+            if col == 5: return item.get("size_kb", "")
+            if col == 6: return item.get("create_time", "")
+            if col == 7: return item.get("modified_time", "")
+            # col 8 (progress)
+            if col == 8:
+                pct = int(item.get('progress', 0) or 0)
+                speed = (item.get("speed") or "").strip()
+                status = (item.get("status") or "").strip()
+                if speed and status == "下载中":
+                    return f"{pct}% - {speed}"
+                return f"{pct}%"
+            if col == 9: return item.get("status", "")
+            return ""
+
+        if role == QtCore.Qt.CheckStateRole and col == 0:
+            return QtCore.Qt.Checked if self._checks.get(row, False) else QtCore.Qt.Unchecked
+
+        if role == QtCore.Qt.TextAlignmentRole:
+            if col in [0, 1, 4, 5, 6, 7, 8, 9]:
+                return QtCore.Qt.AlignCenter
+            return QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter
+
+        return None
+
+    def setData(self, index, value, role=QtCore.Qt.EditRole):
+        if role == QtCore.Qt.CheckStateRole and index.column() == 0:
+            self._checks[index.row()] = (value == QtCore.Qt.Checked)
+            self.dataChanged.emit(index, index, [role])
+            return True
+        return False
+
+    def flags(self, index):
+        f = QtCore.Qt.ItemIsEnabled | QtCore.Qt.ItemIsSelectable
+        if index.column() == 0:
+            f |= QtCore.Qt.ItemIsUserCheckable
+        return f
+
+    def headerData(self, section, orientation, role):
+        if role == QtCore.Qt.DisplayRole and orientation == QtCore.Qt.Horizontal:
+            return self._headers[section]
+        return None
+
+    def update_row_progress(self, row_index: int, status: str, progress: int, speed: str):
+        """局部更新某行的进度和状态，不重置 Model"""
+        if row_index < 0 or row_index >= len(self._rows):
+            return
+
+        # 更新数据
+        self._rows[row_index]["status"] = status
+        self._rows[row_index]["progress"] = progress
+        self._rows[row_index]["speed"] = speed
+
+        # 发射局部数据变更信号
+        # 涉及列：8(进度), 9(状态), 10(操作按钮可能根据状态变)
+        start_idx = self.index(row_index, 8)
+        end_idx = self.index(row_index, 10)
+        self.dataChanged.emit(start_idx, end_idx, [QtCore.Qt.DisplayRole])
+
+    def select_all(self, checked: bool):
+        """批量设置选中状态"""
+        self.beginResetModel()
+        if checked:
+            self._checks = {i: True for i in range(len(self._rows))}
+        else:
+            self._checks = {}
+        self.endResetModel()

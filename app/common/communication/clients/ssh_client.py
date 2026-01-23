@@ -130,3 +130,6 @@ class SSHClient:
                 self._connected = False
             return None
 
+    def get_client(self) -> Optional[paramiko.SSHClient]:
+        """获取底层的paramiko Client对象"""
+        return self._client

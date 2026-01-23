@@ -326,6 +326,15 @@ class DeviceService(QObject):
     def get_ssh_client(self) -> Optional[SSHClient]:
         """获取当前的 SSH 客户端实例"""
         return self._ssh_client
+    def get_someip_client(self) -> Optional[SomeIPClient]:
+        """获取当前的 SomeIP 客户端实例"""
+        return self._someip_client
+
+    def get_current_device_ip(self) -> Optional[str]:
+        """获取当前连接设备的 IP 地址"""
+        if self._last_connected_device:
+            return self._last_connected_device.get("ip")
+        return None
 
 
     def close_device_connections(self):

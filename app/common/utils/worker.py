@@ -5,6 +5,7 @@ class Worker(QtCore.QThread):
     通用后台工作线程
     """
     log_signal = QtCore.pyqtSignal(str)
+    progress_signal = QtCore.pyqtSignal(int)
     result_signal = QtCore.pyqtSignal(object)
     finished = QtCore.pyqtSignal()
 
