@@ -131,8 +131,6 @@ class SequenceWorker(QtCore.QThread):
         return None  # Default fallback to None
 
     def _send_uds_command(self, request_str: str, timeout: float = None) -> str:
-        if not self.device_service.get_doip_client():
-            return "Error: No Client"
 
         # Clean request string
         req_hex = request_str.replace(' ', '')

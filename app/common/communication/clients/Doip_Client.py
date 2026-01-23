@@ -124,6 +124,13 @@ class DoIPClientHandler:
             )
 
             # 创建DoIP客户端实例，同时显式指定客户端逻辑地址(源地址)
+            # 先尝试关闭旧连接（如果有）
+            try:
+                if self.doip_client:
+                    self.doip_client.close()
+            except Exception:
+                pass
+
             self.doip_client = DoIPClient(
                 ecu_ip_address=ecu_ip,
                 ecu_logical_address=ecu_logical_address,

@@ -80,7 +80,7 @@ class DTCController(BaseController):
                  ]
 
         except Exception as e:
-             self.view.append_log(f"Error loading DTC list: {e}")
+             self.view.append_log(f"加载 DTC 列表出错: {e}")
 
     def save_dtc_list(self):
         data = {
@@ -91,7 +91,7 @@ class DTCController(BaseController):
             with open(DTC_LIST_FILE, "w", encoding="utf-8") as f:
                 json.dump(data, f, indent=4, ensure_ascii=False)
         except Exception as e:
-            self.view.append_log(f"Error saving DTC list: {e}")
+            self.view.append_log(f"保存 DTC 列表出错: {e}")
 
     def _on_dpt_status(self, status, message):
         self.dpt_status_signal.emit(status, message)
@@ -134,26 +134,21 @@ class DTCController(BaseController):
 
         device_service = di_container.resolve(DeviceService)
         if not device_service:
-             self.view.append_log("DeviceService not found")
-             return
-
-        client = device_service.get_doip_client()
-        if not client or not client.is_connected():
-             self.view.append_log("DoIP not connected")
+             self.view.append_log("未找到设备服务")
              return
 
         # 19 02 AF
         req_data = bytes([0x19, 0x02, 0xAF])
         self.log_message("TX", req_data)
 
-        # Send request
-        resp = client.send_doip_message(req_data, timeout=2.0)
+        # Send request using device_service
+        resp = device_service.send_doip_payload(req_data, timeout=2.0)
 
         if resp:
              self.log_message("RX", resp)
              self.parse_dtc_response(resp)
         else:
-             self.view.append_log("No response")
+             self.view.append_log("无响应")
 
     def log_message(self, direction, data):
         # Format: YYYY-MM-DD HH:MM:SS.microseconds (6 digits)
@@ -165,11 +160,11 @@ class DTCController(BaseController):
         try:
             # Response format: 59 02 Mask [DTC1 DTC2 DTC3 Status] ...
             if len(resp) < 3:
-                self.view.append_log("Response too short")
+                self.view.append_log("响应数据太短")
                 return
 
             if resp[0] != 0x59:
-                self.view.append_log(f"Negative response or invalid SID: {resp[0]:02X}")
+                self.view.append_log(f"负响应或无效 SID: {resp[0]:02X}")
                 return
 
             # availability_mask = resp[2]
@@ -188,8 +183,8 @@ class DTCController(BaseController):
                 try:
                     dtc_code = self._bytes_to_dtc_code(dtc_bytes)
                 except Exception as e:
-                    self.view.append_log(f"Error parsing DTC bytes {dtc_bytes}: {e}")
-                    dtc_code = "UNKNOWN"
+                    self.view.append_log(f"解析 DTC 字节出错 {dtc_bytes}: {e}")
+                    dtc_code = "未知"
 
                 status_hex = f"0x{status:02X}"
 
@@ -198,7 +193,7 @@ class DTCController(BaseController):
 
                 # Get description from DPT service if available
                 desc = "未知故障"
-                subsystem = "Unknown"
+                subsystem = "未知"
 
                 try:
                     if self._dpt_service and self._dpt_service.is_ready():
@@ -209,7 +204,7 @@ class DTCController(BaseController):
                                 desc = str(fetched_desc)
                             # subsystem = dtc_info.get("subsystem", subsystem) # If available
                 except Exception as e:
-                    self.view.append_log(f"Error getting info for {dtc_code}: {e}")
+                    self.view.append_log(f"获取 {dtc_code} 信息出错: {e}")
 
                 # Tuple: (code, desc, subsystem, status_code, fault_state, freeze_state)
                 # Ensure all elements are strings to prevent UI crashes
@@ -239,11 +234,11 @@ class DTCController(BaseController):
             ]
 
             self.model.dataChanged.emit()
-            self.view.append_log(f"Parsed {total} DTCs")
+            self.view.append_log(f"已解析 {total} 个故障码")
             self.save_dtc_list()
 
         except Exception as e:
-            self.view.append_log(f"Error parsing DTC response: {e}")
+            self.view.append_log(f"解析 DTC 响应出错: {e}")
             import traceback
             traceback.print_exc()
 
@@ -264,7 +259,7 @@ class DTCController(BaseController):
         # Get filtered list to find correct DTC
         filtered = self._get_filtered_dtcs()
         if row_index < 0 or row_index >= len(filtered):
-            self.view.append_log(f"Invalid row index: {row_index}")
+            self.view.append_log(f"无效的行索引: {row_index}")
             return
 
         dtc_entry = filtered[row_index]
@@ -279,12 +274,7 @@ class DTCController(BaseController):
 
         device_service = di_container.resolve(DeviceService)
         if not device_service:
-             self.view.append_log("DeviceService not found")
-             return
-
-        client = device_service.get_doip_client()
-        if not client or not client.is_connected():
-             self.view.append_log("DoIP not connected")
+             self.view.append_log("未找到设备服务")
              return
 
         # Convert DTC to bytes
@@ -294,7 +284,7 @@ class DTCController(BaseController):
         req_data = bytes([0x19, 0x04]) + dtc_bytes + bytes([0xFF])
         self.log_message("TX", req_data)
 
-        resp = client.send_doip_message(req_data, timeout=2.0)
+        resp = device_service.send_doip_payload(req_data, timeout=2.0)
 
         if resp:
             self.log_message("RX", resp)
@@ -305,7 +295,7 @@ class DTCController(BaseController):
             new_status = "读取成功" if success else "读取失败"
             self._update_dtc_freeze_status(dtc_code, new_status)
         else:
-            self.view.append_log("No response for freeze frame")
+            self.view.append_log("冻结帧无响应")
             self.view.update_freeze_read_status(row_index, False)
             self._update_dtc_freeze_status(dtc_code, "读取失败")
 
@@ -326,12 +316,12 @@ class DTCController(BaseController):
     def handle_clear_dtcs(self):
         device_service = di_container.resolve(DeviceService)
         if not device_service:
-             self.view.append_log("DeviceService not found")
+             self.view.append_log("未找到设备服务")
              return
 
         client = device_service.get_doip_client()
         if not client or not client.is_connected():
-             self.view.append_log("DoIP not connected")
+             self.view.append_log("DoIP 未连接")
              return
 
         # 14 FF FF FF
@@ -532,7 +522,7 @@ class DTCController(BaseController):
                         did_len = max(f.byte_offset + f.byte_length for f in parser._fields)
 
                     if offset + did_len > len(resp):
-                         self.view.append_log(f"Truncated data for DID {did_hex}")
+                         self.view.append_log(f"DID {did_hex} 数据被截断")
                          break
 
                     chunk = resp[offset : offset + did_len]
@@ -572,11 +562,11 @@ class DTCController(BaseController):
                     # If we don't know length, we can't continue to next DID.
                     # We consume rest of buffer if it looks like end?
                     # Or just fail this record.
-                    self.view.append_log(f"Unknown DID found in freeze frame: {did_hex}. Cannot proceed parsing stream.")
+                    self.view.append_log(f"冻结帧中发现未知 DID: {did_hex}。无法继续解析流。")
                     params.append({
                         "byte": "?", "bit": "?",
-                        "name": f"DID 0x{did_hex} (Unknown)",
-                        "value": "Structure Unknown",
+                        "name": f"DID 0x{did_hex} (未知)",
+                        "value": "结构未知",
                         "unit": ""
                     })
                     # Force break outer loop as we are desynchronized

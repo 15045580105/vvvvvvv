@@ -321,6 +321,8 @@ class DeviceService(QObject):
     # ---- 提供给其他 Service 复用的 已连接成功的 DoIP / SomeIP /ssh 能力 ----
     def get_doip_client(self) -> Optional[DoIPClientHandler]:
         """获取当前的 DoIP 客户端实例"""
+        if self._doip_handler is None:
+            self._doip_handler = DoIPClientHandler()
         return self._doip_handler
 
     def get_ssh_client(self) -> Optional[SSHClient]:
@@ -353,20 +355,13 @@ class DeviceService(QObject):
             prefer_last: bool = False,
     ) -> bytes | None:
         """统一的 DoIP 发送接口，供 Topology/Diagnostic 等业务 Service 重用。"""
+        # 1. 获取客户端实例
         client = self.get_doip_client()
-
-        # 1. 发送前检查连接状态，若已断开则尝试重连
-        if (client is None or not client.connected) and self._last_connected_device:
-            self.log_signal.emit("DoIP 客户端未连接，尝试自动重连...")
-            # 重新连接会更 _doip_handler
-            self._connect_doip(self._last_connected_device)
-            # 获取最新连接的 client
-            client = self.get_doip_client()
-
         if client is None:
-            self.log_signal.emit("DoIP 客户端未连接，无法发送报文")
+            self.log_signal.emit("错误：DoIP 客户端实例为 None")
             return None
 
+        # 计算超时
         if timeout is None:
             try:
                 timeout_ms = int(self._config_service.diag_layer_settings.get("s3_client_time", 3000))
@@ -374,25 +369,42 @@ class DeviceService(QObject):
             except (ValueError, TypeError):
                 timeout = 3.0
 
-        try:
-            resp = client.send_doip_message(
-                payload,
-                timeout=timeout,
-                response_index=response_index,
-                target_did=target_did,
-                prefer_last=prefer_last,
-            )
+        # 2. 预检查连接状态
+        # 如果未连接，且有上次连接记录，先尝试重连一次
+        if not client.connected:
+            if self._last_connected_device:
+                self.log_signal.emit("发现 DoIP 未连接，尝试利用上次记录重连...")
+                self._connect_doip(self._last_connected_device)
+                if not client.connected:
+                    self.log_signal.emit("重连失败，放弃发送")
+                    return None
+            else:
+                self.log_signal.emit("DoIP 未连接且无历史连接记录，无法自动重连")
+                return None
 
-            # 2. 如果发送失败，检查连接状态
-            # 用户需求：发送时检查一下链接状态，确认已经断联后要尝试重新链接doipclient
-            if resp is None:
-                if not client.connected and self._last_connected_device:
-                    self.log_signal.emit("发送失败且发现连接已断开，尝试自动重连并重发...")
+        # 3. 尝试发送
+        # 注意：client.send_doip_message 内部可能还有一层重连机制
+        resp = client.send_doip_message(
+            payload,
+            timeout=timeout,
+            response_index=response_index,
+            target_did=target_did,
+            prefer_last=prefer_last,
+        )
+
+        # 4. 如果发送失败 (resp is None)
+        # 这可能是超时（应用层无响应），也可能是连接断开（IO错误）
+        if resp is None:
+            # 检查连接状态
+            # 如果 send_doip_message 遇到了 IO 错误，它会将 connected 置为 False
+            if not client.connected:
+                self.log_signal.emit("发送报文时连接断开")
+                if self._last_connected_device:
+                    self.log_signal.emit("尝试通过断线重连恢复并重发...")
                     self._connect_doip(self._last_connected_device)
-                    client = self.get_doip_client()
 
-                    if client and client.connected:
-                        self.log_signal.emit("重连成功，正在重发报文...")
+                    if client.connected:
+                        self.log_signal.emit("断线重连成功，正在重发报文...")
                         resp = client.send_doip_message(
                             payload,
                             timeout=timeout,
@@ -401,14 +413,16 @@ class DeviceService(QObject):
                             prefer_last=prefer_last,
                         )
                     else:
-                        self.log_signal.emit("重连失败，维持断开状态")
-                # else: 发送失败但状态显示仍连接(如超时)，维持现状，返回 None
+                        self.log_signal.emit("断线重连失败")
+                else:
+                    self.log_signal.emit("连接断开且无重连信息")
+            else:
+                # 状态仍为 Connected，说明是单纯的超时，未发生断链
+                # self.log_signal.emit("发送等到超时（未收到响应），连接保持正常")
+                pass
 
-            return resp
+        return resp
 
-        except Exception as e:
-            self.log_signal.emit(f"通过 DoIP 发送报文失败: {e}")
-            return None
 
 
 

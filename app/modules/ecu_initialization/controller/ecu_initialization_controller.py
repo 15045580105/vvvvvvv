@@ -101,11 +101,6 @@ class ECUInitController(BaseController):
              QtWidgets.QMessageBox.warning(self.view, "错误", "无法获取设备服务")
              return
 
-        # Check if connected
-        doip_client = self.device_service.get_doip_client()
-        if not doip_client:
-             QtWidgets.QMessageBox.warning(self.view, "提示", "设备未连接 (DoIP)")
-             return
 
         # Collect tasks
         tasks = []

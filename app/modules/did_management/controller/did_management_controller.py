@@ -369,10 +369,6 @@ class DIDController(BaseController):
         4. 执行 Read (0x22) 或 Write (0x2E)
         5. 更新 UI
         """
-        if not self._device_service.get_doip_client():
-            self.model.apply_update(rx="错误: 未连接 DoIP 设备")
-            self.model.update_row(row_index, value_color="#EF4444")
-            return
 
         target_session_name = row.diagnostic_session
         target_security_name = row.security_access

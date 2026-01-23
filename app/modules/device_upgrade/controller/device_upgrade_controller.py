@@ -5,7 +5,7 @@ import binascii
 import time
 import hashlib
 from PyQt5.QtWidgets import QFileDialog, QMessageBox
-from PyQt5.QtCore import QThread, pyqtSignal, QTimer, QSettings
+from PyQt5.QtCore import QThread, pyqtSignal, QTimer
 
 from app.core.base_controller import BaseController
 from app.modules.device_upgrade.model.device_upgrade_model import UpgradeModel
@@ -21,11 +21,11 @@ class UpgradeWorker(QThread):
     log_signal = pyqtSignal(str, bool) # message, is_info
     finished_signal = pyqtSignal(bool, str) # success, message
 
-    def __init__(self, config, file_path, doip_client):
+    def __init__(self, config, file_path, device_service):
         super().__init__()
         self.config = config
         self.file_path = file_path
-        self.client = doip_client
+        self.device_service = device_service
         self.running = True
 
     def run(self):
@@ -102,7 +102,10 @@ class UpgradeWorker(QThread):
              return
 
         # 4. Check Preconditions (Routine 31 01 21 01)
-        if not self._send_uds("31 01 21 01", "申请检查下载预条件", PHASE_PREP, expect_positive=True, success_msg="检查下载预条件请求通过"): return
+        resp = self._send_uds("31 01 21 01", "申请检查下载预条件", PHASE_PREP, expect_positive=True, success_msg="检查下载预条件请求通过")
+        if not resp: return
+        if len(resp) >= 5:
+            self.log_signal.emit(f"预条件检查返回状态: 0x{resp[4]:02X}", True)
 
         # 5. Request File Transfer (Service 38 01 AddFile)
         remote_path = pkg_config.get("filePathAndName", "")
@@ -203,10 +206,18 @@ class UpgradeWorker(QThread):
                 self.log_signal.emit(f"警告: 本地文件HASH与配置不符! \nConfig: {config_hash}\nFile: {calculated_hash_hex}", True)
 
         routine_check = bytes([0x31, 0x01, 0x21, 0x02]) + digest
-        if not self._send_doip(routine_check, "申请校验文件(SHA256)", expect_positive=True, success_msg="文件校验通过"): return
+        resp = self._send_doip(routine_check, "申请校验文件(SHA256)", expect_positive=True, success_msg="文件校验通过")
+        if not resp: return
+        # Parse potential status byte from routine result if available (71 01 21 02 [Status])
+        if len(resp) >= 5:
+            self.log_signal.emit(f"校验返回状态码: 0x{resp[4]:02X}", True)
+
 
         # 9. Merge/Erase? (31 01 21 05)
-        if not self._send_uds("31 01 21 05", "申请擦除/合并Memory", PHASE_INSTALL, expect_positive=True, success_msg="Memory操作请求通过"): return
+        resp = self._send_uds("31 01 21 05", "申请擦除/合并Memory", PHASE_INSTALL, expect_positive=True, success_msg="Memory操作请求通过")
+        if not resp: return
+        if len(resp) >= 5:
+             self.log_signal.emit(f"Memory操作返回状态: 0x{resp[4]:02X}", True)
 
         # 10. Re-Authenticate (Session 03 -> SecAccess 21)
         # It seems the device resets session or requires re-auth after 21 05
@@ -231,7 +242,10 @@ class UpgradeWorker(QThread):
         date_payload = bytes([century, year_part, month, day])
 
         routine_install = bytes([0x31, 0x01, 0x21, 0x03]) + date_payload
-        if not self._send_doip(routine_install, "申请开始安装(2103)", expect_positive=True, success_msg="开始安装请求通过"): return
+        resp = self._send_doip(routine_install, "申请开始安装(2103)", expect_positive=True, success_msg="开始安装请求通过")
+        if not resp: return
+        if len(resp) >= 5:
+            self.log_signal.emit(f"开始安装指令返回状态: 0x{resp[4]:02X}", True)
 
         # 12. Poll Install State (22 21 04)
         self.log_signal.emit("等待安装完成...", True)
@@ -241,11 +255,28 @@ class UpgradeWorker(QThread):
 
             resp = self._send_uds("22 21 04", "读取安装进度", PHASE_INSTALL, expect_positive=True, return_data=True)
             if resp and len(resp) >= 5:
-                # 62 21 04 [Status/Type?] [Progress] ...
+                # 62 21 04 [Status] [Progress] [Time...]
                 # Log: 62 21 04 01 28 ...
-                # Byte 4 is progress?
+                status_byte = resp[3]
                 progress = resp[4]
-                self.progress_signal.emit(progress, PHASE_INSTALL, f"安装中... {progress}%")
+
+                # Parse additional time info (Bytes 5 to end)
+                time_info_str = ""
+                if len(resp) > 5:
+                    time_bytes = resp[5:]
+                    # Attempt to parse time. Assuming it might be HH MM SS or similar BCD/Hex sequence.
+                    time_hex = " ".join(f"{b:02X}" for b in time_bytes)
+
+                    # Try to format as Time if count is appropriate (3 bytes = H M S, 2 bytes = M S?)
+                    if len(time_bytes) == 3:
+                        time_info_str = f", 时间: {time_bytes[0]:02d}:{time_bytes[1]:02d}:{time_bytes[2]:02d}"
+                    elif len(time_bytes) == 2:
+                        time_info_str = f", 时间: {time_bytes[0]:02d}:{time_bytes[1]:02d}"
+                    else:
+                        time_info_str = f", 时间数据(Hex): {time_hex}"
+
+                log_msg = f"安装中... {progress}% (状态: 0x{status_byte:02X}{time_info_str})"
+                self.progress_signal.emit(progress, PHASE_INSTALL, log_msg)
 
                 if progress >= 100:
                     self.log_signal.emit("安装进度达到100%", True)
@@ -311,12 +342,19 @@ class UpgradeWorker(QThread):
 
     def _send_doip(self, payload, desc, expect_positive=False, success_msg=None):
         # Optimize logging: Only format the part we display to avoid performance hit on large payloads
-        display_limit = 32
-        if len(payload) > display_limit:
-             display_bytes = payload[:display_limit]
-             display_hex = " ".join(f"{b:02X}" for b in display_bytes) + " ..."
+
+        # Special handling for Service 36 (TransferData)
+        if len(payload) > 0 and payload[0] == 0x36:
+             # Just show 36 and Sequence Number
+             seq = payload[1] if len(payload) > 1 else 0
+             display_hex = f"36 {seq:02X} ..."
         else:
-             display_hex = " ".join(f"{b:02X}" for b in payload)
+            display_limit = 32
+            if len(payload) > display_limit:
+                 display_bytes = payload[:display_limit]
+                 display_hex = " ".join(f"{b:02X}" for b in display_bytes) + " ..."
+            else:
+                 display_hex = " ".join(f"{b:02X}" for b in payload)
 
         # Format: TX   DATA   DESC
         # Align data to 60 chars to ensure description starts at same column
@@ -327,7 +365,11 @@ class UpgradeWorker(QThread):
             # Use prefer_last=True to handle NRC 78 (Pending) followed by Final Response without manual loop
             # DoIP Client collects responses and prefer_last returns the successful one if Pending preceded it.
             timeout_val = 5.0 # Increased timeout for flash operations
-            resp = self.client.send_doip_message(payload, timeout=timeout_val, prefer_last=True)
+            resp = self.device_service.send_doip_payload(
+                payload,
+                timeout=timeout_val,
+                prefer_last=True
+            )
 
             if isinstance(resp, list):
                  # Should not happen if return_all=False (default), but safety check
@@ -607,7 +649,7 @@ class UpgradeController(BaseController):
         self.view.normal_progress.setValue(0)
 
         # Start Worker
-        self.thread = UpgradeWorker(self.upgrade_config, file_path, doip_handler)
+        self.thread = UpgradeWorker(self.upgrade_config, file_path, device_service)
         self.thread.log_signal.connect(self._log)
         self.thread.progress_signal.connect(self._on_worker_progress)
         self.thread.finished_signal.connect(self._on_worker_finished)
@@ -828,7 +870,7 @@ class UpgradeController(BaseController):
         if self.thread and self.thread.isRunning():
             self.thread.wait() # Ensure clean
 
-        self.thread = UpgradeWorker(self.upgrade_config, pkg_path, doip_handler)
+        self.thread = UpgradeWorker(self.upgrade_config, pkg_path, device_service)
         self.thread.log_signal.connect(self._log)
         self.thread.progress_signal.connect(self._on_worker_progress)
         self.thread.finished_signal.connect(self._on_worker_finished)
