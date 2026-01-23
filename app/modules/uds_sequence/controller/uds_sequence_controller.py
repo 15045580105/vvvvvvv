@@ -131,8 +131,6 @@ class SequenceWorker(QtCore.QThread):
         return None  # Default fallback to None
 
     def _send_uds_command(self, request_str: str, timeout: float = None) -> str:
-        if not self.device_service.get_doip_client():
-            return "Error: No Client"
 
         # Clean request string
         req_hex = request_str.replace(' ', '')
@@ -209,6 +207,7 @@ class UDSSequenceController(BaseController):
         self.current_config_name = None
         self.worker = None
         self.batch_worker = None
+        self.is_loading = False
         self._connect_signals()
 
     def _connect_signals(self):
@@ -228,6 +227,7 @@ class UDSSequenceController(BaseController):
         self.view.insert_command_requested.connect(self._on_insert_command_requested)
         # view now emits string code like '10' or '10.01'
         self.view.command_selected.connect(self._on_command_selected)
+        self.view.table_data_changed.connect(self._on_table_data_changed)
 
         # Load initial config names
         self.view.update_config_list(self.model.get_config_names())
@@ -237,6 +237,14 @@ class UDSSequenceController(BaseController):
         self.tester_present_timer = QtCore.QTimer(self)
         self.tester_present_timer.timeout.connect(self._send_tester_present)
         self.tester_present_mode = "80" # Default 3E 80
+
+    def _on_table_data_changed(self):
+        """Auto-save current configuration when table data changes."""
+        if self.is_loading:
+            return
+        if self.current_config_name:
+            data = self.view.get_table_data()
+            self.model.save_config(self.current_config_name, data)
 
     # --- Signal handlers ---
     def _on_add_command_requested(self, code: str):
@@ -480,15 +488,19 @@ class UDSSequenceController(BaseController):
     def _on_config_load_requested(self, config_name: str):
         """Handle loading a selected configuration."""
         if config_name:
-            # Auto-save '默认' if switching away from it
-            if self.current_config_name == "默认":
-                data = self.view.get_table_data()
-                self.model.save_config("默认", data)
+            self.is_loading = True
+            try:
+                # Auto-save '默认' if switching away from it
+                if self.current_config_name == "默认" and self.current_config_name != config_name:
+                    data = self.view.get_table_data()
+                    self.model.save_config("默认", data)
 
-            data = self.model.load_config(config_name)
-            self.view.set_table_data(data)
-            self.view.log_message(f"配置 '{config_name}' 加载成功")
-            self.current_config_name = config_name
+                data = self.model.load_config(config_name)
+                self.view.set_table_data(data)
+                self.view.log_message(f"配置 '{config_name}' 加载成功")
+                self.current_config_name = config_name
+            finally:
+                self.is_loading = False
 
     def _on_config_delete_requested(self, config_name: str):
         """Handle deleting a selected configuration."""
@@ -598,3 +610,4 @@ if __name__ == "__main__":
     v = UDSSequenceView(m)
     v.show()
     sys.exit(app.exec_())
+

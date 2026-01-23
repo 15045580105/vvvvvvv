@@ -5,12 +5,15 @@ import os
 from PyQt5 import QtWidgets, QtCore
 from PyQt5.QtGui import QIcon
 
+from app.common.log.app_log import SystemLog
 from app.common.utils.license_manager import is_activated
 from app.presentation.controller.main_window_controller import MainController
 
 
 
 if __name__ == "__main__":
+    SystemLog().initialize()
+
     QtWidgets.QApplication.setAttribute(QtCore.Qt.AA_EnableHighDpiScaling)
     QtWidgets.QApplication.setAttribute(QtCore.Qt.AA_UseHighDpiPixmaps)
     ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("myappid")

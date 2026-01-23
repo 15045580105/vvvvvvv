@@ -5,7 +5,7 @@ import binascii
 import time
 import hashlib
 from PyQt5.QtWidgets import QFileDialog, QMessageBox
-from PyQt5.QtCore import QThread, pyqtSignal, QTimer, QSettings
+from PyQt5.QtCore import QThread, pyqtSignal, QTimer
 
 from app.core.base_controller import BaseController
 from app.modules.device_upgrade.model.device_upgrade_model import UpgradeModel
@@ -13,6 +13,7 @@ from app.modules.device_upgrade.view.device_upgrade_view import UpgradeView
 from app.core.dependency_injection import di_container
 from app.services.device_manage.device_service import DeviceService
 from app.common.utils.security_access_helper import SecurityAccessHelper
+from app.common.utils.path_utils import get_app_data_path
 
 
 class UpgradeWorker(QThread):
@@ -20,11 +21,11 @@ class UpgradeWorker(QThread):
     log_signal = pyqtSignal(str, bool) # message, is_info
     finished_signal = pyqtSignal(bool, str) # success, message
 
-    def __init__(self, config, file_path, doip_client):
+    def __init__(self, config, file_path, device_service):
         super().__init__()
         self.config = config
         self.file_path = file_path
-        self.client = doip_client
+        self.device_service = device_service
         self.running = True
 
     def run(self):
@@ -101,7 +102,10 @@ class UpgradeWorker(QThread):
              return
 
         # 4. Check Preconditions (Routine 31 01 21 01)
-        if not self._send_uds("31 01 21 01", "申请检查下载预条件", PHASE_PREP, expect_positive=True, success_msg="检查下载预条件请求通过"): return
+        resp = self._send_uds("31 01 21 01", "申请检查下载预条件", PHASE_PREP, expect_positive=True, success_msg="检查下载预条件请求通过")
+        if not resp: return
+        if len(resp) >= 5:
+            self.log_signal.emit(f"预条件检查返回状态: 0x{resp[4]:02X}", True)
 
         # 5. Request File Transfer (Service 38 01 AddFile)
         remote_path = pkg_config.get("filePathAndName", "")
@@ -202,10 +206,18 @@ class UpgradeWorker(QThread):
                 self.log_signal.emit(f"警告: 本地文件HASH与配置不符! \nConfig: {config_hash}\nFile: {calculated_hash_hex}", True)
 
         routine_check = bytes([0x31, 0x01, 0x21, 0x02]) + digest
-        if not self._send_doip(routine_check, "申请校验文件(SHA256)", expect_positive=True, success_msg="文件校验通过"): return
+        resp = self._send_doip(routine_check, "申请校验文件(SHA256)", expect_positive=True, success_msg="文件校验通过")
+        if not resp: return
+        # Parse potential status byte from routine result if available (71 01 21 02 [Status])
+        if len(resp) >= 5:
+            self.log_signal.emit(f"校验返回状态码: 0x{resp[4]:02X}", True)
+
 
         # 9. Merge/Erase? (31 01 21 05)
-        if not self._send_uds("31 01 21 05", "申请擦除/合并Memory", PHASE_INSTALL, expect_positive=True, success_msg="Memory操作请求通过"): return
+        resp = self._send_uds("31 01 21 05", "申请擦除/合并Memory", PHASE_INSTALL, expect_positive=True, success_msg="Memory操作请求通过")
+        if not resp: return
+        if len(resp) >= 5:
+             self.log_signal.emit(f"Memory操作返回状态: 0x{resp[4]:02X}", True)
 
         # 10. Re-Authenticate (Session 03 -> SecAccess 21)
         # It seems the device resets session or requires re-auth after 21 05
@@ -230,7 +242,10 @@ class UpgradeWorker(QThread):
         date_payload = bytes([century, year_part, month, day])
 
         routine_install = bytes([0x31, 0x01, 0x21, 0x03]) + date_payload
-        if not self._send_doip(routine_install, "申请开始安装(2103)", expect_positive=True, success_msg="开始安装请求通过"): return
+        resp = self._send_doip(routine_install, "申请开始安装(2103)", expect_positive=True, success_msg="开始安装请求通过")
+        if not resp: return
+        if len(resp) >= 5:
+            self.log_signal.emit(f"开始安装指令返回状态: 0x{resp[4]:02X}", True)
 
         # 12. Poll Install State (22 21 04)
         self.log_signal.emit("等待安装完成...", True)
@@ -240,11 +255,28 @@ class UpgradeWorker(QThread):
 
             resp = self._send_uds("22 21 04", "读取安装进度", PHASE_INSTALL, expect_positive=True, return_data=True)
             if resp and len(resp) >= 5:
-                # 62 21 04 [Status/Type?] [Progress] ...
+                # 62 21 04 [Status] [Progress] [Time...]
                 # Log: 62 21 04 01 28 ...
-                # Byte 4 is progress?
+                status_byte = resp[3]
                 progress = resp[4]
-                self.progress_signal.emit(progress, PHASE_INSTALL, f"安装中... {progress}%")
+
+                # Parse additional time info (Bytes 5 to end)
+                time_info_str = ""
+                if len(resp) > 5:
+                    time_bytes = resp[5:]
+                    # Attempt to parse time. Assuming it might be HH MM SS or similar BCD/Hex sequence.
+                    time_hex = " ".join(f"{b:02X}" for b in time_bytes)
+
+                    # Try to format as Time if count is appropriate (3 bytes = H M S, 2 bytes = M S?)
+                    if len(time_bytes) == 3:
+                        time_info_str = f", 时间: {time_bytes[0]:02d}:{time_bytes[1]:02d}:{time_bytes[2]:02d}"
+                    elif len(time_bytes) == 2:
+                        time_info_str = f", 时间: {time_bytes[0]:02d}:{time_bytes[1]:02d}"
+                    else:
+                        time_info_str = f", 时间数据(Hex): {time_hex}"
+
+                log_msg = f"安装中... {progress}% (状态: 0x{status_byte:02X}{time_info_str})"
+                self.progress_signal.emit(progress, PHASE_INSTALL, log_msg)
 
                 if progress >= 100:
                     self.log_signal.emit("安装进度达到100%", True)
@@ -310,12 +342,19 @@ class UpgradeWorker(QThread):
 
     def _send_doip(self, payload, desc, expect_positive=False, success_msg=None):
         # Optimize logging: Only format the part we display to avoid performance hit on large payloads
-        display_limit = 32
-        if len(payload) > display_limit:
-             display_bytes = payload[:display_limit]
-             display_hex = " ".join(f"{b:02X}" for b in display_bytes) + " ..."
+
+        # Special handling for Service 36 (TransferData)
+        if len(payload) > 0 and payload[0] == 0x36:
+             # Just show 36 and Sequence Number
+             seq = payload[1] if len(payload) > 1 else 0
+             display_hex = f"36 {seq:02X} ..."
         else:
-             display_hex = " ".join(f"{b:02X}" for b in payload)
+            display_limit = 32
+            if len(payload) > display_limit:
+                 display_bytes = payload[:display_limit]
+                 display_hex = " ".join(f"{b:02X}" for b in display_bytes) + " ..."
+            else:
+                 display_hex = " ".join(f"{b:02X}" for b in payload)
 
         # Format: TX   DATA   DESC
         # Align data to 60 chars to ensure description starts at same column
@@ -326,7 +365,11 @@ class UpgradeWorker(QThread):
             # Use prefer_last=True to handle NRC 78 (Pending) followed by Final Response without manual loop
             # DoIP Client collects responses and prefer_last returns the successful one if Pending preceded it.
             timeout_val = 5.0 # Increased timeout for flash operations
-            resp = self.client.send_doip_message(payload, timeout=timeout_val, prefer_last=True)
+            resp = self.device_service.send_doip_payload(
+                payload,
+                timeout=timeout_val,
+                prefer_last=True
+            )
 
             if isinstance(resp, list):
                  # Should not happen if return_all=False (default), but safety check
@@ -387,8 +430,6 @@ class UpgradeController(BaseController):
         self.is_stress_mode = False
         self.thread = None
 
-        self.settings = QSettings("VCC_Team", "VCC_DeviceUpgrade")
-
         self._setup_connections()
 
         # Load persisted settings
@@ -398,56 +439,67 @@ class UpgradeController(BaseController):
         if not self.view.upgrade_file.text().strip():
              QTimer.singleShot(100, self._auto_load_defaults)
 
+    def _get_config_file_path(self):
+        root = os.path.join(get_app_data_path(), "DeviceUpgrade")
+        if not os.path.exists(root):
+            try:
+                os.makedirs(root, exist_ok=True)
+            except:
+                pass
+        return os.path.join(root, "upgrade_config.json")
+
     def _load_settings(self):
-        """Restore previous session paths from QSettings"""
+        """Restore previous session paths from JSON config file"""
         try:
+            config_file = self._get_config_file_path()
+            if not os.path.exists(config_file):
+                return
+
+            with open(config_file, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+
             # Normal Tab
-            normal_pkg = self.settings.value("normal_upgrade_file", "")
-            normal_cfg = self.settings.value("normal_config_file", "")
+            normal_pkg = data.get("normal_upgrade_file", "")
+            normal_cfg = data.get("normal_config_file", "")
             if normal_pkg and os.path.exists(normal_pkg):
                 self.view.upgrade_file.setText(normal_pkg)
             if normal_cfg and os.path.exists(normal_cfg):
                 self.view.config_file.setText(normal_cfg)
 
             # Stress Tab
-            stress_cfg = self.settings.value("stress_config_file", "")
-            stress_loop = self.settings.value("stress_loop_count", 100)
-            if stress_cfg and os.path.exists(stress_cfg):
-                self.view.stress_config_file.setText(stress_cfg)
-
+            stress_loop = data.get("stress_loop_count", 100)
             try:
                 self.view.stress_loop_spin.setValue(int(stress_loop))
             except:
                 pass
 
-            # Restore Stress Package List
-            # Provide as a JSON list string
-            stress_pkgs_json = self.settings.value("stress_pkg_list_json", "[]")
-            if stress_pkgs_json:
+            # Restore Stress Tasks
+            stress_tasks = data.get("stress_tasks", [])
+            if stress_tasks:
                 try:
-                    paths = json.loads(stress_pkgs_json)
-                    valid_paths = [p for p in paths if p and os.path.exists(p)]
-                    if valid_paths:
-                        self.view.set_stress_pkg_paths(valid_paths)
+                    self.view.set_stress_task_list(stress_tasks)
                 except Exception as e:
-                    self._log(f"Error loading stress packages: {e}", is_info=True)
+                    self._log(f"Error loading stress tasks: {e}", is_info=True)
 
         except Exception as e:
             self._log(f"Failed to load settings: {e}", is_info=True)
 
     def _save_settings(self):
-        """Persist current paths to QSettings"""
-        self.settings.setValue("normal_upgrade_file", self.view.upgrade_file.text())
-        self.settings.setValue("normal_config_file", self.view.config_file.text())
-        self.settings.setValue("stress_config_file", self.view.stress_config_file.text())
-        self.settings.setValue("stress_loop_count", self.view.stress_loop_spin.value())
+        """Persist current paths to JSON config file"""
+        try:
+            data = {
+                "normal_upgrade_file": self.view.upgrade_file.text(),
+                "normal_config_file": self.view.config_file.text(),
+                "stress_loop_count": self.view.stress_loop_spin.value(),
+                "stress_tasks": self.view.get_stress_task_list()
+            }
 
-        # Serialize stress package list
-        paths = []
-        for row in self.view.stress_pkg_rows:
-            txt = row[0].text().strip()
-            if txt: paths.append(txt)
-        self.settings.setValue("stress_pkg_list_json", json.dumps(paths))
+            config_file = self._get_config_file_path()
+            with open(config_file, 'w', encoding='utf-8') as f:
+                json.dump(data, f, indent=4, ensure_ascii=False)
+
+        except Exception as e:
+            self._log(f"Failed to save settings: {e}", is_info=True)
 
     def _auto_load_defaults(self):
         """Try to automatically find and set upgrade files from the update directory (recursive)."""
@@ -477,13 +529,26 @@ class UpgradeController(BaseController):
             if pkg_candidates:
                 pkg_path = pkg_candidates[0]
                 self.view.upgrade_file.setText(pkg_path)
-                if self.view.stress_pkg_rows:
-                     self.view.stress_pkg_rows[0][0].setText(pkg_path)
+                # Ensure at least one row for stress
+                tasks = self.view.get_stress_task_list()
+                if not tasks:
+                     # View initializes with one row, so this should usually have one empty or partial
+                     # But we can force set
+                     pass
 
-            if cfg_candidates:
-                cfg_path = cfg_candidates[0]
-                self.view.config_file.setText(cfg_path)
-                self.view.stress_config_file.setText(cfg_path)
+                # Update first row
+                if tasks:
+                     tasks[0]['pkg'] = pkg_path
+                else:
+                     tasks.append({'pkg': pkg_path, 'cfg': ''})
+
+                if cfg_candidates:
+                    cfg_path = cfg_candidates[0]
+                    self.view.config_file.setText(cfg_path)
+                    if tasks:
+                        tasks[0]['cfg'] = cfg_path
+
+                self.view.set_stress_task_list(tasks)
 
         except Exception as e:
             self._log(f"Error auto-loading defaults: {e}", is_info=True)
@@ -497,7 +562,6 @@ class UpgradeController(BaseController):
         self.view.upgrade_file.textChanged.connect(self._save_settings)
 
         self.view.config_file.textChanged.connect(self._save_settings)
-        self.view.stress_config_file.textChanged.connect(self._save_settings)
         self.view.stress_loop_spin.valueChanged.connect(self._save_settings)
 
         self.view.stress_pkg_changed.connect(self._check_stress_ready)
@@ -544,11 +608,11 @@ class UpgradeController(BaseController):
         self.view.start_btn.setEnabled(has_file)
 
     def _check_stress_ready(self):
-        # Start enabled if at least one file set
-        # We primarily check the first one or iterate all
-        # Simplified: check first one
-        first_row_edit = self.view.stress_pkg_rows[0][0]
-        has_file = bool(first_row_edit.text().strip())
+        # Start enabled if at least one task is configured
+        tasks = self.view.get_stress_task_list()
+        has_file = False
+        if tasks:
+            has_file = bool(tasks[0]['pkg'].strip())
         self.view.stress_start_btn.setEnabled(has_file)
 
     def _start_normal_upgrade(self):
@@ -585,18 +649,16 @@ class UpgradeController(BaseController):
         self.view.normal_progress.setValue(0)
 
         # Start Worker
-        self.thread = UpgradeWorker(self.upgrade_config, file_path, doip_handler)
+        self.thread = UpgradeWorker(self.upgrade_config, file_path, device_service)
         self.thread.log_signal.connect(self._log)
         self.thread.progress_signal.connect(self._on_worker_progress)
         self.thread.finished_signal.connect(self._on_worker_finished)
         self.thread.start()
 
     def _prepare_upgrade(self):
-        """Common preparation for both normal and stress upgrade."""
+        """Preparation for normal upgrade."""
         # Load config to generate steps
         config_path = self.view.config_file.text()
-        if self.is_stress_mode:
-            config_path = self.view.stress_config_file.text()
 
         if not config_path or not os.path.exists(config_path):
             self._log("错误: 未找到配置文件", is_info=True)
@@ -625,8 +687,6 @@ class UpgradeController(BaseController):
 
         # Resolve relative to config file directory
         config_path = self.view.config_file.text()
-        if self.is_stress_mode:
-            config_path = self.view.stress_config_file.text()
 
         # If absolute, verify. If not exists, try relative to config dir.
         if os.path.isabs(fname) and os.path.exists(fname):
@@ -704,8 +764,6 @@ class UpgradeController(BaseController):
         self.is_stress_mode = True
         self._log(f"Start Stress Upgrade Loop", is_info=True)
 
-        if not self._prepare_upgrade(): return
-
         # Check DoIP
         device_service: DeviceService = di_container.resolve(DeviceService)
         doip_handler = device_service.get_doip_client()
@@ -713,15 +771,31 @@ class UpgradeController(BaseController):
              self._log("错误: DoIP未连接", is_info=True)
              return
 
-        # Collect Package List
-        self.stress_pkg_list = []
-        for row in self.view.stress_pkg_rows:
-            p = row[0].text().strip()
-            if p and os.path.exists(p):
-                self.stress_pkg_list.append(p)
+        # Collect Task List (Pkg + Config)
+        self.stress_task_list = []
+        has_errors = False
 
-        if not self.stress_pkg_list:
-             self._log("错误: 未指定有效的升级包", is_info=True)
+        ui_tasks = self.view.get_stress_task_list()
+
+        for idx, task in enumerate(ui_tasks):
+            # task: {'pkg': ..., 'cfg': ...}
+            pkg_path = task['pkg'].strip()
+            cfg_path = task['cfg'].strip()
+
+            if not pkg_path or not os.path.exists(pkg_path):
+                self._log(f"错误: 第 {idx+1} 行未指定有效的升级包", is_info=True)
+                has_errors = True
+
+            if not cfg_path or not os.path.exists(cfg_path):
+                self._log(f"错误: 第 {idx+1} 行未指定有效的配置文件", is_info=True)
+                has_errors = True
+
+            if not has_errors:
+                self.stress_task_list.append({'pkg': pkg_path, 'cfg': cfg_path})
+
+        if has_errors or not self.stress_task_list:
+             self._log("错误: 升级任务配置有误，无法开始", is_info=True)
+             self.is_stress_mode = False
              return
 
         # Initialize Stress Context
@@ -730,11 +804,11 @@ class UpgradeController(BaseController):
         self.stress_pkg_index = 0
 
         # Calculate Total Size
-        total_size_per_loop = sum(os.path.getsize(p) for p in self.stress_pkg_list)
+        total_size_per_loop = sum(os.path.getsize(t['pkg']) for t in self.stress_task_list)
         self.stress_total_bytes = total_size_per_loop * self.stress_target_loop
         self.stress_completed_bytes = 0 # Approximate
 
-        self._log(f"压测任务: {len(self.stress_pkg_list)} 个文件, {self.stress_target_loop} 轮循环, 总大小: {self.stress_total_bytes/1024/1024:.2f} MB", is_info=True)
+        self._log(f"压测任务: {len(self.stress_task_list)} 个任务组合, {self.stress_target_loop} 轮循环, 总大小: {self.stress_total_bytes/1024/1024:.2f} MB", is_info=True)
 
         self.view.stress_start_btn.setEnabled(False)
         self.view.stress_stop_btn.setEnabled(True)
@@ -747,8 +821,8 @@ class UpgradeController(BaseController):
         """Execute next package in the list, or loop."""
         if not self.is_stress_mode: return
 
-        # Check if we finished all packages in current loop
-        if self.stress_pkg_index >= len(self.stress_pkg_list):
+        # Check if we finished all tasks in current loop
+        if self.stress_pkg_index >= len(self.stress_task_list):
             self.stress_current_loop += 1
             self.stress_pkg_index = 0
             self._log(f"=== 完成第 {self.stress_current_loop} 轮循环 ===", is_info=True)
@@ -761,11 +835,16 @@ class UpgradeController(BaseController):
              self.is_stress_mode = False
              return
 
-        # Prepare Next Package
-        current_pkg_path = self.stress_pkg_list[self.stress_pkg_index]
-        self._log(f"正在执行: Loop {self.stress_current_loop + 1}/{self.stress_target_loop} - File {self.stress_pkg_index + 1}/{len(self.stress_pkg_list)}: {os.path.basename(current_pkg_path)}", is_info=True)
+        # Prepare Next Task
+        current_task = self.stress_task_list[self.stress_pkg_index]
+        pkg_path = current_task['pkg']
+        cfg_path = current_task['cfg']
 
-        # Advance index for next time (or do it after finish? do it here so next call knows)
+        self._log(f"正在执行: Loop {self.stress_current_loop + 1}/{self.stress_target_loop} - Task {self.stress_pkg_index + 1}/{len(self.stress_task_list)}", is_info=True)
+        self._log(f"  Pkg: {os.path.basename(pkg_path)}", is_info=True)
+        self._log(f"  Cfg: {os.path.basename(cfg_path)}", is_info=True)
+
+        # Advance index for next time
         self.stress_pkg_index += 1
 
         # Check DoIP again (in case dropped)
@@ -773,17 +852,25 @@ class UpgradeController(BaseController):
         doip_handler = device_service.get_doip_client()
         if not doip_handler or not doip_handler.connected:
              # Try reconnect? Rely on Service auto-reconnect or fail?
-             # User asked for auto-reconnect in DeviceService, so we assume it works or we fail.
              if not doip_handler or not doip_handler.connected:
                  self._log("错误: DoIP断开，停止压测", is_info=True)
                  self._stop_stress_upgrade()
                  return
 
+        # Load config for this step
+        try:
+            with open(cfg_path, 'r', encoding='utf-8') as f:
+                self.upgrade_config = json.load(f)
+        except Exception as e:
+            self._log(f"加载任务配置失败: {e}", is_info=True)
+            self._stop_stress_upgrade()
+            return
+
         # Start Worker
         if self.thread and self.thread.isRunning():
             self.thread.wait() # Ensure clean
 
-        self.thread = UpgradeWorker(self.upgrade_config, current_pkg_path, doip_handler)
+        self.thread = UpgradeWorker(self.upgrade_config, pkg_path, device_service)
         self.thread.log_signal.connect(self._log)
         self.thread.progress_signal.connect(self._on_worker_progress)
         self.thread.finished_signal.connect(self._on_worker_finished)

@@ -118,3 +118,11 @@ class DIDModel(BaseModel):
             if hasattr(row, key):
                 setattr(row, key, value)
         self.dataChanged.emit()
+
+    def clear_all_values(self) -> None:
+        """Clear values of all rows."""
+        for row in self.did_rows:
+            row.value = ""
+            row.value_color = None
+        self.dataChanged.emit()
+

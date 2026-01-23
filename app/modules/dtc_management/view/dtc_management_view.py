@@ -3,6 +3,7 @@ from datetime import datetime
 from PyQt5 import QtWidgets, QtCore, QtGui
 from PyQt5.QtCore import Qt
 
+from app.common.log.operation_log_manager import OperationLogManager
 from app.common.ui.widgets import ModernButton
 from app.presentation.views.base_view import BaseView
 
@@ -263,6 +264,7 @@ class DTCView(BaseView):
         layout.addWidget(self.freeze_table)
 
     def append_log(self, message: str):
+        OperationLogManager.instance().append_log("DTC故障诊断", message)
         ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")
         if hasattr(self, 'log_edit'):
             self.log_edit.appendPlainText(f"[{ts}] {message}")

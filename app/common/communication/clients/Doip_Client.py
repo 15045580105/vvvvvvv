@@ -124,6 +124,13 @@ class DoIPClientHandler:
             )
 
             # 创建DoIP客户端实例，同时显式指定客户端逻辑地址(源地址)
+            # 先尝试关闭旧连接（如果有）
+            try:
+                if self.doip_client:
+                    self.doip_client.close()
+            except Exception:
+                pass
+
             self.doip_client = DoIPClient(
                 ecu_ip_address=ecu_ip,
                 ecu_logical_address=ecu_logical_address,
@@ -189,6 +196,11 @@ class DoIPClientHandler:
                 # 仍然尝试接收诊断消息（有些 ECUs 可能不发 ACK 但直接返回数据）
             except IOError as e:
                 logger.error(f"send_diagnostic 返回 IO 错误: {e}")
+                self.connected = False
+                try:
+                    self.doip_client.close()
+                except Exception:
+                    pass
                 return None if not return_all else []
 
             # 发送后在 timeout 窗口内循环接收 DiagnosticMessage，以收集多条回复

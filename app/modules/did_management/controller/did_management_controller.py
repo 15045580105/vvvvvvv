@@ -26,9 +26,16 @@ from app.modules.did_management.view.did_management_view import (
 from app.services.diagnostic.dpt_service import DPTService
 from app.common.utils.security_access_helper import SecurityAccessHelper
 from app.modules.ecu_initialization.controller.ecu_initialization_controller import ECUInitController
+from app.common.utils.path_utils import get_app_data_path
 
 
-DID_LIST_FILE = os.path.join(os.path.dirname(os.path.dirname(__file__)), "did_list.json")
+_did_dir = os.path.join(get_app_data_path(), "DID")
+if not os.path.exists(_did_dir):
+    try:
+        os.makedirs(_did_dir, exist_ok=True)
+    except OSError:
+        pass
+DID_LIST_FILE = os.path.join(_did_dir, "did_list.json")
 
 
 class DIDLoaderThread(QtCore.QThread):
@@ -112,7 +119,7 @@ class DIDController(BaseController):
         try:
             QtCore.QTimer.singleShot(
                 0,
-                lambda: self.view.set_column_pixel_widths([30, 400, 100, 100, 100, 200, 200, 600]),
+                lambda: self.view.set_column_pixel_widths([30, 400, 100, 100, 150, 200, 200, 600]),
             )
         except Exception:
             pass
@@ -145,6 +152,7 @@ class DIDController(BaseController):
         self.view.value_detail_requested.connect(self._on_value_detail_requested)
         self.view.read_requested.connect(self._on_read_clicked)
         self.view.write_requested.connect(self._on_write_clicked)
+        self.view.clear_requested.connect(self._on_clear_clicked)
         self.view.add_row_requested.connect(self._on_add_row)
         self.view.remove_row_requested.connect(self._on_remove_row)
         self.view.move_up_requested.connect(self._on_move_up)
@@ -152,6 +160,11 @@ class DIDController(BaseController):
         # 表格交互行为：完全由 controller 控制
         self.view.cell_clicked.connect(self._on_cell_clicked)
         self.view.cell_double_clicked.connect(self._on_cell_double_clicked)
+
+        # 连接表头复选框信号
+        header = self.view.table.horizontalHeader()
+        if hasattr(header, "checkBoxClicked"):
+            header.checkBoxClicked.connect(self._on_header_checkbox_toggled)
 
         # 加载保存的 DID 列表
         self._load_dids_from_file()
@@ -203,6 +216,22 @@ class DIDController(BaseController):
         self._loader_thread = None
 
 
+    def _on_clear_clicked(self) -> None:
+        """Handle clear button clicked."""
+        self.model.reset_raw_log()
+        self.model.clear_all_values()
+
+        # Manually clear text area in view if model change doesn't trigger it fast enough or if binding is missing
+        # The model.reset_raw_log() cleans model data, but we should make sure View is updated.
+        # on_model_changed calls view.raw_text.setText(self.model.raw_data)
+        # on_model_changed calls _rebuild_table()
+        # So it should be handled automatically by on_model_changed if connected properly.
+        # BaseController connects model.dataChanged to on_model_changed.
+        # Let's verify base_controller later, but assuming standard MV pattern here.
+
+        # Also clean up any lingering toast or errors if needed? No, just data.
+
+
     # ---------- delegate 选项提供 ----------
 
     def _data_format_items(self, index: QtCore.QModelIndex):
@@ -213,6 +242,120 @@ class DIDController(BaseController):
 
     def _security_items(self, index: QtCore.QModelIndex):
         return self.model.security_options
+
+    def _resolve_dpt_params(self, did_info: dict, is_write: bool) -> Tuple[str, str]:
+        """根据 DPT 信息解析应使用的会话与安全等级。"""
+        sess_map = did_info.get("raw_session_support", {})
+        sec_map = did_info.get("raw_security_support", {})
+        syn_sess = str(did_info.get("diagnostic_session", ""))
+        syn_sec = str(did_info.get("security_access", ""))
+
+        # Helper: 解析支持状态 (x=读, x/x=读/写, -/-=不支持)
+        def _check_support(val, specific_access="READ"):
+             s = str(val).strip().upper()
+             # Explicit Not Supported or empty
+             if not s or s in ["-", "N/A", "NONE", "0", "FALSE", "-/-"]:
+                 return False
+
+             # Case 1: Slash Format "X/Y" (Read/Write)
+             if "/" in s:
+                 parts = s.split("/")
+                 if len(parts) >= 2:
+                     read_part = parts[0].strip()
+                     write_part = parts[1].strip()
+
+                     # Check Write Part
+                     can_write = write_part in ["X", "O", "1", "YES", "TRUE", "SUPPORT", "SUPPORTED"]
+                     # Check Read Part
+                     can_read = read_part in ["X", "O", "1", "YES", "TRUE", "SUPPORT", "SUPPORTED"]
+
+                     if specific_access == "WRITE":
+                         return can_write
+                     else: # READ
+                         return can_read
+
+             # Case 2: Standard Boolean Strings (unambiguous support)
+             if s in ["O", "YES", "TRUE", "SUPPORT", "SUPPORTED", "1"]:
+                 return True
+
+             # Case 3: Single "X" -> Implies Read Only (as per user rule "单独的x就是读")
+             if s == "X":
+                  return specific_access == "READ"
+
+             return False
+
+        # Priority Lists (Map key -> Display Name)
+        # Session Priority: Extended -> Default -> Programming
+        session_prio = [("extended", "Extended (0x03)"), ("default", "Default (0x01)"), ("programming", "Programming (0x02)")]
+
+        # Security Priority: Level 1 -> Level 2 -> Level 3 -> Flash -> Locked
+        sec_keys_prio = ["level1", "level2", "level3", "level_flash", "locked"]
+
+        # Model Value Mappings
+        sec_value_map = {
+            "level1": "Level1 [0x01]",
+            "level2": "Level2 [0x03]",
+            "level3": "Level3 [0x21]",
+            "level_flash": "Level Flash [0x11]",
+            "locked": "Locked"
+        }
+
+        # Defaults
+        target_sess = "Extended (0x03)"
+        target_sec = "Level1 [0x01]"
+
+        # --- 1. SESSION RESOLUTION ---
+        best_sess = None
+        access_mode = "WRITE" if is_write else "READ"
+
+        def find_sess(mode):
+             for k, display_name in session_prio:
+                 val = sess_map.get(k)
+                 if _check_support(val, mode):
+                     return display_name
+             return None
+
+        # Try to find session supporting desired access
+        best_sess = find_sess(access_mode)
+
+        # Fallback logic: If Write requested but no session supports Write,
+        # fallback to finding a Read session (User req: "不可写则按照读执行")
+        if not best_sess and is_write:
+             best_sess = find_sess("READ")
+
+        if best_sess:
+             target_sess = best_sess
+        else:
+             # Fallback to synthesized string if available (Legacy/Info fallback)
+             if syn_sess and "Default" in syn_sess: target_sess = "Default (0x01)"
+             elif syn_sess and "Programming" in syn_sess: target_sess = "Programming (0x02)"
+             # Else keep Extended default
+
+        # --- 2. SECURITY RESOLUTION ---
+        best_sec = None
+
+        def find_sec(mode):
+             for k in sec_keys_prio:
+                 val = sec_map.get(k)
+                 if _check_support(val, mode):
+                     return sec_value_map.get(k, "Locked")
+             return None
+
+        best_sec = find_sec(access_mode)
+        if not best_sec and is_write:
+             best_sec = find_sec("READ")
+
+        if best_sec:
+             target_sec = best_sec
+        else:
+             # Fallback to synthesized string
+             if "Locked" in syn_sec: target_sec = "Locked"
+             elif "Level 1" in syn_sec: target_sec = "Level1 [0x01]"
+             elif "Level 2" in syn_sec: target_sec = "Level2 [0x03]"
+             elif "Level 3" in syn_sec: target_sec = "Level3 [0x21]"
+             elif "Flash" in syn_sec: target_sec = "Level Flash [0x11]"
+
+        return target_sess, target_sec
 
     # -------------------- 顶部按钮行为 --------------------
 
@@ -226,38 +369,28 @@ class DIDController(BaseController):
         4. 执行 Read (0x22) 或 Write (0x2E)
         5. 更新 UI
         """
-        if not self._device_service.get_doip_client():
-            self.model.apply_update(rx="错误: 未连接 DoIP 设备")
-            self.model.update_row(row_index, value_color="#EF4444")
-            return
+
+        target_session_name = row.diagnostic_session
+        target_security_name = row.security_access
 
         # 如果勾选了 Follow DPT，尝试从 DPT 获取会话和安全等级
+        # 修改逻辑：不改变界面配置，仅在执行时使用 DPT 中的信息
         if row.follow_dpt:
             if not self._dpt_service.is_ready():
                 MessageToast.show_message(self.view, "DPT解析未完成，请稍候", "warning")
                 return
 
             did_info = self._dpt_service.get_did_info(row.did)
+            # 即使 did_info 为空，也可能需要按照 Follow DPT 的逻辑（如默认扩展会话）执行？
+            # 这里保守起见，只有 info 存在才覆盖
             if did_info:
-                dpt_session = did_info.get("diagnostic_session")
-                dpt_security = did_info.get("security_access")
-
-                updates = {}
-                if dpt_session:
-                    row.diagnostic_session = str(dpt_session)
-                    updates["diagnostic_session"] = str(dpt_session)
-                if dpt_security:
-                    row.security_access = str(dpt_security)
-                    updates["security_access"] = str(dpt_security)
-
-                if updates:
-                    self.model.update_row(row_index, **updates)
-                    # 保存更新后的配置
-                    self._save_dids_to_file()
+                target_session_name, target_security_name = self._resolve_dpt_params(
+                    did_info, is_write
+                )
 
         # 1. 诊断会话控制 (0x10)
         target_session = 0x01
-        sess_str = row.diagnostic_session
+        sess_str = target_session_name
 
         # 1. 尝试解析 "0xXX" 格式 (支持括号、方括号或直接写)
         match = re.search(r"0x([0-9A-Fa-f]+)", sess_str)
@@ -275,6 +408,11 @@ class DIDController(BaseController):
                 try:
                     target_session = int(sess_str)
                 except:
+                    # 如果无法解析，尝试保持 0x01 (Default) 或改为 0x03 (Extended)？
+                    # 鉴于"Normal circumstances go extended"，如果 Follow DPT 且解析失败，也许应该 0x03。
+                    # 但这里还是保持原本逻辑（Fallthrough to 0x01 initialized above or int conversion）
+                    if "Extended" in sess_str: # Double check case
+                        target_session = 0x03
                     pass
 
         tx_session = bytes([0x10, target_session])
@@ -283,13 +421,13 @@ class DIDController(BaseController):
 
         if not rx_session or rx_session[0] != 0x50:
              self.model.apply_update(rx=f"会话控制失败: {rx_session.hex(' ').upper() if rx_session else '无响应'}")
-             self.model.update_row(row_index, value_color="#EF4444")
+             self.model.update_row(row_index, value="", value_color="#EF4444")
              return
         self.model.apply_update(rx=f"会话控制成功: {rx_session.hex(' ').upper()}")
 
         # 2. 安全访问 (0x27)
         sec_level = 0
-        sec_str = row.security_access
+        sec_str = target_security_name
 
         # 如果是 Locked 或 None，则不进行安全访问
         if "Locked" in sec_str or "None" in sec_str:
@@ -323,13 +461,13 @@ class DIDController(BaseController):
             self.model.apply_update(rx=f"收到种子: {rx_seed.hex(' ').upper()}")
             if not rx_seed or rx_seed[0] != 0x67:
                 self.model.apply_update(rx=f"请求种子失败: {rx_seed.hex(' ').upper() if rx_seed else '无响应'}")
-                self.model.update_row(row_index, value_color="#EF4444")
+                self.model.update_row(row_index, value="", value_color="#EF4444")
                 return
 
             # 计算密钥
             if len(rx_seed) < 3:
                  self.model.apply_update(rx=f"种子响应长度不足")
-                 self.model.update_row(row_index, value_color="#EF4444")
+                 self.model.update_row(row_index, value="", value_color="#EF4444")
                  return
 
             seed = rx_seed[2:]
@@ -348,12 +486,12 @@ class DIDController(BaseController):
 
                 if not rx_key or rx_key[0] != 0x67:
                     self.model.apply_update(rx=f"安全访问失败: {rx_key.hex(' ').upper() if rx_key else '无响应'}")
-                    self.model.update_row(row_index, value_color="#EF4444")
+                    self.model.update_row(row_index, value="", value_color="#EF4444")
                     return
                 self.model.apply_update(rx=f"安全访问成功: {rx_key.hex(' ').upper()}")
             else:
                 self.model.apply_update(rx=error_msg or "密钥计算失败")
-                self.model.update_row(row_index, value_color="#EF4444")
+                self.model.update_row(row_index, value="", value_color="#EF4444")
                 return
 
         # 3. 读/写 DID
@@ -392,7 +530,7 @@ class DIDController(BaseController):
 
             if not rx_bytes:
                 self.model.apply_update(rx="写入失败: 无响应")
-                self.model.update_row(row_index, value_color="#EF4444")
+                self.model.update_row(row_index, value="", value_color="#EF4444")
                 return
 
             self.model.apply_update(rx=f"写入响应: {rx_bytes.hex(' ').upper()}")
@@ -472,6 +610,10 @@ class DIDController(BaseController):
             MessageToast(self.view).show_toast("请先连接设备 (DoIP)", 1)
             return
 
+        # Clear value and status for selected rows before reading
+        for row_index, row in selected_rows:
+            self.model.update_row(row_index, value="", value_color=None)
+
         for row_index, row in selected_rows:
             self._process_did_row(row_index, row, is_write=False)
             QtWidgets.QApplication.processEvents()
@@ -490,6 +632,10 @@ class DIDController(BaseController):
         if not self._device_service.get_doip_client():
              MessageToast(self.view).show_toast("请先连接设备 (DoIP)", 1)
              return
+
+        # Clear status for selected rows before writing (keeping value as it is the input)
+        for row_index, row in selected_rows:
+            self.model.update_row(row_index, value_color=None)
 
         for row_index, row in selected_rows:
             self._process_did_row(row_index, row, is_write=True)
@@ -514,6 +660,7 @@ class DIDController(BaseController):
         """模型更新时刷表格与原始数据显示。"""
         self._rebuild_table()
         self.view.raw_text.setText(self.model.raw_data)
+        self.view.raw_text.moveCursor(QtGui.QTextCursor.End)
 
     def get_view(self):
         """返回视图实例供外部容器使用。"""
@@ -565,8 +712,9 @@ class DIDController(BaseController):
 
             # Follow DPT
             dpt_item = QtWidgets.QTableWidgetItem()
-            dpt_item.setFlags(Qt.ItemIsUserCheckable | Qt.ItemIsEnabled | Qt.ItemIsSelectable)
+            dpt_item.setFlags(QtCore.Qt.ItemFlags(Qt.ItemIsUserCheckable | Qt.ItemIsEnabled | Qt.ItemIsSelectable))
             dpt_item.setCheckState(Qt.Checked if row.follow_dpt else Qt.Unchecked)
+            dpt_item.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
             table.setItem(r, 4, dpt_item)
 
             # DiagnosticSession
@@ -684,6 +832,20 @@ class DIDController(BaseController):
         )
         self.model.dataChanged.emit()
         self.view.table.selectRow(row + 1)
+        self._save_dids_to_file()
+
+    def _on_header_checkbox_toggled(self, column_index: int, checked: bool) -> None:
+        """处理表头复选框点击事件：全选/全不选。"""
+        # 批量更新模型
+        if column_index == 0:  # Checkbox column
+            for row in self.model.did_rows:
+                row.selected = checked
+        elif column_index == 4:  # Follow DPT column
+            for row in self.model.did_rows:
+                row.follow_dpt = checked
+
+        # 触发全量更新视图
+        self.model.dataChanged.emit()
         self._save_dids_to_file()
 
     def _on_item_changed(self, item: QtWidgets.QTableWidgetItem) -> None:

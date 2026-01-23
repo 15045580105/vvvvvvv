@@ -1,4 +1,6 @@
 from PyQt5 import QtWidgets, QtCore, QtGui
+
+from app.common.log.operation_log_manager import OperationLogManager
 from app.presentation.views.base_view import BaseView
 from app.common.ui.widgets import ModernButton, CheckableComboBox
 from app.common.ui.modern_widgets import MessageToast
@@ -231,6 +233,9 @@ class CommonConfigView(BaseView):
         self._append_log(self.routine_log_text, message)
 
     def _append_log(self, text_edit, message: str):
+        # Record to OperationLogManager
+        OperationLogManager.instance().append_log("通用配置", message)
+
         timestamp = QtCore.QDateTime.currentDateTime().toString("yyyy-MM-dd HH:mm:ss")
         log_msg = f"[{timestamp}] {message}"
         text_edit.append(log_msg)

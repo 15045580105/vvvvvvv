@@ -4,7 +4,6 @@ from app.common.ui.constants import PageConfig
 
 class WelcomeWidget(QtWidgets.QWidget):
 
-    # Signal emitting the display text of the page to open
     action_clicked = pyqtSignal(str)
 
     def __init__(self, parent=None):

@@ -1,3 +1,5 @@
+import json
+import os
 from datetime import datetime
 from PyQt5 import QtCore, QtWidgets
 from app.core.base_controller import BaseController
@@ -6,6 +8,15 @@ from app.modules.dtc_management.view.dtc_management_view import DTCView
 from app.core.dependency_injection import di_container
 from app.services.device_manage.device_service import DeviceService
 from app.services.diagnostic.dpt_service import DPTService
+from app.common.utils.path_utils import get_app_data_path
+
+_dtc_dir = os.path.join(get_app_data_path(), "DTC")
+if not os.path.exists(_dtc_dir):
+    try:
+        os.makedirs(_dtc_dir, exist_ok=True)
+    except OSError:
+        pass
+DTC_LIST_FILE = os.path.join(_dtc_dir, "dtc_list.json")
 
 
 class DTCController(BaseController):
@@ -37,8 +48,50 @@ class DTCController(BaseController):
         self.dpt_status_signal.connect(self.handle_dpt_status)
         self._dpt_service.add_status_callback(self._on_dpt_status)
 
-        # 加载保存的 DID 列表
+        # 加载保存的 DTC 列表
+        self.load_dtc_list()
         self.on_model_changed()
+
+    def load_dtc_list(self):
+        if not os.path.exists(DTC_LIST_FILE):
+             return
+
+        try:
+             with open(DTC_LIST_FILE, "r", encoding="utf-8") as f:
+                 data = json.load(f)
+                 # dtcs stored as list of lists in JSON, convert to list of tuples if needed,
+                 # but for now list of lists is compatible if we index it.
+                 # Python tuples become lists in JSON.
+                 self.model.dtcs = [tuple(x) for x in data.get("dtcs", [])]
+                 self.model.freeze_frames = data.get("freeze_frames", [])
+
+                 # Recalculate categories
+                 parsed_dtcs = self.model.dtcs
+                 total = len(parsed_dtcs)
+                 current = sum(1 for x in parsed_dtcs if x[4] == "当前故障")
+                 history = sum(1 for x in parsed_dtcs if x[4] == "历史故障")
+                 pending = sum(1 for x in parsed_dtcs if x[4] == "未决故障")
+
+                 self.model.categories = [
+                    f"全部故障 ({total})",
+                    f"当前故障 ({current})",
+                    f"历史故障 ({history})",
+                    f"未决故障 ({pending})",
+                 ]
+
+        except Exception as e:
+             self.view.append_log(f"加载 DTC 列表出错: {e}")
+
+    def save_dtc_list(self):
+        data = {
+            "dtcs": self.model.dtcs,
+            "freeze_frames": self.model.freeze_frames
+        }
+        try:
+            with open(DTC_LIST_FILE, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=4, ensure_ascii=False)
+        except Exception as e:
+            self.view.append_log(f"保存 DTC 列表出错: {e}")
 
     def _on_dpt_status(self, status, message):
         self.dpt_status_signal.emit(status, message)
@@ -81,26 +134,21 @@ class DTCController(BaseController):
 
         device_service = di_container.resolve(DeviceService)
         if not device_service:
-             self.view.append_log("DeviceService not found")
-             return
-
-        client = device_service.get_doip_client()
-        if not client or not client.is_connected():
-             self.view.append_log("DoIP not connected")
+             self.view.append_log("未找到设备服务")
              return
 
         # 19 02 AF
         req_data = bytes([0x19, 0x02, 0xAF])
         self.log_message("TX", req_data)
 
-        # Send request
-        resp = client.send_doip_message(req_data, timeout=2.0)
+        # Send request using device_service
+        resp = device_service.send_doip_payload(req_data, timeout=2.0)
 
         if resp:
              self.log_message("RX", resp)
              self.parse_dtc_response(resp)
         else:
-             self.view.append_log("No response")
+             self.view.append_log("无响应")
 
     def log_message(self, direction, data):
         # Format: YYYY-MM-DD HH:MM:SS.microseconds (6 digits)
@@ -112,11 +160,11 @@ class DTCController(BaseController):
         try:
             # Response format: 59 02 Mask [DTC1 DTC2 DTC3 Status] ...
             if len(resp) < 3:
-                self.view.append_log("Response too short")
+                self.view.append_log("响应数据太短")
                 return
 
             if resp[0] != 0x59:
-                self.view.append_log(f"Negative response or invalid SID: {resp[0]:02X}")
+                self.view.append_log(f"负响应或无效 SID: {resp[0]:02X}")
                 return
 
             # availability_mask = resp[2]
@@ -135,8 +183,8 @@ class DTCController(BaseController):
                 try:
                     dtc_code = self._bytes_to_dtc_code(dtc_bytes)
                 except Exception as e:
-                    self.view.append_log(f"Error parsing DTC bytes {dtc_bytes}: {e}")
-                    dtc_code = "UNKNOWN"
+                    self.view.append_log(f"解析 DTC 字节出错 {dtc_bytes}: {e}")
+                    dtc_code = "未知"
 
                 status_hex = f"0x{status:02X}"
 
@@ -145,7 +193,7 @@ class DTCController(BaseController):
 
                 # Get description from DPT service if available
                 desc = "未知故障"
-                subsystem = "Unknown"
+                subsystem = "未知"
 
                 try:
                     if self._dpt_service and self._dpt_service.is_ready():
@@ -156,7 +204,7 @@ class DTCController(BaseController):
                                 desc = str(fetched_desc)
                             # subsystem = dtc_info.get("subsystem", subsystem) # If available
                 except Exception as e:
-                    self.view.append_log(f"Error getting info for {dtc_code}: {e}")
+                    self.view.append_log(f"获取 {dtc_code} 信息出错: {e}")
 
                 # Tuple: (code, desc, subsystem, status_code, fault_state, freeze_state)
                 # Ensure all elements are strings to prevent UI crashes
@@ -186,10 +234,11 @@ class DTCController(BaseController):
             ]
 
             self.model.dataChanged.emit()
-            self.view.append_log(f"Parsed {total} DTCs")
+            self.view.append_log(f"已解析 {total} 个故障码")
+            self.save_dtc_list()
 
         except Exception as e:
-            self.view.append_log(f"Error parsing DTC response: {e}")
+            self.view.append_log(f"解析 DTC 响应出错: {e}")
             import traceback
             traceback.print_exc()
 
@@ -210,7 +259,7 @@ class DTCController(BaseController):
         # Get filtered list to find correct DTC
         filtered = self._get_filtered_dtcs()
         if row_index < 0 or row_index >= len(filtered):
-            self.view.append_log(f"Invalid row index: {row_index}")
+            self.view.append_log(f"无效的行索引: {row_index}")
             return
 
         dtc_entry = filtered[row_index]
@@ -219,14 +268,13 @@ class DTCController(BaseController):
         self.view.append_log(f"开始读取冻结帧: {dtc_code}")
         self.view.update_freeze_read_status(row_index, False) # Set to reading/failed initially? Or just keep as is.
 
+        # Clear previous freeze frames to show only latest
+        self.model.freeze_frames = []
+        self.model.dataChanged.emit()
+
         device_service = di_container.resolve(DeviceService)
         if not device_service:
-             self.view.append_log("DeviceService not found")
-             return
-
-        client = device_service.get_doip_client()
-        if not client or not client.is_connected():
-             self.view.append_log("DoIP not connected")
+             self.view.append_log("未找到设备服务")
              return
 
         # Convert DTC to bytes
@@ -236,7 +284,7 @@ class DTCController(BaseController):
         req_data = bytes([0x19, 0x04]) + dtc_bytes + bytes([0xFF])
         self.log_message("TX", req_data)
 
-        resp = client.send_doip_message(req_data, timeout=2.0)
+        resp = device_service.send_doip_payload(req_data, timeout=2.0)
 
         if resp:
             self.log_message("RX", resp)
@@ -247,7 +295,7 @@ class DTCController(BaseController):
             new_status = "读取成功" if success else "读取失败"
             self._update_dtc_freeze_status(dtc_code, new_status)
         else:
-            self.view.append_log("No response for freeze frame")
+            self.view.append_log("冻结帧无响应")
             self.view.update_freeze_read_status(row_index, False)
             self._update_dtc_freeze_status(dtc_code, "读取失败")
 
@@ -263,16 +311,17 @@ class DTCController(BaseController):
                     new_dtc = (dtc[0], dtc[1], dtc[2], dtc[3], dtc[4], status)
                     self.model.dtcs[i] = new_dtc
                 break
+        self.save_dtc_list()
 
     def handle_clear_dtcs(self):
         device_service = di_container.resolve(DeviceService)
         if not device_service:
-             self.view.append_log("DeviceService not found")
+             self.view.append_log("未找到设备服务")
              return
 
         client = device_service.get_doip_client()
         if not client or not client.is_connected():
-             self.view.append_log("DoIP not connected")
+             self.view.append_log("DoIP 未连接")
              return
 
         # 14 FF FF FF
@@ -290,6 +339,7 @@ class DTCController(BaseController):
         self.model.categories = ["全部故障 (0)", "当前故障 (0)", "历史故障 (0)", "未决故障 (0)"]
         self.model.dataChanged.emit()
         self.view.append_log("已发送清除故障码请求并清空界面")
+        self.save_dtc_list()
 
     def _get_filtered_dtcs(self):
         if self.current_filter == "all":
@@ -328,7 +378,7 @@ class DTCController(BaseController):
         # P0 -> 00, P1 -> 01, P2 -> 02, P3 -> 03
         # C0 -> 40, C1 -> 41, C2 -> 42, C3 -> 43
         # B0 -> 80, B1 -> 81, B2 -> 82, B3 -> 83
-        # U0 -> C0, U1 -> C1, U2 -> C2, U3 -> C3
+        # U0=C0, U1=C1, U2=C2, U3=C3
 
         if len(code) < 7:
             return bytes([0, 0, 0])
@@ -426,79 +476,113 @@ class DTCController(BaseController):
         if resp[0] != 0x59 or resp[1] != 0x04:
             return False
 
-        # We can try to parse multiple records if present, but usually we ask for FF (all) or specific.
-        # If we asked for FF, we might get multiple.
+        # Extract info
+        # dtc_bytes = resp[2:5]
+        status = resp[5] # Status of DTC
 
-        # Let's just take the payload and display it as one "Raw Data" item if we can't parse structure.
-        # Or try to parse one DID.
+        offset = 6
+        success = False
 
-        # Offset 2: DTC (3 bytes)
-        # Offset 5: Status (1 byte)
-        # Offset 6: Record Number (1 byte) (If present? Standard says yes)
-        # Offset 7: Number of Identifiers (1 byte)
-        # Offset 8: DID (2 bytes)
-        # Offset 10: Data...
+        # Determine Fault Type from Status? Or just uses Status byte.
+        # User screenshot shows "Type A" in Type column.
+        # Usually UDS doesn't provide "Type A" explicitly in 19 04.
+        # Maybe it comes from parsed DTC info or just hardcoded for valid snapshot?
+        # Let's show Status Hex for now or mapping if we had one.
+        type_str = f"Status 0x{status:02X}"
 
-        # Check if response matches requested DTC
-        resp_dtc = self._bytes_to_dtc_code(resp[2:5])
-        # Note: resp_dtc might match dtc_code.
+        # Loop over records
+        while offset < len(resp):
+            if offset + 2 > len(resp):
+                break
 
-        # Let's assume one record for now.
-        try:
-            num_ids = resp[7]
-            current_idx = 8
+            rec_num = resp[offset]
+            num_ids = resp[offset+1]
+            offset += 2
 
-            params = []
-
-            for i in range(num_ids):
-                if current_idx + 2 > len(resp):
+            # For each DID in this record
+            for _ in range(num_ids):
+                if offset + 2 > len(resp):
                     break
-                did = (resp[current_idx] << 8) | resp[current_idx+1]
-                current_idx += 2
 
-                # We don't know length of data for this DID.
-                # This is the problem.
-                # Unless we assume the rest is data for this DID (if num_ids=1).
-                if num_ids == 1:
-                    data_bytes = resp[current_idx:]
-                    val_str = " ".join([f"{b:02X}" for b in data_bytes])
-                    params.append({
-                        "byte": "All", "bit": "All",
-                        "name": "Raw Data",
-                        "value": val_str,
-                        "unit": "Hex"
-                    })
-                    break
+                did_val = (resp[offset] << 8) | resp[offset+1]
+                offset += 2
+                did_hex = f"{did_val:04X}"
+
+                did_len = 0
+                params = []
+
+                # Check DPT
+                parser = None
+                if self._dpt_service:
+                    parser = self._dpt_service.get_parser(did_hex)
+
+                if parser:
+                    # Calculate expected length
+                    if parser._fields:
+                        did_len = max(f.byte_offset + f.byte_length for f in parser._fields)
+
+                    if offset + did_len > len(resp):
+                         self.view.append_log(f"DID {did_hex} 数据被截断")
+                         break
+
+                    chunk = resp[offset : offset + did_len]
+                    offset += did_len
+
+                    # Parse
+                    result = parser.parse_bytes(chunk)
+
+                    for f in result.fields:
+                         # Split range
+                         byte_str = "All"
+                         bit_str = "All"
+                         if "/" in f.range_str:
+                             parts = f.range_str.split("/")
+                             byte_str = parts[0]
+                             if len(parts) > 1:
+                                 bit_str = parts[1]
+
+                         # Separate Value/Unit
+                         val_txt = f.parsed_value
+                         unit_txt = f.unit
+
+                         if unit_txt and val_txt.endswith(" " + unit_txt):
+                             val_txt = val_txt[:-len(unit_txt)-1]
+                         elif unit_txt and val_txt.endswith("(" + unit_txt + ")"):
+                              val_txt = val_txt[:-len(unit_txt)-2].strip()
+
+                         params.append({
+                             "byte": byte_str,
+                             "bit": bit_str,
+                             "name": f.name if not f.group else f"[{f.group}] {f.name}",
+                             "value": val_txt,
+                             "unit": unit_txt
+                         })
                 else:
-                    # Can't parse multiple without length info.
+                    # Unknown DID - Strategy: Stop parsing record?
+                    # If we don't know length, we can't continue to next DID.
+                    # We consume rest of buffer if it looks like end?
+                    # Or just fail this record.
+                    self.view.append_log(f"冻结帧中发现未知 DID: {did_hex}。无法继续解析流。")
                     params.append({
                         "byte": "?", "bit": "?",
-                        "name": f"DID 0x{did:04X}",
-                        "value": "Unknown Length",
-                        "unit": "?"
+                        "name": f"DID 0x{did_hex} (未知)",
+                        "value": "结构未知",
+                        "unit": ""
                     })
-                    break # Stop
+                    # Force break outer loop as we are desynchronized
+                    offset = len(resp)
+                    break
 
-            # Create record
-            record = {
-                "code": dtc_code,
-                "desc": dtc_desc,
-                "type": "Snapshot",
-                "did": f"0x{resp[6]:02X}", # Using Record Number as DID field for display? Or the DID we found?
-                # The table expects "DID". In freeze frame context, usually we have DID (Data Identifier).
-                # But here we have Record Number.
-                # Let's use Record Number as DID column or just "Rec " + num.
-                "length": len(resp) - 6,
-                "params": params
-            }
+                # Add Entry per DID
+                self.model.freeze_frames.append({
+                    "code": dtc_code,
+                    "desc": dtc_desc,
+                    "type": type_str,
+                    "did": f"0x{did_hex}",
+                    "length": did_len,
+                    "params": params
+                })
+                success = True
 
-            # Append to model
-            self.model.freeze_frames.append(record)
-            self.model.dataChanged.emit()
-            return True
-
-        except Exception as e:
-            self.view.append_log(f"Parse error: {e}")
-            return False
-
-
+        self.model.dataChanged.emit()
+        return success
