@@ -445,6 +445,7 @@ class UDSSequenceView(QtWidgets.QWidget):
         self.request_edit.setStyleSheet("border: 1px solid #D1D5DB; border-radius: 4px;")
 
         self.send_btn = ModernButton("发送", "#059669")
+        self.send_btn.setToolTip("发送请求数据")
         self.send_btn.clicked.connect(self._on_send_clicked_internal)
         self.send_btn.setFixedWidth(80)
         self.send_btn.setFixedHeight(50)
@@ -465,6 +466,7 @@ class UDSSequenceView(QtWidgets.QWidget):
         self.response_edit.setStyleSheet("border: 1px solid #D1D5DB; border-radius: 4px;")
 
         self.insert_btn = ModernButton("插入", "#3B82F6")
+        self.insert_btn.setToolTip("将响应数据插入到下方表格")
         self.insert_btn.clicked.connect(self._on_insert_clicked_internal)
         self.insert_btn.setFixedWidth(80)
         self.insert_btn.setFixedHeight(50)
@@ -487,21 +489,25 @@ class UDSSequenceView(QtWidgets.QWidget):
         self.config_combo.currentTextChanged.connect(lambda text: self.config_load_requested.emit(text) if text else None)
 
         self.save_config_btn = ModernButton("保存", "#3B82F6")
+        self.save_config_btn.setToolTip("保存当前配置序列")
         self.save_config_btn.setFixedWidth(60)
         self.save_config_btn.setFixedHeight(32)
         self.save_config_btn.clicked.connect(self._on_save_config_clicked)
 
         self.del_config_btn = ModernButton("删除", "#EF4444")
+        self.del_config_btn.setToolTip("删除当前配置序列")
         self.del_config_btn.setFixedWidth(60)
         self.del_config_btn.setFixedHeight(32)
         self.del_config_btn.clicked.connect(self._on_del_config_clicked)
 
         self.import_config_btn = ModernButton("导入", "#10B981")
+        self.import_config_btn.setToolTip("导入外部配置文件")
         self.import_config_btn.setFixedWidth(60)
         self.import_config_btn.setFixedHeight(32)
         self.import_config_btn.clicked.connect(self.config_import_requested.emit)
 
         self.export_config_btn = ModernButton("导出", "#8B5CF6")
+        self.export_config_btn.setToolTip("导出配置到文件")
         self.export_config_btn.setFixedWidth(60)
         self.export_config_btn.setFixedHeight(32)
         self.export_config_btn.clicked.connect(self.config_export_requested.emit)
@@ -546,6 +552,14 @@ class UDSSequenceView(QtWidgets.QWidget):
                 }}
                 QPushButton:pressed {{
                     background-color: {self.adjust_color(color, -20)};
+                }}
+                QToolTip {{
+                    background-color: #1F2937;
+                    color: white;
+                    border: 1px solid #1F2937;
+                    border-radius: 4px;
+                    padding: 4px;
+                    opacity: 230;
                 }}
             """)
             btn.setFixedSize(32, 32)
@@ -595,6 +609,7 @@ class UDSSequenceView(QtWidgets.QWidget):
         self.send_times_spin.setFixedHeight(32)
 
         self.run_sequence_btn = ModernButton("执行序列", "#8B5CF6")
+        self.run_sequence_btn.setToolTip("按顺序执行下方列表中的所有勾选指令")
         self.run_sequence_btn.setFixedHeight(32)
         self.run_sequence_btn.setFixedWidth(90)
         self.run_sequence_btn.clicked.connect(lambda: self.run_sequence_requested.emit(self.send_times_spin.value()))
@@ -641,6 +656,14 @@ class UDSSequenceView(QtWidgets.QWidget):
             QPushButton:pressed {{
                 background-color: {self.adjust_color(color, -20)};
             }}
+            QToolTip {{
+                background-color: #1F2937;
+                color: white;
+                border: 1px solid #1F2937;
+                border-radius: 4px;
+                padding: 4px;
+                opacity: 230;
+            }}
         """)
         btn.setFixedSize(32, 32)
         btn.clicked.connect(lambda checked, op=operation: self.table_operation_requested.emit(op))
@@ -667,8 +690,9 @@ class UDSSequenceView(QtWidgets.QWidget):
         header.setHighlightSections(True)
         header.setSectionsMovable(True)  # Enable draggable columns
 
-        self.data_table.setAlternatingRowColors(True)
         self.data_table.setSelectionBehavior(QtWidgets.QTableWidget.SelectRows)
+
+        self.data_table.setAlternatingRowColors(True)
         self.data_table.setContextMenuPolicy(Qt.CustomContextMenu)
         self.data_table.customContextMenuRequested.connect(self._on_table_context_menu)
         # show vertical header so rows are numbered (like the screenshot)
@@ -824,8 +848,31 @@ class UDSSequenceView(QtWidgets.QWidget):
     def log_message(self, message: str):
         OperationLogManager.instance().append_log("UDS指令编排", message)
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")
-        self.exec_log.append(f"[{timestamp}] {message}")
+
+        # Colorize based on content
+        color = "#374151" # Default dark gray
+        if "TX:" in message:
+            color = "#2563EB" # Blue
+        elif "RX:" in message:
+            color = "#059669" # Green
+        elif "Error" in message or "错误" in message or "Fail" in message:
+            color = "#DC2626" # Red
+        elif "Warning" in message or "警告" in message:
+            color = "#D97706" # Orange
+
+        html_msg = f'<span style="color: {color};">[{timestamp}] {message}</span>'
+        self.exec_log.append(html_msg)
         self.exec_log.moveCursor(QtGui.QTextCursor.End)
+
+    def highlight_row(self, row_index: int):
+        """Scroll to and highlight the specified row."""
+        if 0 <= row_index < self.data_table.rowCount():
+             item = self.data_table.item(row_index, 1) # Use Name column item for positioning
+             if item:
+                 self.data_table.scrollToItem(item, QtWidgets.QAbstractItemView.PositionAtCenter)
+                 self.data_table.selectRow(row_index)
+                 # Optional: Explicitly set focus or visual feedback?
+                 # selectRow is usually enough for visual feedback in standard themes.
 
     # --- Internal slots to emit signals ---
     def _on_send_clicked_internal(self):
@@ -936,5 +983,13 @@ class UDSSequenceView(QtWidgets.QWidget):
             }}
             QPushButton:hover:!checked {{
                 background-color: #E5E7EB;
+            }}
+            QToolTip {{
+                background-color: #1F2937;
+                color: white;
+                border: 1px solid #1F2937;
+                border-radius: 4px;
+                padding: 4px;
+                opacity: 230;
             }}
         """)

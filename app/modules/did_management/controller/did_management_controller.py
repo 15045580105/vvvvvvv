@@ -76,6 +76,10 @@ class DIDController(BaseController):
         self.model = DIDModel(parent)
         self.view = DIDView(parent)
 
+        # 标志位：指示是否正在处理来自 View 的更新
+        # 用于防止 View -> Model -> View 的回环更新导致回弹或性能浪费
+        self._is_handling_view_update = False
+
         # 初始化 ECU 初始化控制器，使用 DIDView 中的子视图
         self.ecu_init_controller = ECUInitController(parent, view=self.view.ecu_init_view)
         self.ecu_init_controller.log_message.connect(self.on_ecu_init_log)
@@ -150,6 +154,8 @@ class DIDController(BaseController):
 
         # 绑定视图信号
         self.view.value_detail_requested.connect(self._on_value_detail_requested)
+        self.view.search_btn.clicked.connect(self._on_search_clicked)
+        self.view.search_input.returnPressed.connect(self._on_search_clicked)
         self.view.read_requested.connect(self._on_read_clicked)
         self.view.write_requested.connect(self._on_write_clicked)
         self.view.clear_requested.connect(self._on_clear_clicked)
@@ -157,6 +163,8 @@ class DIDController(BaseController):
         self.view.remove_row_requested.connect(self._on_remove_row)
         self.view.move_up_requested.connect(self._on_move_up)
         self.view.move_down_requested.connect(self._on_move_down)
+        self.view.move_top_requested.connect(self._on_move_top)
+
         # 表格交互行为：完全由 controller 控制
         self.view.cell_clicked.connect(self._on_cell_clicked)
         self.view.cell_double_clicked.connect(self._on_cell_double_clicked)
@@ -165,6 +173,11 @@ class DIDController(BaseController):
         header = self.view.table.horizontalHeader()
         if hasattr(header, "checkBoxClicked"):
             header.checkBoxClicked.connect(self._on_header_checkbox_toggled)
+
+        # 启用表头排序
+        header.sectionClicked.connect(self._on_header_section_clicked)
+        self._sort_col = -1
+        self._sort_order = Qt.AscendingOrder
 
         # 加载保存的 DID 列表
         self._load_dids_from_file()
@@ -595,6 +608,48 @@ class DIDController(BaseController):
                 self.model.update_row(row_index, value="", value_color="#EF4444")
 
 
+    def _on_search_clicked(self):
+        """Handle search button clicked or Enter pressed."""
+        text = self.view.search_input.text().strip().lower()
+        if not text:
+            return
+
+        # Start search from current selection + 1, or from 0
+        start_row = 0
+        current_rows = self.view.table.selectionModel().selectedRows()
+        if current_rows:
+            start_row = current_rows[0].row() + 1
+
+        row_count = self.view.table.rowCount()
+        found_row = -1
+
+        # Search from start_row to end
+        for i in range(start_row, row_count):
+            if self._match_row(i, text):
+                found_row = i
+                break
+
+        # If not found, Wrap around logic
+        if found_row == -1 and start_row > 0:
+             for i in range(0, start_row):
+                 if self._match_row(i, text):
+                    found_row = i
+                    break
+
+        if found_row != -1:
+            self.view.table.selectRow(found_row)
+            self.view.table.scrollToItem(self.view.table.item(found_row, 0))
+        else:
+            MessageToast(self.view).show_toast("未找到匹配的 DID", 1)
+
+    def _match_row(self, row, text):
+        """Check if DID (col 2) matches text."""
+        # Check DID column (index 2)
+        item = self.view.table.item(row, 2) # DID
+        if item and text in item.text().lower():
+            return True
+        return False
+
     def _on_read_clicked(self) -> None:
         """点击“读取”：按勾选顺序处理每一行。"""
         selected_rows = [
@@ -658,9 +713,173 @@ class DIDController(BaseController):
 
     def on_model_changed(self):
         """模型更新时刷表格与原始数据显示。"""
-        self._rebuild_table()
+        # 如果变更源自 View 自身的操作（如用户点击复选框），则无需反向刷新 View
+        if self._is_handling_view_update:
+            # 仅更新日志显示（如果需要），跳过表格重建
+            if self.view.raw_text.toPlainText() != self.model.raw_data:
+                self.view.raw_text.setText(self.model.raw_data)
+                self.view.raw_text.moveCursor(QtGui.QTextCursor.End)
+            return
+
+        # 针对编辑操作被回滚的问题：
+        # 如果 View 中有编辑器正在打开（处于编辑模式），我们应该非常谨慎地更新
+        # 否则更新操作会关闭编辑器，导致用户正在输入的内容丢失
+        if self.view.table.state() == QtWidgets.QAbstractItemView.EditingState:
+            # 如果处于编辑状态，且数据更新不是破坏性的（比如仅仅是某个非当前编辑单元格的值变了）
+            # 我们可以尝试只更新其他单元格。或者如果不紧急，暂时推迟更新？
+            # 简单起见，如果正在编辑，我们暂缓自动刷新，除非行数变了这种大动作。
+            # 但是如果读取操作返回了结果，我们需要显示结果。
+            # 如果读取操作返回结果，通常用户不是在编辑同一行。
+
+            # 所以，diff update 策略配合 blockSignals 应该能保住编辑器？
+            # 不，setItem 设置文本可能会导致编辑器关闭（如果是在同一个 cell）。
+            # 如果是其他 cell，应该没事？ QTableWidget 可能会在 setItem 时关闭所有编辑器。
+            # 测试表明 QTableWidget.setItem 会打断编辑。
+
+            # 策略：如果处于编辑状态，我们应该检测当前编辑的是哪个 cell，然后不更新那个 cell 的 item。
+            # 获取当前正在编辑的 item
+            current_item = self.view.table.currentItem()
+            # 或者 better: current index
+            current_index = self.view.table.currentIndex()
+        else:
+            current_index = QtCore.QModelIndex()
+
+        # 其他情况（如排序、加载文件、后台数据更新）需要刷新表格
+
+        # 彻底解决之道：
+        # 检测行数是否变化，或者顺序是否变化
+
+        # 1. 检测行数
+        current_row_count = self.view.table.rowCount()
+        model_row_count = len(self.model.did_rows)
+
+        needs_rebuild = False
+        if current_row_count != model_row_count:
+            needs_rebuild = True
+        else:
+            # 检查顺序 UserRole
+            for r in range(model_row_count):
+                item = self.view.table.item(r, 0)
+                if not item:
+                    needs_rebuild = True
+                    break
+                row_data = item.data(Qt.UserRole)
+                if row_data is not self.model.did_rows[r]:
+                    needs_rebuild = True
+                    break
+
+        if not needs_rebuild:
+            # 如果不需要全量重建，这里应该只是刷新一下值（针对非 View 触发的更新，例如 Read 操作返回结果）
+            # 我们需要一种机制来更新 View 中的值而不重建 Item
+            # 遍历所有行，检查值是否一致并更新
+            table = self.view.table
+            table.blockSignals(True) # 防止更新 View 时又触发 itemChanged
+            try:
+                for r, row in enumerate(self.model.did_rows):
+                    # Checkbox
+                    chk_item = table.item(r, 0)
+                    if chk_item:
+                        new_state = Qt.Checked if row.selected else Qt.Unchecked
+                        if chk_item.checkState() != new_state:
+                            chk_item.setCheckState(new_state)
+
+                    # Description (Col 1)
+                    if not (current_index.isValid() and current_index.row() == r and current_index.column() == 1):
+                        desc_item = table.item(r, 1)
+                        if desc_item and desc_item.text() != row.description:
+                            desc_item.setText(row.description)
+
+                    # DID (Col 2)
+                    if not (current_index.isValid() and current_index.row() == r and current_index.column() == 2):
+                        did_item = table.item(r, 2)
+                        if did_item and did_item.text() != row.did:
+                            did_item.setText(row.did)
+
+                    # Format (Col 3)
+                    if not (current_index.isValid() and current_index.row() == r and current_index.column() == 3):
+                        fmt_item = table.item(r, 3)
+                        if fmt_item and fmt_item.text() != row.data_format:
+                            fmt_item.setText(row.data_format)
+
+                    # Follow DPT (Col 4)
+                    dpt_item = table.item(r, 4)
+                    if dpt_item:
+                        new_dpt_state = Qt.Checked if row.follow_dpt else Qt.Unchecked
+                        if dpt_item.checkState() != new_dpt_state:
+                            dpt_item.setCheckState(new_dpt_state)
+
+                    # Session (Col 5)
+                    if not (current_index.isValid() and current_index.row() == r and current_index.column() == 5):
+                        sess_item = table.item(r, 5)
+                        if sess_item and sess_item.text() != row.diagnostic_session:
+                            sess_item.setText(row.diagnostic_session)
+
+                    # Security (Col 6)
+                    if not (current_index.isValid() and current_index.row() == r and current_index.column() == 6):
+                        sec_item = table.item(r, 6)
+                        if sec_item and sec_item.text() != row.security_access:
+                            sec_item.setText(row.security_access)
+
+                    # Value (Col 7)
+                    if not (current_index.isValid() and current_index.row() == r and current_index.column() == 7):
+                        val_item = table.item(r, 7)
+                        if val_item:
+                            if val_item.text() != row.value:
+                                val_item.setText(row.value)
+                            # Color - always safe to update?
+                            if getattr(row, "value_color", None):
+                                val_item.setForeground(QtGui.QBrush(QtGui.QColor(row.value_color)))
+                            else:
+                                val_item.setForeground(QtWidgets.QApplication.palette().text())
+
+            finally:
+                table.blockSignals(False)
+        else:
+            # 如果确实需要重建（行数变了，或者顺序变了）
+            # Save current state
+            h_scroll = self.view.table.horizontalScrollBar().value()
+            v_scroll = self.view.table.verticalScrollBar().value()
+            current_row = self.view.table.currentRow()
+
+            # Rebuild table
+            self._rebuild_table()
+
+            # Restore state
+            self.view.table.horizontalScrollBar().setValue(h_scroll)
+            self.view.table.verticalScrollBar().setValue(v_scroll)
+            if current_row >= 0 and current_row < self.view.table.rowCount():
+                self.view.table.selectRow(current_row)
+
+        # Update raw text log
         self.view.raw_text.setText(self.model.raw_data)
         self.view.raw_text.moveCursor(QtGui.QTextCursor.End)
+
+    # 被移除的拖拽逻辑占位
+    # def _on_row_moved_by_drag(self, from_row: int, to_row: int):
+    #     """Handle exact row move from view drag & drop."""
+    #     if from_row == to_row:
+    #         return
+    #     if from_row < 0 or from_row >= len(self.model.did_rows):
+    #         return
+    #     if to_row < 0 or to_row > len(self.model.did_rows):
+    #         return
+    #
+    #     # Perform list move
+    #     row_data = self.model.did_rows.pop(from_row)
+    #
+    #     # Adjust insertion index if moving down
+    #     # When removing from 'from_row', all subsequent indices shift down by 1.
+    #     # If we insert at a position > from_row, that position has conceptually shifted.
+    #     if from_row < to_row:
+    #         to_row -= 1
+    #
+    #     self.model.did_rows.insert(to_row, row_data)
+    #
+    #     self.model.dataChanged.emit()
+    #     self._save_dids_to_file()
+    #     # Force visual refresh to match model index order
+    #     self._rebuild_table()
+
 
     def get_view(self):
         """返回视图实例供外部容器使用。"""
@@ -671,6 +890,7 @@ class DIDController(BaseController):
     def _rebuild_table(self) -> None:
         table = self.view.table
         rows = self.model.did_rows
+        # 临时断开信号防止重置时触发改变
         table.blockSignals(True)
         table.setRowCount(len(rows))
 
@@ -683,12 +903,16 @@ class DIDController(BaseController):
             # 初始化该行的基础单元格
             self.view.build_row_widgets(r)
 
-            # checkbox
+            # checkbox (Column 0) - Fixed: Ensure flags are set correctly
             chk_item = table.item(r, 0)
             if chk_item is not None:
+                # Ensure ItemIsUserCheckable is set
+                chk_item.setFlags(chk_item.flags() | Qt.ItemIsUserCheckable | Qt.ItemIsEnabled | Qt.ItemIsSelectable)
                 chk_item.setCheckState(
                     Qt.Checked if row.selected else Qt.Unchecked
                 )
+                # Store the row object for drag & drop reordering
+                chk_item.setData(Qt.UserRole, row)
 
             # Description
             desc_item = QtWidgets.QTableWidgetItem(row.description)
@@ -712,7 +936,8 @@ class DIDController(BaseController):
 
             # Follow DPT
             dpt_item = QtWidgets.QTableWidgetItem()
-            dpt_item.setFlags(QtCore.Qt.ItemFlags(Qt.ItemIsUserCheckable | Qt.ItemIsEnabled | Qt.ItemIsSelectable))
+            # Ensure ItemIsUserCheckable is set for column 4 as well
+            dpt_item.setFlags(Qt.ItemIsUserCheckable | Qt.ItemIsEnabled | Qt.ItemIsSelectable)
             dpt_item.setCheckState(Qt.Checked if row.follow_dpt else Qt.Unchecked)
             dpt_item.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
             table.setItem(r, 4, dpt_item)
@@ -800,39 +1025,148 @@ class DIDController(BaseController):
         self._save_dids_to_file()
 
     def _on_remove_row(self) -> None:
-        """删除当前激活/选中的行。"""
-        row = self.view.table.currentRow()
-        if row < 0 or row >= len(self.model.did_rows):
-            return
-        del self.model.did_rows[row]
+        """删除当前选中的行（支持多选）。"""
+        selected_row_indices = sorted(
+            list(set(index.row() for index in self.view.table.selectedIndexes())),
+            reverse=True
+        )
+        if not selected_row_indices:
+            # Fallback to currentRow if no selection via selection model
+            row = self.view.table.currentRow()
+            if row >= 0 and row < len(self.model.did_rows):
+                selected_row_indices = [row]
+            else:
+                return
+
+        for row in selected_row_indices:
+            if 0 <= row < len(self.model.did_rows):
+                del self.model.did_rows[row]
+
         self.model.dataChanged.emit()
         self._save_dids_to_file()
 
     def _on_move_up(self) -> None:
-        """将当前行上移一位（如可上移）。"""
-        row = self.view.table.currentRow()
-        if row <= 0 or row >= len(self.model.did_rows):
-            return
-        self.model.did_rows[row - 1], self.model.did_rows[row] = (
-            self.model.did_rows[row],
-            self.model.did_rows[row - 1],
+        """将选中行上移（支持多选）。"""
+        selected_rows = sorted(
+            list(set(index.row() for index in self.view.table.selectedIndexes()))
         )
+        if not selected_rows:
+            return
+
+        if selected_rows[0] == 0:
+            return
+
+        # Swap with previous
+        new_selection = []
+        for r in selected_rows:
+            self.model.did_rows[r-1], self.model.did_rows[r] = self.model.did_rows[r], self.model.did_rows[r-1]
+            new_selection.append(r-1)
+
         self.model.dataChanged.emit()
-        self.view.table.selectRow(row - 1)
         self._save_dids_to_file()
 
+        # Restore selection
+        # Need re-selection logic after table rebuild triggered by dataChanged
+        # Wait, dataChanged -> on_model_changed -> _rebuild_table clears selection.
+        # But we can try to restore it.
+        # Actually _rebuild_table clears selection.
+        # We should improve on_model_changed or restore logic here.
+        # Since _rebuild_table is connected to dataChanged via BaseController...
+        # Let's hope the view update preserves it or we have to force it.
+        # But for now, we trigger view update first.
+        # However, _rebuild_table is called.
+        pass
+
+        # Since table is rebuilt, we need to select rows in the view
+        # We should do it via a timer or directly if synchronous
+        for r in new_selection:
+            self.view.table.selectRow(r)
+
     def _on_move_down(self) -> None:
-        """将当前行下移一位（如可下移）。"""
-        row = self.view.table.currentRow()
-        if row < 0 or row >= len(self.model.did_rows) - 1:
-            return
-        self.model.did_rows[row + 1], self.model.did_rows[row] = (
-            self.model.did_rows[row],
-            self.model.did_rows[row + 1],
+        """将选中行下移（支持多选）。"""
+        selected_rows = sorted(
+            list(set(index.row() for index in self.view.table.selectedIndexes())),
+            reverse=True
         )
+        if not selected_rows:
+            return
+
+        if selected_rows[0] == len(self.model.did_rows) - 1:
+            return
+
+        new_selection = []
+        for r in selected_rows:
+            self.model.did_rows[r+1], self.model.did_rows[r] = self.model.did_rows[r], self.model.did_rows[r+1]
+            new_selection.append(r+1)
+
         self.model.dataChanged.emit()
-        self.view.table.selectRow(row + 1)
         self._save_dids_to_file()
+
+        for r in new_selection:
+            self.view.table.selectRow(r)
+
+
+    def _on_move_top(self) -> None:
+        """将选中的行（高亮行）移动到列表顶部（保持相对顺序），忽略复选框状态。"""
+        # 获取当前视图中选中的所有行索引
+        selected_model_indexes = self.view.table.selectionModel().selectedRows()
+
+        target_indices = []
+        if selected_model_indexes:
+            # 提取行号并排序
+            target_indices = sorted([idx.row() for idx in selected_model_indexes])
+        else:
+            # 备选：如果 selectionModel 为空，尝试 currentRow
+            current_row = self.view.table.currentRow()
+            if current_row >= 0 and current_row < len(self.model.did_rows):
+                target_indices = [current_row]
+
+        if not target_indices:
+            MessageToast(self.view).show_toast("请先选中一行或多行需要置顶的数据", 2)
+            return
+
+        # 优化：如果已经在顶部，则无需操作
+        # 检查 target_indices 是否已经是 0, 1, 2... len-1
+        if target_indices == list(range(len(target_indices))):
+            return
+
+        # 分离目标行和其他行
+        target_rows = []
+        other_rows = []
+
+        # 使用 set 加速查找
+        target_indices_set = set(target_indices)
+
+        # 按照 model 的原始顺序遍历，这样保持相对顺序稳定
+        for i, row in enumerate(self.model.did_rows):
+            if i in target_indices_set:
+                target_rows.append(row)
+            else:
+                other_rows.append(row)
+
+        new_rows = target_rows + other_rows
+
+        if new_rows != self.model.did_rows:
+            self.model.did_rows = new_rows
+            self.model.dataChanged.emit()
+            self._save_dids_to_file()
+
+            # 操作后体验优化：
+            # 1. 滚动到顶部
+            self.view.table.scrollToTop()
+            # 2. 选中/高亮被置顶的行
+            self.view.table.clearSelection()
+
+            # 由于可能一次置顶多行，且新位置在 0 到 len(target_rows)-1
+            # 重新选中这些行
+            if target_rows:
+                # 构造一个选择区域：从第0行到第N行，覆盖所有列
+                top_range = QtWidgets.QTableWidgetSelectionRange(
+                    0, 0, len(target_rows) - 1, self.view.table.columnCount() - 1
+                )
+                self.view.table.setRangeSelected(top_range, True)
+                # 将焦点设置到第一行
+                self.view.table.setCurrentCell(0, 0)
 
     def _on_header_checkbox_toggled(self, column_index: int, checked: bool) -> None:
         """处理表头复选框点击事件：全选/全不选。"""
@@ -844,40 +1178,130 @@ class DIDController(BaseController):
             for row in self.model.did_rows:
                 row.follow_dpt = checked
 
-        # 触发全量更新视图
+        # 触发 Model 更新信号
+        # 注意：因为我们在 on_model_changed 中跳过了非结构性变更的 Rebuild，
+        # 所以这里全选操作后，必须手动刷新 View，或者让 on_model_changed 知道需要强制刷新。
+        # 但既然我们现在修改了 model 中的对象，而 View 还持有旧状态（如果之前没有 rebuild），
+        # View 并不会自动变成 checked，因为 View 中的 Item 还没变。
+        # 所以全选这种批量操作需要强制 Rebuild 或批量更新 View。
+        self._rebuild_table()
+
+        # 触发保存和信号（可选，如果 _rebuild_table 不发信号的话）
         self.model.dataChanged.emit()
         self._save_dids_to_file()
 
+    def _on_header_section_clicked(self, logical_index: int) -> None:
+        """处理表头点击事件以进行排序。"""
+        header = self.view.table.horizontalHeader()
+
+        # Determine sort order: Ascending -> Descending -> Cancel (None)
+        if self._sort_col == logical_index:
+            if self._sort_order == Qt.AscendingOrder:
+                self._sort_order = Qt.DescendingOrder
+            else:
+                # Was Descending, now Cancel
+                self._sort_col = -1
+
+                # Turn off sorting
+                header.setSortIndicatorShown(False)
+                if hasattr(header, "setCustomSort"):
+                    header.setCustomSort(-1, Qt.AscendingOrder)
+
+                # Optionally re-sort to original order or just leave as is?
+                # Usually cancel means stop sorting updates, or revert to default.
+                # Leaving as is (last sorted state) is one interpretation,
+                # but "Cancel" usually implies restoring original if possible or just unsorted state.
+                # Here we just stop showing the indicator.
+                return
+        else:
+            self._sort_col = logical_index
+            self._sort_order = Qt.AscendingOrder
+
+        # 使用自定义清晰的排序指示器，禁用默认的
+        header.setSortIndicatorShown(False)
+        if hasattr(header, "setCustomSort"):
+            header.setCustomSort(self._sort_col, self._sort_order)
+        else:
+            # Fallback if view not updated
+            header.setSortIndicator(self._sort_col, self._sort_order)
+            header.setSortIndicatorShown(True)
+
+        self._sort_did_rows()
+
+    def _sort_did_rows(self):
+        col = self._sort_col
+        order = self._sort_order
+        reverse = (order == Qt.DescendingOrder)
+
+        # 0: selected, 1: description, 2: did, 3: data_format, 4: follow_dpt, 5: session, 6: security, 7: value
+        key_func = None
+        if col == 0:
+            key_func = lambda r: r.selected
+        elif col == 1:
+            key_func = lambda r: r.description.lower()
+        elif col == 2:
+            def sort_did(r):
+                try:
+                    # 去把空格，尝试转int
+                    d = r.did.strip().replace(" ", "")
+                    # 如果是 0x 开头，或是纯 hex
+                    return int(d, 16)
+                except:
+                    return r.did
+            key_func = sort_did
+        elif col == 3:
+            key_func = lambda r: r.data_format
+        elif col == 4:
+            key_func = lambda r: r.follow_dpt
+        elif col == 5:
+            key_func = lambda r: r.diagnostic_session
+        elif col == 6:
+            key_func = lambda r: r.security_access
+        elif col == 7:
+            key_func = lambda r: r.value
+
+        if key_func:
+            self.model.did_rows.sort(key=key_func, reverse=reverse)
+            # 排序一定要触发重建
+            self.model.dataChanged.emit()
+            # 由于 on_model_changed 现在会检测对象顺序变化，所以这里 emit 信号后会自动 rebuild
+            self._save_dids_to_file()
+
     def _on_item_changed(self, item: QtWidgets.QTableWidgetItem) -> None:
         """表格单元格内容改变时将变更同步回模型（处理复选、文本与下拉列）。"""
-        col = item.column()
-        row = item.row()
-        if row < 0 or row >= len(self.model.did_rows):
-            return
+        # 设置标志位，告诉 on_model_changed 不要处理这次变更引起的信号
+        self._is_handling_view_update = True
+        try:
+            col = item.column()
+            row = item.row()
+            if row < 0 or row >= len(self.model.did_rows):
+                return
 
-        text = item.text()
+            text = item.text()
 
-        if col == 0:
-            checked = item.checkState() == Qt.Checked
-            self.model.update_row(row, selected=checked)
-        elif col == 1:
-            self.model.update_row(row, description=text)
-        elif col == 2:
-            self.model.update_row(row, did=text)
-        elif col == 3:
-            self.model.update_row(row, data_format=text)
-        elif col == 4:
-            checked = item.checkState() == Qt.Checked
-            self.model.update_row(row, follow_dpt=checked)
-        elif col == 5:
-            self.model.update_row(row, diagnostic_session=text)
-        elif col == 6:
-            self.model.update_row(row, security_access=text)
-        elif col == 7:
-            # Value 列直接使用表格项文本同步到模型
-            self.model.update_row(row, value=text)
+            if col == 0:
+                checked = item.checkState() == Qt.Checked
+                self.model.update_row(row, selected=checked)
+            elif col == 1:
+                self.model.update_row(row, description=text)
+            elif col == 2:
+                self.model.update_row(row, did=text)
+            elif col == 3:
+                self.model.update_row(row, data_format=text)
+            elif col == 4:
+                checked = item.checkState() == Qt.Checked
+                self.model.update_row(row, follow_dpt=checked)
+            elif col == 5:
+                self.model.update_row(row, diagnostic_session=text)
+            elif col == 6:
+                self.model.update_row(row, security_access=text)
+            elif col == 7:
+                # Value 列直接使用表格项文本同步到模型
+                self.model.update_row(row, value=text)
 
-        self._save_dids_to_file()
+            self._save_dids_to_file()
+        finally:
+            self._is_handling_view_update = False
 
     def _flush_value_cell(self, row: int) -> None:
         # 将表格中 Value 单元格的文本刷新到模型（兼容旧逻辑）

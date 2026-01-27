@@ -17,6 +17,7 @@ class SequenceWorker(QtCore.QThread):
     update_row_signal = QtCore.pyqtSignal(int, str)
     update_request_signal = QtCore.pyqtSignal(int, str)
     finished_signal = QtCore.pyqtSignal()
+    current_row_signal = QtCore.pyqtSignal(int)
 
     def __init__(self, device_service, data, times, stop_on_fail, config_service=None):
         super().__init__()
@@ -37,6 +38,10 @@ class SequenceWorker(QtCore.QThread):
                 for row_index, item in enumerate(self.data):
                     if not self.is_running:
                         break
+
+                    # Notify view to highlight current row
+                    self.current_row_signal.emit(row_index)
+
                     if not item.get("checked", True):
                         continue
 
@@ -336,6 +341,7 @@ class UDSSequenceController(BaseController):
         self.worker.update_row_signal.connect(self.view.update_row_response)
         self.worker.update_request_signal.connect(self.view.update_row_request)
         self.worker.finished_signal.connect(self._on_sequence_finished)
+        self.worker.current_row_signal.connect(self.view.highlight_row)
         self.worker.start()
 
     def _on_sequence_finished(self):

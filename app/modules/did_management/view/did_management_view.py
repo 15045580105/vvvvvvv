@@ -202,17 +202,85 @@ class ValueCellWidget(QtWidgets.QWidget):
         return self.line_edit.text()
 
 
+class DIDTableWidget(QtWidgets.QTableWidget):
+    """表格控件"""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        # Disable drag and drop
+        self.setDragEnabled(False)
+        self.setAcceptDrops(False)
+        self.setDragDropMode(QtWidgets.QAbstractItemView.NoDragDrop)
+
+        self.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
+        self.setSelectionMode(QtWidgets.QAbstractItemView.ExtendedSelection)
+        # self.setDropIndicatorShown(True)
+
+    def mousePressEvent(self, event):
+        # 恢复默认的 mousePressEvent，不再拦截
+        # 如果需要保留特定的复选框判定逻辑以优化点击体验（例如点文字也能勾选），可以保留
+        # 但标准 QTableWidget 对 Checkbox 列的点击处理通常是很好的
+        # 用户之前的抱怨主要是因为 setDragEnabled(True) 导致的冲突
+        # 现在禁用了 Drag，标准的点击处理应该足够
+        super().mousePressEvent(event)
+
 class CheckBoxHeader(QtWidgets.QHeaderView):
     checkBoxClicked = QtCore.pyqtSignal(int, bool)
 
     def __init__(self, orientation, parent=None):
         super().__init__(orientation, parent)
         self.checkBoxStates = {0: False, 4: False}
+        self._sort_logical_index = -1
+        self._sort_order = Qt.AscendingOrder
+
+    def setCustomSort(self, logical_index: int, order: Qt.SortOrder):
+        """设置自定义排序状态并重绘表头。"""
+        self._sort_logical_index = logical_index
+        self._sort_order = order
+        self.viewport().update()
 
     def paintSection(self, painter, rect, logicalIndex):
         painter.save()
         super().paintSection(painter, rect, logicalIndex)
         painter.restore()
+
+        # 绘制排序指示器 (如果当前列是排序列)
+        if logicalIndex == self._sort_logical_index:
+            painter.save()
+
+            # 箭头配置
+            arrow_size = 4
+            margin_right = 8
+
+            # 如果该列同时有 CheckBox，可能需要避让 (Col 0 and Col 4)
+            # Col 0 is centered checkbox usually, Col 4 is left aligned.
+            # Usually sort indicator is on the right, text on left/center.
+
+            cx = rect.right() - margin_right - arrow_size
+            cy = rect.center().y()
+
+            # 使用醒目的颜色 (例如 #6366F1 / Indigo 或 #3B82F6 / Blue)
+            # 这里使用深灰色以匹配通用风格，或者强调色
+            color = QtGui.QColor("#4F46E5")
+            painter.setBrush(color)
+            painter.setPen(QtCore.Qt.NoPen)
+            painter.setRenderHint(QtGui.QPainter.Antialiasing)
+
+            path = QtGui.QPainterPath()
+            if self._sort_order == Qt.AscendingOrder:
+                # 向上箭头
+                path.moveTo(cx, cy - arrow_size)
+                path.lineTo(cx - arrow_size, cy + arrow_size)
+                path.lineTo(cx + arrow_size, cy + arrow_size)
+            else:
+                # 向下箭头
+                path.moveTo(cx, cy + arrow_size)
+                path.lineTo(cx - arrow_size, cy - arrow_size)
+                path.lineTo(cx + arrow_size, cy - arrow_size)
+
+            path.closeSubpath()
+            painter.drawPath(path)
+            painter.restore()
 
         if logicalIndex in self.checkBoxStates:
             style = self.style()
@@ -281,6 +349,7 @@ class DIDView(BaseView):
     remove_row_requested = QtCore.pyqtSignal()
     move_up_requested = QtCore.pyqtSignal()
     move_down_requested = QtCore.pyqtSignal()
+    move_top_requested = QtCore.pyqtSignal()
     cell_clicked = QtCore.pyqtSignal(int, int)
     cell_double_clicked = QtCore.pyqtSignal(int, int)
     ecu_init_requested = QtCore.pyqtSignal()
@@ -299,23 +368,46 @@ class DIDView(BaseView):
         ctl.setSpacing(6)
 
         self.ecu_init_btn = ModernButton("ECU初始化", "#8B5CF6", "🔧")
+        self.ecu_init_btn.setToolTip("点击切换到 ECU 初始化界面")
         ctl.addWidget(self.ecu_init_btn)
 
 
         # 将表格工具按钮合并到顶栏，保持在导入按钮之后
         self.add_btn = ModernButton("+", "#22C55E", "")
+        self.add_btn.setToolTip("添加一行新的 DID")
         self.remove_btn = ModernButton("-", "#EF4444", "")
+        self.remove_btn.setToolTip("删除当前选中的行")
         self.up_btn = ModernButton("↑", "#6B7280", "")
+        self.up_btn.setToolTip("上移选中行")
         self.down_btn = ModernButton("↓", "#6B7280", "")
-        for b in (self.add_btn, self.remove_btn, self.up_btn, self.down_btn):
+        self.down_btn.setToolTip("下移选中行")
+        self.top_btn = ModernButton("⇈", "#6B7280", "")
+        self.top_btn.setToolTip("选中行置顶")
+        for b in (self.add_btn, self.remove_btn, self.up_btn, self.down_btn, self.top_btn):
             b.setFixedSize(26, 36)
             ctl.addWidget(b)
+
+        # 搜索框
+        self.search_input = QtWidgets.QLineEdit()
+        self.search_input.setPlaceholderText("搜索 DID...")
+        self.search_input.setToolTip("输入 DID 号或描述进行搜索")
+        self.search_input.setFixedWidth(150)
+        self.search_input.setStyleSheet("QLineEdit { border: 1px solid #E5E7EB; border-radius: 4px; padding: 4px; }")
+        ctl.addWidget(self.search_input)
+
+        self.search_btn = ModernButton("🔍", "#6B7280", "")
+        self.search_btn.setToolTip("执行搜索")
+        self.search_btn.setFixedSize(36, 36)
+        ctl.addWidget(self.search_btn)
 
         # 读取/写入 放在最右侧
         ctl.addStretch()
         self.read_btn = ModernButton("读取", "#0EA5E9", "")
+        self.read_btn.setToolTip("读取勾选 DID 的值")
         self.write_btn = ModernButton("写入", "#F97316", "")
+        self.write_btn.setToolTip("写入值到勾选的 DID")
         self.clear_btn = ModernButton("清除", "#EF4444", "")
+        self.clear_btn.setToolTip("清除所有值和日志")
         self.read_btn.setFixedWidth(70)
         self.write_btn.setFixedWidth(70)
         self.clear_btn.setFixedWidth(70)
@@ -340,7 +432,7 @@ class DIDView(BaseView):
         table_container.setSpacing(4)
 
         # DID 表格
-        self.table = QtWidgets.QTableWidget()
+        self.table = DIDTableWidget()
         self.table.setColumnCount(8)
         self.table.setHorizontalHeaderLabels([
             "",  # 选中
@@ -377,7 +469,7 @@ class DIDView(BaseView):
         self.table.setHorizontalScrollMode(QtWidgets.QAbstractItemView.ScrollPerPixel)
         self.table.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAsNeeded)
         self.table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
-        self.table.setSelectionMode(QtWidgets.QAbstractItemView.SingleSelection)
+        self.table.setSelectionMode(QtWidgets.QAbstractItemView.ExtendedSelection)
         self.table.setAlternatingRowColors(True)
 
         # Enable vertical header (row numbers) and style it
@@ -395,6 +487,7 @@ class DIDView(BaseView):
         self.table.setShowGrid(True)
         self.table.setGridStyle(QtCore.Qt.SolidLine)
         # 保持原有风格但增强网格线（不改动表头样式）
+        # 增加 indicator 样式以增强拖拽提示可见性
         self.table.setStyleSheet(
             "QTableWidget::item{ padding-left:6px; padding-right:6px; }"
             "QTableWidget::item:selected{ background: #e6f7ff; }"
@@ -437,6 +530,7 @@ class DIDView(BaseView):
         self.remove_btn.clicked.connect(self.remove_row_requested.emit)
         self.up_btn.clicked.connect(self.move_up_requested.emit)
         self.down_btn.clicked.connect(self.move_down_requested.emit)
+        self.top_btn.clicked.connect(self.move_top_requested.emit)
         self.ecu_init_btn.clicked.connect(self.toggle_ecu_init_panel)
 
         # 表格事件交给 controller，view 只做信号透传
