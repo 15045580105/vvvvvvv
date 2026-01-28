@@ -5,6 +5,7 @@ from app.common.log.operation_log_manager import OperationLogManager
 from app.common.ui.widgets import ModernButton
 from app.modules.device_topology.view.topology_widget import SimpleTopologyWindow, CanLinTopologyWindow
 from app.presentation.views.base_view import BaseView
+from PyQt5.QtCore import QDateTime
 
 
 class TopologyView(BaseView):
@@ -78,7 +79,9 @@ class TopologyView(BaseView):
             self.refresh_btn.setText("刷新中..." if loading else "刷新拓扑")
 
     def append_log(self, text: str):
-        self.log_view.append(text)
+        timestamp = QDateTime.currentDateTime().toString("yyyy-MM-dd HH:mm:ss")
+        log_msg = f"[{timestamp}] {text}"
+        self.log_view.append(log_msg)
         OperationLogManager.instance().append_log("设备拓扑", text)
 
 

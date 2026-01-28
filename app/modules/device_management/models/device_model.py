@@ -48,9 +48,9 @@ class DeviceModel(BaseModel):
         user: str = "root",
         password: str | None = None,
         dev_type: str = "其他",
+        **kwargs # Accept extended fields like controller_ip, etc.
     ):
-        self.devices.append(
-            {
+        device_entry = {
                 "name": name,
                 "ip": ip,
                 "port": port,
@@ -65,8 +65,15 @@ class DeviceModel(BaseModel):
                 "ssh_connect_info": "",
                 "doip_connect_info": "",
                 "someip_connect_info": "",
-            }
-        )
+        }
+
+        # Add any extended fields that were passed
+        valid_extended_fields = ["controller_ip", "controller_port", "multicast_ip", "vlan_id"]
+        for field in valid_extended_fields:
+            if field in kwargs:
+                device_entry[field] = kwargs[field]
+
+        self.devices.append(device_entry)
         self.dataChanged.emit()
 
     def update_device(self, index: int, **fields):

@@ -453,53 +453,17 @@ class TopologyService:
             if log_callback: log_callback("SomeIP Client 未就绪或未注入")
             return "SomeIP Client未就绪"
 
-        # 约定端口
-        target_port = 30500
-
-        if log_callback:
-            log_callback(f"发送 SOME/IP 请求: Service=0x1055 Method=0x9000 Port={target_port}")
-
-        try:
-            resp = self._someip_request_sync(0x1055, 0x9000, timeout=3.0, target_port=target_port)
-        except Exception as e:
-            if log_callback: log_callback(f"请求出错: {e}")
-            return "读取失败"
-
-        if resp is None:
-            if log_callback: log_callback(f"未收到 SOME/IP 响应 (超时) - 请检查 {target_port} 端口防火墙")
-            return "未收到UserMode响应"
-
-        # 收到响应—日志风格
-        try:
-            if log_callback: log_callback(f"收到 SOME/IP 响应: {resp.hex().upper()}")
-        except:
-            pass
-        # 简单解析：优先 UTF-8，再单字节映射，否则返回 hex
-        parsed = None
-        try:
-            parsed_text = resp.decode('utf-8').strip()
-            if parsed_text:
-                parsed = parsed_text
-        except Exception:
-            pass
-
-        if log_callback: log_callback(f"用户模式解析结果: {parsed}")
-        return parsed
-        # Service 0x1055, Event 0x9001.
-        # 这是一个 Event，通常需要 Subscribe。
-        # 这里简化为尝试等待 Event，如果 client 已经 subscribe 了。
-        # 或者我们尝试 subscribe。
-        # client = self._device_service.get_someip_client()
-        # if client:
-        #     client.subscribe_eventgroup(0x1055, 0xFFFF, 0x9001) # 假设 instance 0xFFFF
-        #     # 等待回调... 略复杂，暂时返回 "监听中..."
-        #     return "监听中..."
-        return "SomeIP Client未就绪"
 
     def _get_service_status(self, log_callback: Optional[Callable[[str], None]] = None) -> str:
         # 10FA, 0003
-        # 这是一个 Method Call
-        # 需要 target IP。
+        try:
+            client = self._device_service.get_someip_client()
+        except Exception:
+            client = None
+        if not client:
+            if log_callback: log_callback("SomeIP Client 未就绪或未注入")
+            return "SomeIP Client未就绪"
+        client.request_with_discovery(service_id=0x10FA, method_id=0x0003, target_ip="172.16.64.79")
         return "获取中..." # 需完善 SomeIP 通信机制
 
     def _get_pnc_status(self, log_callback: Optional[Callable[[str], None]] = None) -> Dict[str, str]:

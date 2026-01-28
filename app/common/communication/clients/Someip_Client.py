@@ -78,7 +78,6 @@ class SomeIPClient:
              raise RuntimeError("Scapy library is missing.")
 
         self.local_ip = local_ip
-
         self.local_port = local_port
         self.client_id = client_id
         self.multicast_ip = multicast_ip
@@ -804,7 +803,8 @@ class TestRunner:
         # MAC地址将自动使用本机网卡MAC
         # 请确保网卡已配置 VLAN 4
         CLIENT_IP = "172.16.64.47"
-        CLIENT_MAC = "20:7B:D5:20:25:B6"
+        # CLIENT_MAC = "20:7B:D5:20:25:B6"
+        CLIENT_MAC = "00:E0:4C:55:36:98"
 
         # 目标控制器配置
         ECU_UNICAST_IP = "172.16.66.79"  # 控制器 IP
@@ -816,7 +816,7 @@ class TestRunner:
         VLAN_ID = 4  # 设置 VLAN ID
 
         # 必须确保这两个 ID 和控制器数据库(ARXML)一致
-        SERVICE_ID = 0x106E
+        SERVICE_ID = 0x1055
         METHOD_ID = 0x0001
 
         # 盲测时的默认端口 (通常是 30500, 30501, 30491 等)
