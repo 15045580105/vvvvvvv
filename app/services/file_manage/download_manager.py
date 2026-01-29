@@ -1,7 +1,7 @@
 import re
-import datetime
 from typing import List, Dict, Any, Callable
 from app.services.file_manage.file_transfer_service import FileTransferService
+from app.services.file_manage.utils.filename_parser import parse_filename_metadata
 
 class DownloadManager:
     """
@@ -26,7 +26,9 @@ class DownloadManager:
     def connect(self, host: str, user: str, pass_: str) -> bool:
         """连接设备"""
         if self.service.is_connected():
+            # 已经连接则直接返回成功
             return True
+        # 进行连接
         return self.service.connect_device(host, 22, user, pass_)
 
     def is_connected(self) -> bool:
@@ -103,39 +105,18 @@ class DownloadManager:
         }
 
     def _parse_filename_metadata(self, filename: str) -> Dict[str, str]:
-        """具体的正则解析逻辑"""
-        meta = {"appid": "", "create_time": ""}
+        """Delegate filename parsing to the centralized helper.
 
-        # 规则: 这里的 Absolute Path 分为 Path 和 FileName
-        # FileName 的数字之前（以数字前“_”为分隔符）的前缀作为 APPID
-        # FileName 的后缀为 CreateTime
-
-        # 1. 提取 APPID
-        # 寻找第一个 "_\d" 出现的位置，前面即为 APPID
-        match_appid = re.search(r"^(.*?)_\d", filename)
-        if match_appid:
-            meta["appid"] = match_appid.group(1)
-
-        # 2. 提取 CreateTime (后缀)
-        # 能够匹配 YYYYMMDD_HHMMSS 格式 (例如: VCPS_..._20250620_080010.gz)
-        match_fmt = re.search(r"_(\d{8}_\d{6})(?:\.[^.]+)?$", filename)
-        if match_fmt:
-            meta["create_time"] = match_fmt.group(1)
-            return meta
-
-        # 能够匹配 时间戳 格式 (例如: core_..._1753176133.gz)
-        match_ts = re.search(r"_(\d{9,13})(?:\.[^.]+)?$", filename)
-        if match_ts:
-            try:
-                ts = int(match_ts.group(1))
-                dt = datetime.datetime.fromtimestamp(ts)
-                # 转换成 20250723_195216 格式
-                meta["create_time"] = dt.strftime("%Y%m%d_%H%M%S")
-            except Exception:
-                pass
-            return meta
-
-        return meta
+        Returns a minimal dict compatible with the previous internal shape
+        (keys: 'appid', 'create_time' both strings). The centralized parser may
+        return additional fields; we discard them to keep this method's contract
+        unchanged.
+        """
+        parsed = parse_filename_metadata(filename)
+        return {
+            "appid": parsed.get("appid") or "",
+            "create_time": parsed.get("create_time") or "",
+        }
 
     def fetch_bus_tabs(self, log_callback: Callable[[str], None] = None) -> List[Dict[str, Any]]:
         """

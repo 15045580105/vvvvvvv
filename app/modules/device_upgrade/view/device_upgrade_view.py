@@ -1,9 +1,26 @@
 # python
 from PyQt5 import QtWidgets, QtGui
 from PyQt5.QtCore import pyqtSignal, Qt
+from datetime import datetime
 
 from app.common.ui.widgets import ModernButton, TableButton
 from app.presentation.views.base_view import BaseView
+
+
+class DragDropLineEdit(QtWidgets.QLineEdit):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setAcceptDrops(True)
+
+    def dragEnterEvent(self, event):
+        if event.mimeData().hasUrls():
+            event.acceptProposedAction()
+
+    def dropEvent(self, event):
+        urls = event.mimeData().urls()
+        if urls:
+            path = urls[0].toLocalFile()
+            self.setText(path)
 
 
 class UpgradeView(BaseView):
@@ -62,8 +79,8 @@ class UpgradeView(BaseView):
 
         # 升级包（单行，无 +/-）
         layout.addWidget(QtWidgets.QLabel("📦 升级包:"), 0, 0)
-        self.upgrade_file = QtWidgets.QLineEdit()
-        self.upgrade_file.setPlaceholderText("选择升级包 (.zip)")
+        self.upgrade_file = DragDropLineEdit()
+        self.upgrade_file.setPlaceholderText("选择升级包 (.zip) - 支持拖入文件")
         layout.addWidget(self.upgrade_file, 0, 1)
         self.upgrade_file_browse_btn = ModernButton("浏览", "#0EA5E9", "📂")
         self.upgrade_file_browse_btn.clicked.connect(lambda: self.browse_file_signal.emit(self.upgrade_file, "选择升级包 (*.zip)"))
@@ -71,8 +88,8 @@ class UpgradeView(BaseView):
 
         # Config file
         layout.addWidget(QtWidgets.QLabel("⚙️ 配置文件:"), 1, 0)
-        self.config_file = QtWidgets.QLineEdit()
-        self.config_file.setPlaceholderText("选择升级配置 (.json)")
+        self.config_file = DragDropLineEdit()
+        self.config_file.setPlaceholderText("选择升级配置 (.json) - 支持拖入文件")
         layout.addWidget(self.config_file, 1, 1)
         self.config_file_browse_btn = ModernButton("浏览", "#0EA5E9", "📂")
         self.config_file_browse_btn.clicked.connect(lambda: self.browse_file_signal.emit(self.config_file, "选择升级配置 (*.json)"))
@@ -199,7 +216,7 @@ class UpgradeView(BaseView):
         layout.setContentsMargins(2, 2, 2, 2)
         layout.setSpacing(6)
 
-        line_edit = QtWidgets.QLineEdit()
+        line_edit = DragDropLineEdit()
         line_edit.setPlaceholderText(placeholder)
         line_edit.setStyleSheet("QLineEdit { border: 1px solid #D1D5DB; border-radius: 3px; padding: 2px; }")
 
@@ -341,6 +358,23 @@ class UpgradeView(BaseView):
         # 功能已裁剪：仅保留接口以避免其他模块引用报错
         # 如果未来需要重新展示设备信息，可在此补充 UI 元素
         pass
+
+    def log_message(self, message: str, is_info: bool = True):
+        timestamp = datetime.now().strftime("%H:%M:%S")
+        color = "#1F2937"
+
+        # Heuristic coloring
+        if "失败" in message or "异常" in message or "警告" in message or "Error" in message:
+            color = "#DC2626"
+        elif "成功" in message or "通过" in message:
+            color = "#059669"
+        elif "开始" in message or "结束" in message:
+            color = "#2563EB"
+
+        html_msg = f'<span style="color: {color};">[{timestamp}] {message}</span>'
+        self.upgrade_log.append(html_msg)
+        # Scroll to bottom
+        self.upgrade_log.moveCursor(QtGui.QTextCursor.End)
 
 
 if __name__ == "__main__":

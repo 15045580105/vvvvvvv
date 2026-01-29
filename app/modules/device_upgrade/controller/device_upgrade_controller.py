@@ -14,6 +14,7 @@ from app.core.dependency_injection import di_container
 from app.services.device_manage.device_service import DeviceService
 from app.common.utils.security_access_helper import SecurityAccessHelper
 from app.common.utils.path_utils import get_app_data_path
+from app.common.log.operation_log_manager import OperationLogManager
 
 
 class UpgradeWorker(QThread):
@@ -918,6 +919,7 @@ class UpgradeController(BaseController):
             self.view.upgrade_log.append(log_entry)
 
         self._write_to_log_file(log_entry)
+        OperationLogManager.instance().append_log("设备升级", message)
 
     def _write_to_log_file(self, content):
         try:

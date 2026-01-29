@@ -1,5 +1,5 @@
 # 自定义日期选择控件：将三角改为日历图标，且点击文本框也能弹出日历
-from PyQt5 import QtWidgets, QtCore
+from PyQt5 import QtWidgets, QtCore, QtGui
 
 
 class CalendarDateEdit(QtWidgets.QDateTimeEdit):
@@ -16,86 +16,125 @@ class CalendarDateEdit(QtWidgets.QDateTimeEdit):
         self.setSpecialValueText("请选择日期")
         self.setDateTime(self.null_date)
 
-        # 只能通过弹窗交互
-        self.lineEdit().setReadOnly(True)
+        # 允许键盘输入，并安装过滤器处理删除键
+        self.lineEdit().installEventFilter(self)
 
         # 右侧按钮相关设置
         self._btn_w = 26
-        self.setStyleSheet(f"""
-            QDateTimeEdit {{
-                padding-right: {self._btn_w + 6}px;
-            }}
-        """)
 
-        self.tool_btn = QtWidgets.QToolButton(self)
-        self.tool_btn.setObjectName("dt_tool_btn")
-        self.tool_btn.setFocusPolicy(QtCore.Qt.FocusPolicy.NoFocus)
-        self.tool_btn.setAutoRaise(True)
-        self.tool_btn.setIconSize(QtCore.QSize(self._btn_w, self._btn_w))
-        self.tool_btn.setStyleSheet(f"""
-            QToolButton#dt_tool_btn {{
+        # 定义日历按钮 (替代三角)
+        self.calendar_btn = QtWidgets.QToolButton(self)
+        self.calendar_btn.setText("📅")  # Calendar Emoji
+        self.calendar_btn.setCursor(QtGui.QCursor(QtCore.Qt.ArrowCursor))
+        self.calendar_btn.setStyleSheet(f"""
+            QToolButton {{
                 border: none;
                 background: transparent;
-                min-width: {self._btn_w}px;
-                max-width: {self._btn_w}px;
-                min-height: {self._btn_w}px;
-                max-height: {self._btn_w}px;
+                padding: 0px;
+                margin: 0px;
+                font-size: 16px;
+            }}
+            QToolButton:hover {{
+                background: #F3F4F6;
+                border-radius: 4px;
+            }}
+        """)
+        self.calendar_btn.clicked.connect(self._open_picker)
+
+        # 定义清除按钮
+        self.clear_btn = QtWidgets.QToolButton(self)
+        self.clear_btn.setText("✕")
+        self.clear_btn.setToolTip("清空")
+        self.clear_btn.setCursor(QtGui.QCursor(QtCore.Qt.ArrowCursor))
+        self.clear_btn.setStyleSheet(f"""
+            QToolButton {{
+                border: none;
+                background: transparent;
                 padding: 0px;
                 margin: 0px;
                 font-size: 16px;
                 color: #6B7280;
             }}
-            QToolButton#dt_tool_btn:hover {{
+            QToolButton:hover {{
                 color: #111827;
+                background: #F3F4F6;
+                border-radius: 4px;
             }}
         """)
-        self.tool_btn.clicked.connect(self._on_tool_btn_clicked)
-        self.tool_btn.hide()  # 初始未选时隐藏按钮
+        self.clear_btn.clicked.connect(self._on_clear_clicked)
+        self.clear_btn.hide()
 
-        self.lineEdit().installEventFilter(self)  # 拦截(readOnly后失去鼠标事件)实现点击弹窗
+        # self.lineEdit().installEventFilter(self)  # 不需要拦截点击了
         self.dateTimeChanged.connect(self._on_date_changed)
+
+        # 初始状态更新
         self._update_btn_state(self.dateTime() > self.null_date)
+
+    def eventFilter(self, obj, event):
+        if obj == self.lineEdit():
+            # 点击输入框时，如果是空值(显示提示语状态)，自动填充当前时间并全选
+            # 这样"请选择日期"字样消失，且无需手动删除，直接输入即可覆盖
+            if event.type() == QtCore.QEvent.MouseButtonRelease and event.button() == QtCore.Qt.LeftButton:
+                if self.dateTime() == self.null_date:
+                    self.setDateTime(QtCore.QDateTime.currentDateTime())
+                    QtCore.QTimer.singleShot(0, self.lineEdit().selectAll)
+
+            elif event.type() == QtCore.QEvent.KeyPress:
+                # 处理删除/退格键，实现“即使有掩码也能一键清除”
+                if event.key() in (QtCore.Qt.Key_Delete, QtCore.Qt.Key_Backspace):
+                    # 如果全选了文本，或者当前已经是可清除状态
+                    if obj.hasSelectedText():
+                        # 简单判断：如果选中的文本长度接近总长度，或者用户想删内容 -> 重置
+                        # QDateTimeEdit 的 selectedText 往往包含格式符，比较复杂
+                        # 这里只要有选中操作并按了删除，我们就视为用户想清空
+                        text = obj.text()
+                        selected = obj.selectedText()
+                        # 只要选中的内容稍微多一点(比如选中了整个部分)，就认为是清空
+                        if len(selected) > 0:
+                            self.setDateTime(self.null_date)
+                            return True
+        return super().eventFilter(obj, event)
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
-        # 工具按钮保持右边正方形并垂直居中
         h = self.height()
+        # 垂直居中
         y = max(0, (h - self._btn_w) // 2)
-        self.tool_btn.setGeometry(self.width() - self._btn_w - 2, y, self._btn_w, self._btn_w)
-        self.tool_btn.raise_()
 
-    def eventFilter(self, obj, event):
-        # 只读下也能点击输入框弹窗
-        if obj == self.lineEdit() and event.type() == QtCore.QEvent.Type.MouseButtonRelease:
-            if not self.tool_btn.underMouse():
-                self._open_picker()
-            return True
-        return super().eventFilter(obj, event)
+        # 按钮位置始终在最右边（因为只显示其中一个）
+        x = self.width() - self._btn_w - 2
 
-    def mousePressEvent(self, event):
-        # 点击整个控件区域也触发弹窗
-        if event.button() == QtCore.Qt.MouseButton.LeftButton:
-            if not self.tool_btn.underMouse():
-                self._open_picker()
-                return
-        super().mousePressEvent(event)
+        if not self.calendar_btn.isHidden():
+            self.calendar_btn.setGeometry(x, y, self._btn_w, self._btn_w)
+
+        if not self.clear_btn.isHidden():
+            self.clear_btn.setGeometry(x, y, self._btn_w, self._btn_w)
 
     def _on_date_changed(self, dt):
         self._update_btn_state(dt > self.null_date)
 
     def _update_btn_state(self, is_valid: bool):
-        """有有效值时显示'✕'按钮，无效值时隐藏。"""
+        """有有效值时显示'✕'按钮，无效值时才显示日历图标。两互斥。"""
         if is_valid:
-            self.tool_btn.setText("✕")
-            self.tool_btn.setToolTip("清空")
-            self.tool_btn.show()
+            self.clear_btn.show()
+            self.calendar_btn.hide()
         else:
-            self.tool_btn.hide()
+            self.clear_btn.hide()
+            self.calendar_btn.show()
 
-    def _on_tool_btn_clicked(self):
+        # 无论显示哪个，都只占用一个按钮的宽度
+        right_padding = self._btn_w + 6
+
+        self.setStyleSheet(f"""
+            QDateTimeEdit {{
+                padding-right: {right_padding}px;
+            }}
+        """)
+
+    def _on_clear_clicked(self):
         # 清空已选
         self.setDateTime(self.null_date)
-        self.setSpecialValueText("请选择日期")
+        # self.setSpecialValueText("请选择日期") # 已在init设置
 
     # ===== Public helpers (for View/Controller) =====
     def is_valid(self) -> bool:
@@ -111,7 +150,7 @@ class CalendarDateEdit(QtWidgets.QDateTimeEdit):
 
     def clear(self):
         """清空选择（回到 sentinel）。"""
-        self._on_tool_btn_clicked()
+        self._on_clear_clicked()
 
     def _open_picker(self):
         """弹出自定义日期+时间选择器。"""

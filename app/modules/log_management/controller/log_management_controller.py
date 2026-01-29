@@ -1,12 +1,12 @@
 from typing import Callable
 import os
-import time
 from PyQt5 import QtWidgets, QtCore
 from app.core.base_controller import BaseController
 from app.modules.log_management.model.log_management_model import LogDownloadModel, PageResult, LogTableModel
 from app.modules.log_management.view.log_management_view import LogDownloadView
 from app.services.file_manage.download_manager import DownloadManager
 from app.common.utils.worker import Worker
+from app.services.file_manage.progress.adapter import ProgressAdapter
 
 
 class LogDownloadController(BaseController):
@@ -41,7 +41,7 @@ class LogDownloadController(BaseController):
         self.view.sig_batch_download_clicked.connect(self.on_batch_download)
         self.view.sig_batch_cancel_clicked.connect(self.on_batch_cancel)
 
-        # 绑定排序信号（View 只发 logical_index）
+        # 绑定排序信号
         self.view.sig_sort_requested.connect(self.on_sort_requested)
 
         # 设置 View 的模型
@@ -50,10 +50,7 @@ class LogDownloadController(BaseController):
         # 首次加载第一页
         self.on_model_changed()
 
-        # 打开页面后自动刷新列表
-        QtCore.QTimer.singleShot(0, self.on_refresh)
-
-    # ---- Controller 槽函数 ----
+    # ---- Controller 槽函数 --
     def on_model_changed(self):
         """模型数据变更时，根据当前过滤和分页状态刷新视图。"""
         page_result: PageResult = self.model.get_page()
@@ -106,8 +103,6 @@ class LogDownloadController(BaseController):
 
     def _start_remote_scan(self, path_kw: str, criteria: dict):
         """执行远程目录扫描"""
-        self.view.search_btn.setEnabled(False)
-        self.view.search_btn.setText("扫描中...")
 
         # 创建一个后台 Worker 执行实际的扫描任务
         # 构造一个后台任务线程，任务函数为 self._do_refresh_task，传入 path_kw 作为参数
@@ -133,8 +128,6 @@ class LogDownloadController(BaseController):
 
     def _on_search_fetch_finished(self, result, criteria):
         """搜索附带的扫描任务完成"""
-        self.view.search_btn.setEnabled(True)
-        self.view.search_btn.setText("搜索")
 
         if result is not None:
              # 更新完整文件列表
@@ -150,9 +143,6 @@ class LogDownloadController(BaseController):
 
     def on_refresh(self):
         """用户点击刷新按钮，重新加载数据。"""
-        # Disable button status
-        self.view.refresh_btn.setEnabled(False)
-        self.view.refresh_btn.setText("刷新中...")
 
         # 修改逻辑：刷新时也要带上当前的 Path 和过滤条件
         criteria = self.view.get_filter_criteria()
@@ -195,8 +185,23 @@ class LogDownloadController(BaseController):
 
     def _on_refresh_finished(self, result, criteria=None):
         """刷新完成：在主线程更新 UI/Model"""
-        self.view.refresh_btn.setEnabled(True)
-        self.view.refresh_btn.setText("刷新")
+        # 1. 恢复 UI 状态 (Removed as requested)
+        # self.view.refresh_btn.setEnabled(True)
+        # self.view.refresh_btn.setText("刷新")
+
+        if result is not None:
+             # 如果是主动刷新，不需要 notify=True 强制发信号，因为后面马上 set_filter 会触发
+             self.model.set_file_list(result, notify=False)
+             # 更新下拉 filter
+             self._update_view_appids()
+             # 恢复到刷新前的过滤状态
+             if criteria:
+                 self.model.set_filter(criteria)
+             else:
+                 # 兜底：如果没有 criteria（比如初始化加载），应用当前界面上的
+                 self.model.set_filter(self.view.get_filter_criteria())
+        else:
+             self.view.show_toast("刷新失败: 无法获取文件列表", 1)
 
         if result is not None:
              # 更新数据，暂不触发更新，等设置完 filter 再触发
@@ -293,8 +298,10 @@ class LogDownloadController(BaseController):
             # 把状态设为 下载中
             self.model.update_file_status(remote_path, "下载中", 0)
 
-            # 创建 Progress Callback
-            progress_cb = self._create_progress_callback(remote_path)
+            # 创建 ProgressAdapter 并获取统一回调（兼容 SFTP 和 SCP）
+            adapter = ProgressAdapter(remote_path)
+            adapter.progress_sig.connect(self.model.update_file_status)
+            progress_cb = adapter.make_unified_callback()
 
             try:
                 success, msg = self.manager.download_file(remote_path, local_path, progress_callback=progress_cb)
@@ -320,43 +327,6 @@ class LogDownloadController(BaseController):
                     self.model.update_file_status(remote_path, "下载失败", 0)
 
         return results
-
-    def _create_progress_callback(self, remote_path):
-        state = {"last_time": time.time(), "last_bytes": 0}
-        def _cb(transferred, total):
-            # 2. 传输过程中检查是否取消
-            if remote_path in self.cancelled_files:
-                raise RuntimeError("Cancelled")
-
-            try:
-                now = time.time()
-                dt = now - state["last_time"]
-
-                # 限制更新频率：每 0.5 秒或完成时更新
-                if dt >= 0.5 or (total > 0 and transferred == total):
-                    if total and total > 0:
-                        pct = int(transferred * 100 / total)
-
-                        diff = transferred - state["last_bytes"]
-                        # 避免除以零和负数
-                        if dt > 0 and diff >= 0:
-                            speed_bps = diff / dt
-                            speed_str = self._format_speed(speed_bps)
-
-                            # 打印详细的速率计算参数到控制台
-                            print(f"🚀 [Speed Calc] File: {os.path.basename(remote_path)} | "
-                                  f"DeltaBytes: {diff} B | DeltaTime: {dt:.4f} s | "
-                                  f"Speed: {speed_bps:.2f} B/s ({speed_str})")
-                        else:
-                            speed_str = ""
-
-                        self.model.update_file_status(remote_path, "下载中", pct, speed_str)
-
-                        state["last_time"] = now
-                        state["last_bytes"] = transferred
-            except Exception:
-                pass
-        return _cb
 
     def _on_download_finished_unified(self, results):
         if not results: return
@@ -444,10 +414,10 @@ class LogDownloadController(BaseController):
             counter += 1
 
 
-    def on_sort_changed(self, column: str, order: int):
-        # 已废弃：View 不再负责字段映射/顺序推断。
-        # 为兼容旧连接保留空实现，但不再使用。
-        return
+    # def on_sort_changed(self, column: str, order: int):
+    #     # 已废弃：View 不再负责字段映射/顺序推断。
+    #     # 为兼容旧连接保留空实现，但不再使用。
+    #     return
 
     def on_sort_requested(self, logical_index: int):
         """处理表头点击排序（Controller 负责映射和排序规则）。"""

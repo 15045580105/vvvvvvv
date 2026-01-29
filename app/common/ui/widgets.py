@@ -70,6 +70,14 @@ class ModernButton(QtWidgets.QPushButton):
                 background-color: #E5E7EB;
                 color: #9CA3AF;
             }}
+            QToolTip {{
+                background-color: #1F2937;
+                color: white;
+                border: 1px solid #1F2937;
+                border-radius: 4px;
+                padding: 4px;
+                opacity: 230;
+            }}
         """)
 
 

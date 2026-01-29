@@ -16,58 +16,62 @@ from app.modules.bus_data_management.view.bus_data_download_view import BusDataD
 from app.services.file_manage.download_manager import DownloadManager
 from app.common.utils.worker import Worker
 from PyQt5 import QtWidgets
-from PyQt5 import QtCore
+from PyQt5.QtCore import Qt
 import os
-import time
+# 用于实现 ProgressAdapter（带信号，安全地从后台线程向主线程传递进度）
+from app.services.file_manage.progress.adapter import ProgressAdapter
 
 
 class BusDataDownloadController(BaseController):
     def __init__(self, parent=None):
+        """初始化下载控制器"""
+        # 1. 初始化核心组件
         self.model = BusDataDownloadModel(parent)
-        self.table_model = BusDataTableModel([], parent) # 新建 TableModel
+        self.table_model = BusDataTableModel(parent=parent)
         self.view = BusDataDownloadView(parent)
         self.manager = DownloadManager()
-        self.workers = []
-        self.cancelled_files = set()
-        # cache tab options
-        self._tab_options = []
 
-        # 下载队列相关
+        # 2. 初始化状态变量
+        self.workers = []
+        self._path_to_worker = {}
+        self.cancelled_files = set()
+        self._tab_options = []
         self.download_queue = []
         self.current_downloading_count = 0
-        self.MAX_PARALLEL_DOWNLOADS = 3  # 限制并发数，避免 SSH 通道耗尽
+        self.MAX_PARALLEL_DOWNLOADS = 3
 
+        # 3. 调用父类初始化 (必须在 model/view 创建之后)
         super().__init__(self.model, self.view, parent)
 
-        # 连接 Model 信号
+        # 4. 初始化信号连接和视图配置
+        self._init_signals()
+        self.view.set_table_model(self.table_model)
+
+        # 5. 初始数据加载
+        self.load_tab_options()
+
+    def _init_signals(self):
+        """连接所有信号与槽"""
+        # Model 信号
         self.model.dataChanged.connect(self.on_model_changed)
         self.model.progressChanged.connect(self.on_file_progress_changed)
 
-        # 连接 View 基本交互信号
+        # View 基础交互
         self.view.sig_search_clicked.connect(self.on_search)
         self.view.sig_refresh_clicked.connect(self.on_refresh)
         self.view.sig_page_changed.connect(self.on_page_changed)
         self.view.sig_page_size_changed.connect(self.on_page_size_changed)
+        self.view.sig_view_shown.connect(self.on_view_shown)
 
-        # 排序信号
+        # 表头排序
         self.view.table.horizontalHeader().sectionClicked.connect(self.on_header_clicked)
 
-        # 下载/取消按钮
+        # 业务操作信号
         self.view.sig_download_clicked.connect(self.on_row_download_clicked)
         self.view.sig_cancel_clicked.connect(self.on_row_cancel_clicked)
         self.view.sig_batch_download_clicked.connect(self.on_batch_download)
         self.view.sig_batch_cancel_clicked.connect(self.on_batch_cancel)
 
-        # 页面显示信号：处理连接后切回页面的加载逻辑
-        self.view.sig_view_shown.connect(self.on_view_shown)
-
-        # 设置 View 的模型
-        self.view.set_table_model(self.table_model)
-
-        # 首次加载
-        # self.on_model_changed()
-        self.load_tab_options()
-        # self.load_data()
 
     def on_view_shown(self):
         """当页面显示时，如果 Tab 选项为空，尝试从新加载(可能刚连接了设备)"""
@@ -83,44 +87,37 @@ class BusDataDownloadController(BaseController):
         worker.start()
 
     def _do_fetch_tabs(self, log_cb: Callable):
+        """执行获取Tab列表的后台任务"""
         return self.manager.fetch_bus_tabs(log_callback=log_cb)
 
     def _on_tabs_loaded(self, tabs):
+        """Tab列表加载完成，更新UI"""
         self._tab_options = tabs or []
         labels = [t.get("label", "") for t in self._tab_options]
         values = [t.get("value", "") for t in self._tab_options]
         self.view.set_tab_options(labels, values)
 
+    # ---- 数据加载流程 ----
     def load_data(self, from_refresh_btn=False):
         """加载数据"""
-        if from_refresh_btn:
-            self.view.refresh_btn.setEnabled(False)
-            self.view.refresh_btn.setText("加载中...")
-        else:
-            self.view.search_btn.setEnabled(False)
-            self.view.search_btn.setText("搜索中...")
-
-        # 在主线程获取 UI 参数，避免线程安全问题
+        # 1. 获取并应用过滤条件
         criteria = self.view.get_filter_criteria()
-        # 无论是搜索还是刷新，都应该更新过滤条件
         self.model.set_filter(criteria)
 
+        # 2. 决定是否需要同时拉取 Tab 列表
+        # 点击刷新按钮时强制更新，否则只在为空时获取
         tab_path = criteria.get("tab_kw") or None
+        need_tabs = True if from_refresh_btn else (not self._tab_options)
 
-        # 如果是点击刷新按钮，强制请求更新 Tab 列表，否则仅在空的时候请求
-        if from_refresh_btn:
-            need_tabs = True
-        else:
-            need_tabs = not self._tab_options
-
+        # 4. 启动后台任务
         worker = Worker(self._do_fetch_task, tab_path, need_tabs)
         worker.result_signal.connect(lambda res: self._on_fetch_finished(res, from_refresh_btn))
         worker.finished.connect(lambda: self._cleanup_worker(worker))
-
         self.workers.append(worker)
         worker.start()
 
     def _do_fetch_task(self, log_cb: Callable, tab_path: str, need_tabs: bool):
+        """后台任务：拉取Tab（可选）和文件列表"""
         if not self.manager.is_connected():
             log_cb("⚠️ 设备未连接，无法获取文件列表。请先连接设备。")
             return None
@@ -133,13 +130,8 @@ class BusDataDownloadController(BaseController):
         return (tabs, files)
 
     def _on_fetch_finished(self, result, from_refresh_btn):
-        if from_refresh_btn:
-            self.view.refresh_btn.setEnabled(True)
-            self.view.refresh_btn.setText("刷新")
-        else:
-            self.view.search_btn.setEnabled(True)
-            self.view.search_btn.setText("搜索")
-
+        """数据拉取完成回调，更新UI"""
+        # 1. 处理返回数据
         if result is not None:
             tabs, files = result
             if tabs:
@@ -149,15 +141,24 @@ class BusDataDownloadController(BaseController):
             self._update_view_types()
 
     def _update_view_types(self):
+        """更新下拉筛选框的 Type 选项"""
         types = self.model.get_unique_types()
         self.view.set_type_options(types)
 
     def _cleanup_worker(self, worker):
+        """清理已完成的线程Worker"""
         if worker in self.workers:
             self.workers.remove(worker)
+        # 清理 mapping，避免内存泄漏
+        try:
+            if hasattr(worker, '_adapter_path') and worker._adapter_path:
+                self._path_to_worker.pop(worker._adapter_path, None)
+        except Exception:
+            pass
 
     # ---- 模型变化 -> 刷新视图 ----
     def on_model_changed(self):
+        """模型数据变化响应，刷新表格显示"""
         page_result: PageResult = self.model.get_page()
 
         # 注入全局序号 (Logic moved from View to Controller)
@@ -185,14 +186,17 @@ class BusDataDownloadController(BaseController):
 
     # ---- 顶部过滤 / 刷新 ----
     def on_search(self, criteria: dict):
+        """处理搜索按钮点击"""
         # 点击搜索后触发数据加载
         self.load_data(from_refresh_btn=False)
 
     def on_refresh(self):
+        """处理刷新按钮点击"""
         self.load_data(from_refresh_btn=True)
 
     # ---- 分页 ----
     def on_page_changed(self, delta: int):
+        """处理翻页操作"""
         current_page = self.model.page
         target_page = current_page + int(delta or 0)
         if target_page < 1:
@@ -200,13 +204,13 @@ class BusDataDownloadController(BaseController):
         self.model.set_page(target_page)
 
     def on_page_size_changed(self, page_size: int):
+        """处理每页显示条数变更"""
         self.model.set_page_size(page_size)
 
     # ---- 行级操作：下载/取消 ----
     def on_row_download_clicked(self, path: str):
         """点击下载按钮。"""
-        if not self.manager.is_connected():
-            self.view.show_toast("设备未连接，无法下载", 1)
+        if not self._require_connected():
             return
 
         # 使用 path 查找文件对象
@@ -214,7 +218,8 @@ class BusDataDownloadController(BaseController):
         if not item:
             return
 
-        if item.get("status") in ("下载中", "已下载"):
+        # 只阻止正在下载的任务；允许对已下载文件重新下载
+        if self._is_downloading(item):
             return
 
         local_dir = QtWidgets.QFileDialog.getExistingDirectory(self.view, "选择保存目录")
@@ -230,7 +235,9 @@ class BusDataDownloadController(BaseController):
             return
 
         status = item.get("status")
-        if status in ("下载中", "已下载"):
+        # 仅阻止正在下载的文件
+        if status == "下载中":
+            self.view.show_toast("任务正在进行中，请稍候...", 2)
             return
 
         filename = item.get("filename")
@@ -259,42 +266,25 @@ class BusDataDownloadController(BaseController):
                 continue
 
             self.current_downloading_count += 1
-            worker = Worker(self._do_download_task, remote_path, local_path)
+            # 为该下载任务创建一个 ProgressAdapter 并传入 worker，确保 adapter 在 worker 生命周期内保持引用
+            adapter = ProgressAdapter(remote_path)
+            adapter.progress_sig.connect(self.model.update_file_status)
+            worker = Worker(self._do_download_task, remote_path, local_path, adapter)
             self._start_download_worker(worker, remote_path)
 
-    def _do_download_task(self, log_cb, remote_path, local_path):
+    def _do_download_task(self, log_cb, remote_path, local_path, adapter=None):
         """实际下载线程任务，支持取消与进度回调"""
         if remote_path in self.cancelled_files:
             self.model.update_file_status(remote_path, "已取消", 0)
             return False, "Cancelled"
 
-        def progress_cb(transferred, total):
-            if remote_path in self.cancelled_files:
-                raise RuntimeError("Cancelled")
-            try:
-                now = time.time()
-                state = progress_cb.__dict__.setdefault("state", {"last_time": now, "last_bytes": 0})
-                dt = now - state["last_time"]
-                if total and total > 0:
-                    pct = int(transferred * 100 / total)
-                else:
-                    pct = 0
-                if dt >= 0.5 or (total and transferred == total):
-                    diff = transferred - state["last_bytes"]
-                    speed = ""
-                    if dt > 0 and diff >= 0:
-                        speed_val = diff / dt
-                        if speed_val < 1024:
-                            speed = f"{speed_val:.1f} B/s"
-                        elif speed_val < 1024 * 1024:
-                            speed = f"{speed_val/1024:.1f} KB/s"
-                        else:
-                            speed = f"{speed_val/(1024*1024):.1f} MB/s"
-                    self.model.update_file_status(remote_path, "下载中", pct, speed)
-                    state["last_time"] = now
-                    state["last_bytes"] = transferred
-            except Exception:
-                pass
+        # 确保 adapter 可用（若调用方未传入，则创建临时 adapter）
+        if adapter is None:
+            adapter = ProgressAdapter(remote_path)
+            adapter.progress_sig.connect(self.model.update_file_status)
+
+        # 统一回调，兼容 SFTP (transferred,total) 与 SCP (filename,size,sent) 两种签名
+        progress_cb = adapter.make_unified_callback()
 
         try:
             success, msg = self.manager.download_file(remote_path, local_path, progress_callback=progress_cb)
@@ -309,12 +299,31 @@ class BusDataDownloadController(BaseController):
             return False, str(e)
 
     def _start_download_worker(self, worker, remote_path):
-        worker.result_signal.connect(lambda res: self._on_download_finished(res, remote_path))
+        """启动下载线程并绑定回调"""
+        # Bind remote_path as default argument to avoid late-binding closure issue
+        worker.result_signal.connect(lambda res, rp=remote_path: self._on_download_finished(res, rp))
         worker.finished.connect(lambda w=worker: self._cleanup_worker(w))
+
+        # 如果 worker 的 args 中包含 adapter（第3个参数），把它绑定到 worker 上以保持引用
+        try:
+            if hasattr(worker, 'args') and len(worker.args) >= 3:
+                setattr(worker, '_adapter', worker.args[2])
+                # 记录 adapter 路径并注册到映射，方便快速定位
+                try:
+                    a_path = getattr(worker.args[2], 'path', None)
+                    setattr(worker, '_adapter_path', a_path)
+                    if a_path:
+                        self._path_to_worker[a_path] = worker
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
         self.workers.append(worker)
         worker.start()
 
     def _on_download_finished(self, result, remote_path):
+        """下载任务完成回调"""
         self.current_downloading_count -= 1
 
         if not result:
@@ -326,7 +335,7 @@ class BusDataDownloadController(BaseController):
                 success, msg = bool(result), ""
             if success:
                 self.model.update_file_status(remote_path, "已下载", 100)
-                # self.view.show_toast("文件已下载到本地", 0) # 批量下载时太吵了，也许可以去掉或改成 log
+                self.view.show_toast("文件已下载到本地", 0)
             else:
                 if "Cancelled" not in str(msg):
                     self.model.update_file_status(remote_path, "下载失败", 0)
@@ -340,27 +349,71 @@ class BusDataDownloadController(BaseController):
         # path 直接作为 id
         self.cancelled_files.add(path)
         self.model.update_file_status(path, "已取消", 0)
+        try:
+            if hasattr(self.manager, 'cancel_download') and callable(getattr(self.manager, 'cancel_download')):
+                try:
+                    self.manager.cancel_download(path)
+                except Exception:
+                    # 仅记录/吞掉异常，继续尝试 adapter 层的取消
+                    pass
+        except Exception:
+            pass
+
+        # 如果有映射，直接定位并调用该 worker 的 adapter.cancel()
+        try:
+            w = self._path_to_worker.get(path)
+            if w and hasattr(w, '_adapter'):
+                try:
+                    adapter = getattr(w, '_adapter')
+                    if hasattr(adapter, 'cancel') and callable(getattr(adapter, 'cancel')):
+                        adapter.cancel()
+                except Exception:
+                    pass
+                return
+        except Exception:
+            pass
+
+        # 兜底：遍历 workers（兼容老逻辑），并调用 adapter.cancel
+        try:
+            for w in list(self.workers):
+                try:
+                    if hasattr(w, '_adapter'):
+                        adapter = getattr(w, '_adapter')
+                        a_path = getattr(adapter, 'path', None)
+                        if not a_path:
+                            continue
+                        if a_path == path or a_path.endswith(f"/{path}") or a_path.endswith(path):
+                            try:
+                                if hasattr(adapter, 'cancel') and callable(getattr(adapter, 'cancel')):
+                                    adapter.cancel()
+                            except Exception:
+                                pass
+                except Exception:
+                    continue
+        except Exception:
+            pass
+
+    def _collect_selected_paths(self) -> list:
+        """收集表格中被勾选的文件路径，返回路径列表。
+        优化: 直接使用 Model 提供的接口，避免 UI 遍历。
+        """
+        rows = self.table_model.get_checked_rows()
+        # 兼容: 确保 path 字段存在 (column 3 logic in old code)
+        return [r.get("path") for r in rows if r.get("path")]
+
+    def _require_connected(self) -> bool:
+        """检查 manager 是否连接，若未连接则提示并返回 False。"""
+        if not self.manager.is_connected():
+            self.view.show_toast("设备未连接，无法下载", 1)
+            return False
+        return True
 
     def on_batch_download(self):
         """批量下载"""
-        if not self.manager.is_connected():
-            self.view.show_toast("设备未连接，无法下载", 1)
+        if not self._require_connected():
             return
 
-        model = self.view.table.model()
-        if not model:
-            return
-
-        paths_to_process = []
-        for r in range(model.rowCount()):
-            idx = model.index(r, 0)
-            if model.data(idx, QtCore.Qt.CheckStateRole) == QtCore.Qt.Checked:
-                # 获取 Path (列3)
-                path_idx = model.index(r, 3)
-                path = model.data(path_idx, QtCore.Qt.DisplayRole)
-                if path:
-                    paths_to_process.append(path)
-
+        paths_to_process = self._collect_selected_paths()
         if not paths_to_process:
             self.view.show_toast("请先勾选需要下载的文件", 1)
             return
@@ -374,19 +427,7 @@ class BusDataDownloadController(BaseController):
 
     def on_batch_cancel(self):
         """批量取消"""
-        model = self.view.table.model()
-        if not model:
-            return
-
-        paths_to_process = []
-        for r in range(model.rowCount()):
-            idx = model.index(r, 0)
-            if model.data(idx, QtCore.Qt.CheckStateRole) == QtCore.Qt.Checked:
-                # 获取 Path (列3)
-                path_idx = model.index(r, 3)
-                path = model.data(path_idx, QtCore.Qt.DisplayRole)
-                if path:
-                    paths_to_process.append(path)
+        paths_to_process = self._collect_selected_paths()
 
         count = 0
         for p in paths_to_process:
@@ -427,6 +468,7 @@ class BusDataDownloadController(BaseController):
         self.view.table.horizontalHeader().setSortIndicator(index, new_order)
 
     def get_view(self):
+        """获取视图引用"""
         return self.view
 
     def _get_unique_local_path(self, local_path):
@@ -440,3 +482,10 @@ class BusDataDownloadController(BaseController):
             if not os.path.exists(candidate):
                 return candidate
             counter += 1
+
+    def _is_downloading(self, item: dict) -> bool:
+        """检查 item 是否处于下载中，若是则提示并返回 True。"""
+        if item.get("status") == "下载中":
+            self.view.show_toast("任务正在进行中，请稍候...", 2)
+            return True
+        return False
