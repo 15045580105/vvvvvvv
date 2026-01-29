@@ -13,12 +13,13 @@ from app.common.ui.modern_widgets import MessageToast
 from app.common.ui.checkable_header import CheckBoxHeaderView, CheckableHeaderController
 from app.modules.bus_data_management.view.CalendarDateEdit import CalendarDateEdit
 from app.presentation.views.base_view import BaseView
-
-ACTION_BTN_W = 84
-ACTION_BTN_H = 30
-ACTION_BTN_SPACING = 10
-ACTION_COL_HMARGIN = 10
-ACTION_COL_WIDTH = ACTION_BTN_W * 2 + ACTION_BTN_SPACING + ACTION_COL_HMARGIN * 2
+from app.modules.bus_data_management.view.delegates import (
+    CenteredCheckBoxDelegate,
+    ProgressDelegate,
+    StatusDelegate,
+    ActionDelegate,
+    ACTION_COL_WIDTH,
+)
 
 STATUS_OPTIONS = ["全部", "未下载", "下载中", "已下载", "下载失败", "已取消"]
 
@@ -59,11 +60,26 @@ class BusDataDownloadView(BaseView):
         toolbar.setColumnStretch(5, 1)
 
         self.tab_input = QtWidgets.QComboBox()
-        self.tab_input.setEditable(False)
+        self.tab_input.setEditable(True)
+        # 配置 Completer 以支持前缀筛选 (Tab)
+        tab_completer = self.tab_input.completer()
+        if tab_completer:
+            tab_completer.setCompletionMode(QtWidgets.QCompleter.PopupCompletion)
+            tab_completer.setFilterMode(_Qt.MatchStartsWith)
+            tab_completer.setCaseSensitivity(_Qt.CaseInsensitive)
+
         # 默认不再提供“全部/根目录”项；实际选项由 set_tab_options() 填充
         self.tab_input.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
 
         self.type_combo = QtWidgets.QComboBox()
+        self.type_combo.setEditable(True)
+        # 配置 Completer 以支持前缀筛选 (Type)
+        type_completer = self.type_combo.completer()
+        if type_completer:
+            type_completer.setCompletionMode(QtWidgets.QCompleter.PopupCompletion)
+            type_completer.setFilterMode(_Qt.MatchStartsWith)
+            type_completer.setCaseSensitivity(_Qt.CaseInsensitive)
+
         self.type_combo.addItem("全部")
         self.type_combo.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
 
@@ -82,6 +98,7 @@ class BusDataDownloadView(BaseView):
 
         self.batch_download_btn = ModernButton("批量下载", "#3B82F6", "⬇️")
         self.batch_cancel_btn = ModernButton("批量取消", "#EF4444", "✕")
+        self.reset_btn = ModernButton("重置", "#F59E0B", "🔄")
 
         toolbar.addWidget(QtWidgets.QLabel("TAB"), 0, 0)
         toolbar.addWidget(self.tab_input, 0, 1)
@@ -104,6 +121,7 @@ class BusDataDownloadView(BaseView):
         btns.addSpacing(20)
         btns.addWidget(self.search_btn)
         btns.addWidget(self.refresh_btn)
+        btns.addWidget(self.reset_btn)
 
         fc.addLayout(toolbar)
         fc.addLayout(btns)
@@ -155,7 +173,8 @@ class BusDataDownloadView(BaseView):
         self.table.setItemDelegateForColumn(0, CenteredCheckBoxDelegate(self.table))
         self.table.setItemDelegateForColumn(8, ProgressDelegate(self.table))
         self.table.setItemDelegateForColumn(9, StatusDelegate(self.table))
-        self.action_delegate = ActionDelegate(self.table)
+        # 显式传入 path/status 列索引，以适配表格布局
+        self.action_delegate = ActionDelegate(self.table, path_col=3, status_col=9)
         self.action_delegate.sig_download.connect(self.sig_download_clicked)
         self.action_delegate.sig_cancel.connect(self.sig_cancel_clicked)
         self.table.setItemDelegateForColumn(10, self.action_delegate)
@@ -198,6 +217,7 @@ class BusDataDownloadView(BaseView):
         self.prev_btn.clicked.connect(self._on_prev_page_clicked)
         self.next_btn.clicked.connect(self._on_next_page_clicked)
         self.page_size_combo.currentTextChanged.connect(self._on_page_size_changed)
+        self.reset_btn.clicked.connect(self._on_reset)
         self.table.setSelectionMode(QtWidgets.QAbstractItemView.ExtendedSelection)
         self.toast = MessageToast(self)
         self.date_from.dateTimeChanged.connect(self._on_time_changed)
@@ -241,29 +261,19 @@ class BusDataDownloadView(BaseView):
         self.next_btn.setEnabled(page < page_count)
 
     def get_filter_criteria(self) -> dict:
-        tab_kw = self.tab_input.currentData()
-        if tab_kw is None:
-            tab_kw = ""
+        def _get_valid_dt(widget):
+            dt = widget.dateTime()
+            return dt if dt and dt > widget.null_date else None
 
-        type_kw = self.type_combo.currentText()
-        if type_kw == "全部":
-            type_kw = ""
-
-        name_kw = self.filename_input.text().strip()
-        status = self.status_combo.currentText()
-        d_from = self.date_from.dateTime()
-        d_to = self.date_to.dateTime()
-
-        from_ok = d_from and (d_from > self.date_from.null_date)
-        to_ok = d_to and (d_to > self.date_to.null_date)
+        type_text = self.type_combo.currentText()
 
         return {
-            "tab_kw": tab_kw,
-            "type_kw": type_kw,
-            "name_kw": name_kw,
-            "status": status,
-            "date_from": d_from if from_ok else None,
-            "date_to": d_to if to_ok else None,
+            "tab_kw": self.tab_input.currentData() or "",
+            "type_kw": "" if type_text == "全部" else type_text,
+            "name_kw": self.filename_input.text().strip(),
+            "status": self.status_combo.currentText(),
+            "date_from": _get_valid_dt(self.date_from),
+            "date_to": _get_valid_dt(self.date_to),
         }
 
     def set_table_model(self, model):
@@ -274,30 +284,32 @@ class BusDataDownloadView(BaseView):
         else:
             self.table.setModel(model)
         self.table.setMouseTracking(True)
-        fixed_headers = ["", "序号", "FileName", "Path", "Type", "Size(KB)", "CreateTime", "ModifiedTime", "下载进度", "状态", "操作"]
-        if hasattr(model, "set_headers"):
-            try:
-                model.set_headers(fixed_headers)
-            except Exception:
-                pass
+
+        # Config column layout
         hheader = self.table.horizontalHeader()
-        hheader.setSectionResizeMode(0, QtWidgets.QHeaderView.Fixed)
-        self.table.setColumnWidth(0, 80)
-        hheader.setSectionResizeMode(1, QtWidgets.QHeaderView.ResizeToContents)
-        hheader.setSectionResizeMode(2, QtWidgets.QHeaderView.Interactive)
-        self.table.setColumnWidth(2, 180)
-        hheader.setSectionResizeMode(3, QtWidgets.QHeaderView.Interactive)
-        self.table.setColumnWidth(3, 360)
-        hheader.setSectionResizeMode(4, QtWidgets.QHeaderView.ResizeToContents)
-        hheader.setSectionResizeMode(5, QtWidgets.QHeaderView.ResizeToContents)
-        hheader.setSectionResizeMode(6, QtWidgets.QHeaderView.ResizeToContents)
-        hheader.setSectionResizeMode(7, QtWidgets.QHeaderView.ResizeToContents)
-        hheader.setSectionResizeMode(8, QtWidgets.QHeaderView.Stretch)
-        self.table.setColumnWidth(8, 200)
-        hheader.setSectionResizeMode(9, QtWidgets.QHeaderView.Interactive)
-        self.table.setColumnWidth(9, 120)
-        hheader.setSectionResizeMode(10, QtWidgets.QHeaderView.Fixed)
-        self.table.setColumnWidth(10, ACTION_COL_WIDTH)
+
+        # 定义列配置：(列索引, 缩放模式, 宽度(可选))
+        # 模式简写：F=Fixed, R=ResizeToContents, I=Interactive, S=Stretch
+        HV = QtWidgets.QHeaderView
+        col_configs = [
+            (0, HV.Fixed, 80),
+            (1, HV.ResizeToContents, None),
+            (2, HV.Interactive, 180),
+            (3, HV.Interactive, 360),
+            (4, HV.ResizeToContents, None),
+            (5, HV.ResizeToContents, None),
+            (6, HV.ResizeToContents, None),
+            (7, HV.ResizeToContents, None),
+            (8, HV.Stretch, 200),
+            (9, HV.Interactive, 120),
+            (10, HV.Fixed, ACTION_COL_WIDTH),
+        ]
+
+        for col_idx, mode, width in col_configs:
+            hheader.setSectionResizeMode(col_idx, mode)
+            if width is not None:
+                self.table.setColumnWidth(col_idx, width)
+
         if self._header_ctrl is not None:
             try:
                 self._header_ctrl._sync_from_model()
@@ -346,161 +358,11 @@ class BusDataDownloadView(BaseView):
         super().showEvent(event)
         self.sig_view_shown.emit()
 
-# ---- Delegates ----
-class CenteredCheckBoxDelegate(QtWidgets.QStyledItemDelegate):
-    def paint(self, painter, option, index):
-        if not index.isValid():
-            return
-        painter.save()
-        opt = QtWidgets.QStyleOptionViewItem(option)
-        opt.state &= ~QtWidgets.QStyle.State_HasFocus
-        style = opt.widget.style() if opt.widget else QtWidgets.QApplication.style()
-        check_state = index.data(QtCore.Qt.CheckStateRole)
-        cb_opt = QtWidgets.QStyleOptionButton()
-        cb_opt.state |= QtWidgets.QStyle.State_Enabled
-        cb_opt.state |= QtWidgets.QStyle.State_On if check_state == QtCore.Qt.Checked else QtWidgets.QStyle.State_Off
-        indicator_w = style.pixelMetric(QtWidgets.QStyle.PM_IndicatorWidth, None, opt.widget)
-        indicator_h = style.pixelMetric(QtWidgets.QStyle.PM_IndicatorHeight, None, opt.widget)
-        r = opt.rect
-        x = r.x() + (r.width() - indicator_w) // 2
-        y = r.y() + (r.height() - indicator_h) // 2
-        cb_opt.rect = QtCore.QRect(x, y, indicator_w, indicator_h)
-        style.drawPrimitive(QtWidgets.QStyle.PE_IndicatorCheckBox, cb_opt, painter, opt.widget)
-        painter.restore()
-
-    def editorEvent(self, event, model, option, index):
-        if not index.isValid():
-            return False
-        if event.type() == QtCore.QEvent.MouseButtonRelease and event.button() == QtCore.Qt.LeftButton:
-            state = index.data(QtCore.Qt.CheckStateRole)
-            new_state = QtCore.Qt.Unchecked if state == QtCore.Qt.Checked else QtCore.Qt.Checked
-            return model.setData(index, new_state, QtCore.Qt.CheckStateRole)
-        return False
-
-class ProgressDelegate(QtWidgets.QStyledItemDelegate):
-    def paint(self, painter, option, index):
-        if not index.isValid():
-            return
-        if option.state & QtWidgets.QStyle.State_Selected:
-            painter.fillRect(option.rect, option.palette.highlight())
-        text = (index.data(QtCore.Qt.DisplayRole) or "0%").strip()
-        pct = 0
-        try:
-            pct_part = text.split("%", 1)[0]
-            pct = int("".join(ch for ch in pct_part if ch.isdigit()) or "0")
-        except Exception:
-            pct = 0
-        pct = max(0, min(100, pct))
-        painter.save()
-        painter.setRenderHint(QtGui.QPainter.Antialiasing)
-        rect = option.rect.adjusted(8, 12, -8, -12)
-        if rect.height() < 12:
-            rect = option.rect.adjusted(6, 6, -6, -6)
-        radius = max(6, rect.height() // 2)
-        track_color = QtGui.QColor("#EEF2FF") if not (option.state & QtWidgets.QStyle.State_Selected) else QtGui.QColor("#DDE7FF")
-        track_pen = QtGui.QPen(QtGui.QColor("#CBD5E1"))
-        track_pen.setWidth(1)
-        painter.setPen(track_pen)
-        painter.setBrush(track_color)
-        painter.drawRoundedRect(rect, radius, radius)
-        if pct > 0:
-            fill_w = int(rect.width() * pct / 100)
-            fill_rect = QtCore.QRect(rect.x(), rect.y(), fill_w, rect.height())
-            fill_path = QtGui.QPainterPath()
-            fill_path.addRoundedRect(QtCore.QRectF(fill_rect), radius, radius)
-            grad = QtGui.QLinearGradient(fill_rect.topLeft(), fill_rect.topRight())
-            grad.setColorAt(0.0, QtGui.QColor("#3B82F6"))
-            grad.setColorAt(1.0, QtGui.QColor("#06B6D4"))
-            painter.setPen(QtCore.Qt.NoPen)
-            painter.fillPath(fill_path, grad)
-        painter.setPen(QtGui.QColor("#0F172A") if not (option.state & QtWidgets.QStyle.State_Selected) else option.palette.highlightedText().color())
-        font = option.font
-        font.setBold(True)
-        painter.setFont(font)
-        painter.drawText(option.rect, QtCore.Qt.AlignCenter, text)
-        painter.restore()
-
-class StatusDelegate(QtWidgets.QStyledItemDelegate):
-    def paint(self, painter, option, index):
-        if not index.isValid():
-            return
-        status = index.data(QtCore.Qt.DisplayRole)
-        color_map = {
-            "未下载": ("#6B7280", "#F3F4F6"),
-            "下载中": ("#3B82F6", "#DBEAFE"),
-            "已下载": ("#10B981", "#D1FAE5"),
-            "下载失败": ("#EF4444", "#FEE2E2"),
-            "已取消": ("#F97316", "#FFEDD5"),
-        }
-        text_color, bg_color = color_map.get(status, ("#6B7280", "#F3F4F6"))
-        painter.save()
-        painter.setRenderHint(QtGui.QPainter.Antialiasing)
-        rect = option.rect
-        pill_rect = QtCore.QRect(0, 0, 80, 24)
-        pill_rect.moveCenter(rect.center())
-        path = QtGui.QPainterPath()
-        path.addRoundedRect(QtCore.QRectF(pill_rect), 12, 12)
-        painter.fillPath(path, QtGui.QColor(bg_color))
-        painter.setPen(QtGui.QColor(text_color))
-        painter.drawText(pill_rect, QtCore.Qt.AlignCenter, status)
-        painter.restore()
-
-class ActionDelegate(QtWidgets.QStyledItemDelegate):
-    sig_download = QtCore.pyqtSignal(str)
-    sig_cancel = QtCore.pyqtSignal(str)
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-
-    def paint(self, painter, option, index):
-        if not index.isValid():
-            return
-        status_idx = index.sibling(index.row(), 9)
-        status = status_idx.data(QtCore.Qt.DisplayRole)
-        is_downloading = (status == "下载中")
-        spacing = 10
-        btn_w = 84
-        btn_h = 30
-        total_w = 2 * btn_w + spacing
-        start_x = option.rect.left() + (option.rect.width() - total_w) // 2
-        y = option.rect.top() + (option.rect.height() - btn_h) // 2
-        rect_down = QtCore.QRect(start_x, y, btn_w, btn_h)
-        rect_cancel = QtCore.QRect(start_x + btn_w + spacing, y, btn_w, btn_h)
-        self._paint_modern_btn(painter, rect_down, "#10B981", "⬇️ 下载", True)
-        self._paint_modern_btn(painter, rect_cancel, "#EF4444", "✕ 取消", is_downloading)
-
-    def _paint_modern_btn(self, painter, rect, base_color, text, enabled):
-        painter.save()
-        painter.setRenderHint(QtGui.QPainter.Antialiasing)
-        bg = QtGui.QColor(base_color) if enabled else QtGui.QColor("#E5E7EB")
-        path = QtGui.QPainterPath()
-        path.addRoundedRect(QtCore.QRectF(rect), 4, 4)
-        painter.fillPath(path, bg)
-        painter.setPen(QtGui.QColor("white") if enabled else QtGui.QColor("#9CA3AF"))
-        painter.drawText(rect, QtCore.Qt.AlignCenter, text)
-        painter.restore()
-
-    def editorEvent(self, event, model, option, index):
-        if event.type() == QtCore.QEvent.MouseButtonRelease:
-            spacing = 10
-            btn_w = 84
-            btn_h = 30
-            total_w = 2 * btn_w + spacing
-            start_x = option.rect.left() + (option.rect.width() - total_w) // 2
-            y = option.rect.top() + (option.rect.height() - btn_h) // 2
-            rect_down = QtCore.QRect(start_x, y, btn_w, btn_h)
-            rect_cancel = QtCore.QRect(start_x + btn_w + spacing, y, btn_w, btn_h)
-            pos = event.pos()
-            if rect_down.contains(pos):
-                path = index.sibling(index.row(), 3).data(QtCore.Qt.DisplayRole)
-                self.sig_download.emit(path)
-                return True
-            elif rect_cancel.contains(pos):
-                status_idx = index.sibling(index.row(), 9)
-                status = status_idx.data(QtCore.Qt.DisplayRole)
-                if status == "下载中":
-                    path = index.sibling(index.row(), 3).data(QtCore.Qt.DisplayRole)
-                    self.sig_cancel.emit(path)
-                return True
-        return False
-
+    def _on_reset(self):
+        """重置筛选条件（仅清空控件内容）"""
+        self.tab_input.setCurrentIndex(-1)  # Clear tab selection
+        self.date_from.clear()
+        self.date_to.clear()
+        self.type_combo.setCurrentIndex(0)  # Assuming first item "全部" is index 0
+        self.filename_input.clear()
+        self.status_combo.setCurrentIndex(0)  # Assuming first item "全部" is index 0

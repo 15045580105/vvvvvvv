@@ -1,22 +1,11 @@
-import datetime
+from datetime import datetime
 import os
 import scp
 from PyQt5.QtCore import pyqtSignal
 from app.core.base_service import BaseService
 from app.common.communication.clients.ssh_client import SSHClient
-
-
-# ARCHITECTURE NOTE:
-# - 当前角色：Service 负责设备连接、远程目录解析、上传/下载与进度回调，职责范围大但总体合理。
-# - 问题与改进建议：
-#   * Transport 抽象：将 paramiko+scp 的具体实现抽象成 Transport 接口（connect/put/get/exec_command/path_exists）以便替换/单元测试。
-#   * 返回/错误策略不统一：部分方法返回字符串 "success"/"not_connected"/错误消息，建议统一用异常或结构化结果对象 (success:bool, error:str)。
-#   * 远程解析依赖 shell 输出 (ls/stat)，容易因 locale/format 变化出错，建议优先尝试 sftp.listdir_attr()（paramiko.SFTPClient），再回退 shell。
-#   * 日志机制：当前使用 print，建议使用 Service 内置的 logger 或通过信号回传给 Controller（connection_status_changed 已存在）。
-# - 建议优先改进：
-#   1) 抽象 Transport 并在构造时注入，便于单元测试与替换为 mock。
-#   2) 统一错误返回策略，Controller 根据异常类型进行用户提示/重试逻辑。
-#   3) 将远程路径检查与重命名逻辑封装，并移除 Controller 的重复实现。
+from app.services.file_manage.utils.formatting import format_size as _format_size
+from app.services.file_manage.progress.progress import make_scp_progress_adapter
 
 
 class FileTransferService(BaseService):
@@ -24,14 +13,15 @@ class FileTransferService(BaseService):
 
     def __init__(self, transport=None):
         super().__init__()
-        self.transport = transport
-        # self.ssh_client = None  # Use singleton
-        # self.scp_client = None  # Not using persistent scp client to avoid stale connection
+        self.ssh_client = None  # type: ignore[assignment]
+        self.scp_client = None  # 临时持有的 scp.SCPClient（通常不持久化）
+        self.transport = transport  # 可注入的 transport 实现（协议/适配器）
         self._connected = False
-        
         # 初始化进度跟踪变量
         self.transfer_start_time = 0
         self.last_log_time = 0
+        # 保护性锁/占位（如需扩展为多线程使用可替换为 threading.Lock）
+        self._internal_lock = None
 
     def connect_device(self, hostname, port=22, username=None, password=None):
         """建立SSH连接并初始化SCP客户端"""
@@ -41,7 +31,15 @@ class FileTransferService(BaseService):
     def disconnect(self):
         """断开SSH连接和SCP客户端"""
         SSHClient().disconnect()
-        self.connection_status_changed.emit(False, "Disconnected")
+        # Safely emit signal if available (helps static analysis and avoids runtime errors
+        # in contexts where the signal object may not expose `emit` directly).
+        sig = getattr(self, 'connection_status_changed', None)
+        if sig is not None and hasattr(sig, 'emit') and callable(getattr(sig, 'emit')):
+            try:
+                sig.emit(False, "Disconnected")
+            except Exception:
+                # Swallow any emit-time exceptions to avoid cascading failures
+                pass
 
     def is_connected(self):
         return SSHClient().is_connected()
@@ -58,7 +56,6 @@ class FileTransferService(BaseService):
 
     def _get_entries_shell(self, client, path):
         """使用shell命令获取目录内容（修正解析与隐藏文件判断）"""
-        # print(f"Debug: Getting remote files for {path}") # 减少频繁日志
         children = []
         try:
             # 强化调试与防御性编程
@@ -124,7 +121,7 @@ class FileTransferService(BaseService):
                     size_str = ""
                     try:
                         if not is_dir and len(parts) > 4:
-                            size_str = self._format_size(int(parts[4]))
+                            size_str = _format_size(int(parts[4]))
                     except Exception:
                         size_str = ""
 
@@ -167,8 +164,12 @@ class FileTransferService(BaseService):
             print(f"Upload failed: {e}")
             return False
 
-    def download_file(self, remote_path, local_path, callback=None):
-        """下载文件 callback(transferred, total)"""
+    def _download_file_sftp(self, remote_path, local_path, callback=None):
+        """SFTP 下载封装（内部使用，保持独立）。
+
+        这个方法为早期实现，提供与 SFTP 对接的简单包装。重命名为
+        `_download_file_sftp` 以避免与后面的 `download_file` 冲突并降低静态检查噪音。
+        """
         if not self.ssh_client:
             return False
         try:
@@ -275,7 +276,7 @@ class FileTransferService(BaseService):
                     "name": entry.name,
                     "path": entry.path,
                     "is_dir": False,
-                    "size": self._format_size(st.st_size),
+                    "size": _format_size(st.st_size),
                     "mtime": self._format_mtime(st.st_mtime),
                 })
         except OSError:
@@ -287,10 +288,49 @@ class FileTransferService(BaseService):
 
     @staticmethod
     def _format_mtime(timestamp: float) -> str:
-        try:
-            return datetime.datetime.fromtimestamp(timestamp).strftime("%Y-%m-%d %H:%M")
-        except (OverflowError, OSError, ValueError):
+        """格式化文件修改时间为本地可读字符串（YYYY-MM-DD HH:MM）。
+
+        使用标准库 `datetime.fromtimestamp`，同时对异常和无效输入进行
+        防护，返回空字符串作为兜底。
+
+        扩展：支持以下输入类型：
+         - 数字（秒级时间戳或字符串化的数字）
+         - ISO 格式时间字符串（例如 2025-12-09T11:22:33 或 2025-12-09 11:22:33）
+         - 其他常见可解析格式，尽量使用 datetime.fromisoformat 或 strptime 解析
+        """
+        if timestamp is None:
             return ""
+
+        # 1) 尝试将常见的数字时间戳转换为 float
+        try:
+            ts = float(timestamp)
+            # 如果是合理的 unix 时间戳范围（2000-2100 年）则认为是秒级时间戳
+            if 946684800 <= ts <= 4102444800:
+                return datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M")
+        except (TypeError, ValueError, OverflowError):
+            pass
+
+        # 2) 尝试 ISO 格式解析 (支持 'T' 和 空格 分隔符)
+        try:
+            if isinstance(timestamp, str):
+                s = timestamp.strip()
+                # 处理形如 '2025-12-09T11:22:33' 或 '2025-12-09 11:22:33'
+                try:
+                    dt = datetime.fromisoformat(s)
+                    return dt.strftime("%Y-%m-%d %H:%M")
+                except Exception:
+                    # 再尝试常见格式
+                    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y/%m/%d %H:%M:%S", "%b %d %H:%M"):
+                        try:
+                            dt = datetime.strptime(s, fmt)
+                            return dt.strftime("%Y-%m-%d %H:%M")
+                        except Exception:
+                            continue
+        except Exception:
+            pass
+
+        # 3) 无法解析时返回空字符串（保持兼容性）
+        return ""
 
     def upload_with_conflict_resolution(self, local_path: str, remote_dir: str, overwrite_callback, progress_callback=None):
         """带冲突解决的上传方法"""
@@ -307,14 +347,11 @@ class FileTransferService(BaseService):
                 target_remote_path = self._generate_new_remote_path(remote_dir, filename)
                 print(f"Debug: [Upload] Renamed target to {target_remote_path}")
 
-        # 构造回调闭包
+        # 构造回调闭包：期望上层传入的 progress_callback 能处理 (transferred, total)，
+        # 对于 SCP 传入的回调需适配为 (filename, size, sent) -> make_scp_progress_adapter
         progress_cb_wrapper = None
         if progress_callback:
-            def progress_tracker(filename, size, sent):
-                if size > 0:
-                    percent = int((sent / size) * 100)
-                    progress_callback(percent)
-            progress_cb_wrapper = progress_tracker
+            progress_cb_wrapper = make_scp_progress_adapter(progress_callback)
 
         scp_client = self._get_scp_client(progress=progress_cb_wrapper)
         if not scp_client:
@@ -345,11 +382,7 @@ class FileTransferService(BaseService):
 
         progress_cb_wrapper = None
         if progress_callback:
-            def progress_tracker(filename, size, sent):
-                if size > 0:
-                    percent = int((sent / size) * 100)
-                    progress_callback(percent)
-            progress_cb_wrapper = progress_tracker
+            progress_cb_wrapper = make_scp_progress_adapter(progress_callback)
 
         scp_client = self._get_scp_client(progress=progress_cb_wrapper)
         if not scp_client:
@@ -367,21 +400,8 @@ class FileTransferService(BaseService):
         """上传文件并更新进度，返回字符串结果"""
         progress_cb_wrapper = None
         if progress_callback:
-            def scp_cb(filename, size, sent):
-                try:
-                    # filename 可能是 bytes 或 str
-                    fname = filename.decode('utf-8') if isinstance(filename, (bytes, bytearray)) else str(filename)
-                    if size and size > 0:
-                        percent = int((sent / size) * 100)
-                        try:
-                            # 注意：外部 progress_callback 只接受 percent
-                            progress_callback(percent)
-                        except Exception:
-                            pass
-                except Exception:
-                    # 保守处理
-                    pass
-            progress_cb_wrapper = scp_cb
+            # 期望 progress_callback 接受统一签名 (transferred, total) 或兼容 adapter
+            progress_cb_wrapper = make_scp_progress_adapter(progress_callback)
 
         scp_client = self._get_scp_client(progress=progress_cb_wrapper)
         if not scp_client:
@@ -399,8 +419,7 @@ class FileTransferService(BaseService):
         """下载文件并更新进度，返回字符串结果"""
         progress_cb_wrapper = None
         if progress_callback:
-            # 简化 lambda
-            progress_cb_wrapper = lambda f,s,sent: progress_callback(int(sent/s*100)) if s > 0 else None
+            progress_cb_wrapper = make_scp_progress_adapter(progress_callback)
 
         scp_client = self._get_scp_client(progress=progress_cb_wrapper)
         if not scp_client:
@@ -447,15 +466,10 @@ class FileTransferService(BaseService):
 
         # 2. 回退到 SCP (Fallback)
         try:
-            # SCP callback: func(filename, size, sent)
+            # SCP callback: func(filename, size, sent) -> 使用 make_scp_progress_adapter 适配
             scp_cb = None
             if progress_callback:
-                def _adapter(filename, size, sent):
-                    try:
-                        progress_callback(sent, size)
-                    except:
-                        pass
-                scp_cb = _adapter
+                scp_cb = make_scp_progress_adapter(progress_callback)
 
             # Use internal helper to get scp client from existing transport
             scp_client = self._get_scp_client(progress=scp_cb)

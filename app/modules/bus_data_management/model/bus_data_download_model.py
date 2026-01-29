@@ -22,22 +22,14 @@ class PageResult:
     total: int
     rows: List[Dict[str, Any]]
 
-# Qt表格数据展示
+# UI 适配模型，Qt表格数据展示
 class BusDataTableModel(QAbstractTableModel):
     """自定义表格模型"""
     def __init__(self, rows=None, parent=None):
         super().__init__(parent)
         self._rows = rows if rows is not None else []
         self._headers = ["", "序号", "FileName", "Path", "Type", "Size(KB)", "CreateTime", "ModifiedTime", "下载进度", "状态", "操作"]
-        self._checks = {}  # {row_index: bool}
-
-    def set_headers(self, headers: List[str]):
-        """Optional: allow the View to override header text (presentation concern)."""
-        if not headers:
-            return
-        self._headers = list(headers)
-        # notify header repaint
-        self.headerDataChanged.emit(Qt.Horizontal, 0, len(self._headers) - 1)
+        self._checks = {}
 
     def set_rows(self, rows):
         self.beginResetModel()
@@ -45,8 +37,6 @@ class BusDataTableModel(QAbstractTableModel):
         self._checks = {}
         self.endResetModel()
 
-    def get_rows(self):
-        return self._rows
 
     def rowCount(self, parent=None):
         return len(self._rows)
@@ -55,12 +45,17 @@ class BusDataTableModel(QAbstractTableModel):
         return len(self._headers)
 
     def data(self, index, role=Qt.DisplayRole):
+        """
+        核心数据接口：根据索引(行,列)和角色(Display/Check/Align)返回对应的数据。
+        Qt View 在绘制每个单元格时都会频繁调用此函数。
+        """
         if not index.isValid():
             return None
         row = index.row()
         col = index.column()
         item = self._rows[row]
 
+        # 1. DisplayRole: 返回单元格显示的文本内容
         if role == Qt.DisplayRole:
             if col == 1: return str(item.get("_seq_idx", row + 1))
             if col == 2: return item.get("filename", "")
@@ -69,7 +64,7 @@ class BusDataTableModel(QAbstractTableModel):
             if col == 5: return item.get("size_kb", "")
             if col == 6: return item.get("create_time", "")
             if col == 7: return item.get("modified_time", "")
-            if col == 8:
+            if col == 8:  # 进度列：显示 "50% (1.2MB/s)" 或 "100%"
                 pct = item.get("progress", 0)
                 speed = item.get("transfer_rate", "")
                 status = item.get("status", "")
@@ -79,12 +74,12 @@ class BusDataTableModel(QAbstractTableModel):
             if col == 9: return item.get("status", "")
             return ""
 
+        # 2. CheckStateRole: 控制第0列复选框的选中状态
         if role == Qt.CheckStateRole and col == 0:
             return Qt.Checked if self._checks.get(row, False) else Qt.Unchecked
 
+        # 3. TextAlignmentRole: 控制文本的对齐方式
         if role == Qt.TextAlignmentRole:
-            # Align center for most columns except filename/path maybe?
-            # Original code: 1, 4, 5, 6, 7, 8, 9, 10 aligned center.
             if col in [0, 1, 4, 5, 6, 7, 8, 9, 10]:
                 return Qt.AlignCenter
             return Qt.AlignLeft | Qt.AlignVCenter
@@ -107,9 +102,13 @@ class BusDataTableModel(QAbstractTableModel):
             self._checks = {}
         self.endResetModel()
 
-    # Optional alias for shared header controller
-    def set_all_checked(self, checked: bool):
-        self.select_all(checked)
+    def get_checked_rows(self) -> List[Dict[str, Any]]:
+        """获取所有被选中的行数据对象"""
+        selected = []
+        for idx in sorted(self._checks.keys()):
+            if self._checks[idx] and 0 <= idx < len(self._rows):
+                selected.append(self._rows[idx])
+        return selected
 
     def flags(self, index):
         f = Qt.ItemIsEnabled | Qt.ItemIsSelectable
@@ -136,7 +135,7 @@ class BusDataTableModel(QAbstractTableModel):
             br = self.index(row_idx, 9)
             self.dataChanged.emit(tl, br, [Qt.DisplayRole])
 
-# 总线数据下载业务逻辑
+# 业务数据模型，总线数据下载业务逻辑
 class BusDataDownloadModel(BaseModel):
     """总线数据下载模型，支持简单过滤和分页。"""
 
@@ -157,6 +156,8 @@ class BusDataDownloadModel(BaseModel):
 
         # 缓存 Type 列表
         self.unique_types: List[str] = []
+        # 路径索引用于快速查找 O(1)
+        self._file_map: Dict[str, Dict[str, Any]] = {}
 
         # 过滤条件
         self._filter: Dict[str, Any] = {
@@ -167,13 +168,12 @@ class BusDataDownloadModel(BaseModel):
             "date_from": None,
             "date_to": None,
         }
-        # 初始化一些模拟数据
-        # self.load_mock()
 
     # ---- 对外 API ----
     def set_file_list(self, files: List[Dict[str, Any]]):
         """设置文件列表数据"""
         self._all_rows = []
+        self._file_map = {}
         unique_types = set()
 
         for item in files:
@@ -187,9 +187,10 @@ class BusDataDownloadModel(BaseModel):
             c_time = self._format_date_str(item.get("create_time"), default_ss="00")
             m_time = self._format_date_str(item.get("modified_time"), default_ss="59")
 
-            self._all_rows.append({
+            path_val = item.get("path", "")
+            row_data = {
                 "filename": item.get("filename", ""),
-                "path": item.get("path", ""),
+                "path": path_val,
                 "appid": appid,
                 "size_kb": item.get("size_kb", ""),
                 "create_time": c_time,
@@ -197,7 +198,10 @@ class BusDataDownloadModel(BaseModel):
                 "progress": item.get("progress", 0),
                 "status": status,
                 "raw_size": item.get("raw_size", 0),
-            })
+            }
+            self._all_rows.append(row_data)
+            if path_val:
+                self._file_map[path_val] = row_data
 
         self.unique_types = sorted(list(unique_types))
         self.apply_filter()
@@ -281,21 +285,6 @@ class BusDataDownloadModel(BaseModel):
 
         return s
 
-    def load_mock(self):
-        """加载一些模拟数据。后续可替换为真实查询。"""
-        self._all_rows = []
-        for i in range(1, 51):
-            self._all_rows.append({
-                "filename": f"bus_data_{i:03d}.blf",
-                "path": f"/capture/session_{(i - 1)//10 + 1}",
-                "appid": f"TAB{i%4}",   # 这里沿用 appid 字段名，视图只负责展示
-                "size_kb": 128 + i * 5,
-                "create_time": f"2025-12-09 10:{i:02d}:00",
-                "modified_time": f"2025-12-09 11:{i:02d}:00",
-                "progress": 0,
-                "status": "未下载",
-            })
-        self.apply_filter()
 
     def set_filter(self, criteria: Dict[str, Any]):
         self._filter.update(criteria or {})
@@ -368,50 +357,65 @@ class BusDataDownloadModel(BaseModel):
     def get_unique_types(self) -> List[str]:
         return self.unique_types
 
-    def get_file_by_row(self, row_index: int) -> Dict[str, Any] | None:
-        """Get file object by current page row index"""
-        page_result = self.get_page()
-        if 0 <= row_index < len(page_result.rows):
-            return page_result.rows[row_index]
-        return None
 
     def get_file_by_path(self, path: str) -> Dict[str, Any] | None:
-        """Get file object by path"""
+        """Get file object by path. Support exact match and filename suffix match for robustness."""
+        if not path:
+            return None
+        # 1) exact match with map
+        if path in self._file_map:
+            return self._file_map[path]
+
+        # 2) try suffix match (in case one side stores full path and other stores relative)
+        basename = str(path).rstrip("/").split("/")[-1]
         for row in self._all_rows:
-            if row.get("path") == path:
+            rpath = row.get("path") or ""
+            if rpath.endswith(f"/{basename}") or rpath == basename:
                 return row
         return None
 
     def get_row_index_by_path(self, path: str) -> int:
-        """获取某路径在当前过滤页中的行索引（用于局部刷新）"""
+        """获取某路径在当前过滤页中的行索引（用于局部刷新）。支持容错匹配。"""
+        if not path:
+            return -1
         pr = self.get_page()
+        basename = str(path).rstrip("/").split("/")[-1]
         for i, row in enumerate(pr.rows):
-            if row.get("path") == path:
+            rpath = row.get("path") or ""
+            if rpath == path or rpath.endswith(f"/{basename}") or rpath == basename:
                 return i
         return -1
 
     def update_file_status(self, path: str, status: str, progress: int = 0, speed: str = ""):
-        # 因为 _all_rows 是列表，需要遍历查找。
-        # 如果数据量大，应该建立 dict 索引。鉴于 context 里 LogDownloadModel 用了 file_map，这里做简单查找
+        if not path:
+            return
+
         found = False
-        for row in self._all_rows:
-            if row.get("path") == path:
-                row["status"] = status
-                row["progress"] = progress
-                row["transfer_rate"] = speed
-                found = True
-                break
+        # 1. 尝试快速查找
+        row = self._file_map.get(path)
+        if row:
+            row["status"] = status
+            row["progress"] = progress
+            row["transfer_rate"] = speed
+            found = True
+        else:
+            # 2. 兜底找不到（可能是路径格式差异），退化为遍历查找
+            basename = str(path).rstrip("/").split("/")[-1]
+            for r in self._all_rows:
+                rpath = r.get("path") or ""
+                # 如果 map 没找到，说明精确匹配失败，尝试模糊匹配
+                if rpath.endswith(f"/{basename}") or rpath == basename:
+                    r["status"] = status
+                    r["progress"] = progress
+                    r["transfer_rate"] = speed
+                    found = True
+                    # 缓存此次匹配结果，下次 O(1)
+                    self._file_map[path] = r
+                    break
 
         if found:
             # 只有当状态发生质变（如完成、失败）或者被明确要求时，才触发全量 dataChanged?
-            # 不，全量 dataChanged 重绘成本太高。
-            # 我们发射专门的信号。
             self.progressChanged.emit(path, status, progress, speed)
-
-            # 如果需要兼容旧逻辑或其他监听者，可能需要评估。
-            # 但这里我们明确为了优化性能，避免 dataChanged。
-            # 如果是状态变为 "已完成"，可能需要刷新一下以确保排序等正确？
-            # 暂时只发 progressChanged，依靠 View 的局部更新。
 
 
     # ---- 内部工具 ----
@@ -446,11 +450,8 @@ class BusDataDownloadModel(BaseModel):
                 return False
 
             if time_filter_enabled:
-                ct_raw = str(row.get("create_time", "")).strip()
-                if not ct_raw:
-                    return False
-
-                ct_norm = self._format_date_str(ct_raw, default_ss="00")
+                # 优化：row["create_time"] 已在 set_file_list 中标准化，无需重复 format
+                ct_norm = str(row.get("create_time", "")).strip()
                 if not ct_norm:
                     return False
 
