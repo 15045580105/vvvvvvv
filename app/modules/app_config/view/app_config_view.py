@@ -6,6 +6,7 @@ from app.common.ui.style import APP_STYLE
 from app.modules.app_config.view.app_log_settings_page import AppLogSettingsPage
 from app.modules.app_config.view.diagnostic_layer_settings_page import DiagnosticLayerSettingsPage
 from app.modules.app_config.view.doip_settings_page import DoIPSettingsPage
+from app.modules.app_config.view.someip_settings_page import SomeIPSettingsPage
 from app.modules.app_config.view.domain_software_update_page import DomainSoftwareUpdatePage
 
 
@@ -140,6 +141,10 @@ class SettingsWindow(QWidget):
         doip_item.setText(0, "DoIP 设置")
         doip_item.setData(0, Qt.UserRole, "doip")
 
+        someip_item = QTreeWidgetItem(protocol_item)
+        someip_item.setText(0, "SomeIP 设置")
+        someip_item.setData(0, Qt.UserRole, "someip")
+
         diag_layer_item = QTreeWidgetItem(protocol_item)
         diag_layer_item.setText(0, "诊断层")
         diag_layer_item.setData(0, Qt.UserRole, "diag_layer")
@@ -167,6 +172,10 @@ class SettingsWindow(QWidget):
         self.doip_page = DoIPSettingsPage()
         self.stacked_widget.addWidget(self.doip_page)
 
+        # SomeIP设置页面
+        self.someip_page = SomeIPSettingsPage()
+        self.stacked_widget.addWidget(self.someip_page)
+
         # Diagnostic Layer设置页面
         self.diag_layer_page = DiagnosticLayerSettingsPage()
         self.stacked_widget.addWidget(self.diag_layer_page)
@@ -188,7 +197,8 @@ class SettingsWindow(QWidget):
             "doip": self.doip_page,
             "diag_layer": self.diag_layer_page,
             "domain_update": self.domain_update_page,
-            "app_log": self.app_log_page
+            "app_log": self.app_log_page,
+            "someip": self.someip_page
         }
 
         if page_id in page_mapping:
@@ -200,6 +210,12 @@ class SettingsWindow(QWidget):
         # 保存所有页面的设置
         if hasattr(self, 'doip_page'):
             self.doip_page.save_settings()
+        if hasattr(self, 'someip_page'):
+            self.someip_page.save_settings()
+        if hasattr(self, 'doip_page'):
+            self.doip_page.save_settings()
+        if hasattr(self, 'someip_page'):
+            self.someip_page.save_settings()
         if hasattr(self, 'diag_layer_page'):
             self.diag_layer_page.save_settings()
         if hasattr(self, 'domain_update_page'):

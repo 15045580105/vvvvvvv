@@ -1,5 +1,7 @@
 import time
 import warnings
+import socket
+import psutil
 from typing import Dict, Any, Callable, Optional
 
 from PyQt5.QtCore import QObject, pyqtSignal
@@ -222,6 +224,21 @@ class DeviceService(QObject):
             device["doip_connect_status"] = "连接失败"
             device["doip_connect_info"] = f"DoIP 连接 {ip}:{tcp_port} 失败"
 
+    def _get_mac_address(self, ip_address: str) -> str:
+        """获取指定 IP 地址对应的网卡 MAC 地址"""
+        try:
+            for interface, snics in psutil.net_if_addrs().items():
+                for snic in snics:
+                    if snic.family == socket.AF_INET and snic.address == ip_address:
+                        # 找到对应 IP 的网卡，现在查找 MAC 地址
+                        # 在 Windows 上，MAC 地址通常也在同一个网卡的 addresses 列表中，AF_LINK 标识
+                        for snic_mac in snics:
+                            if snic_mac.family == psutil.AF_LINK:
+                                return snic_mac.address.replace("-", ":").upper()
+        except Exception as e:
+            self.log_signal.emit(f"获取 MAC 地址失败: {e}")
+        return ""
+
     def _ensure_someip_client(self, device: Dict[str, Any]) -> SomeIPClient | None:
         """内部辅助：创建并启动 SomeIPClient。
 
@@ -269,10 +286,23 @@ class DeviceService(QObject):
             except:
                 pass
 
-        LOCAL_CLIENT_IP = "172.16.64.47"
-        LOCAL_CLIENT_MAC = "00:E0:4C:55:36:98" # Still hardcoded/dummy for now
+        # Try to get Local IP from App Config
+        someip_settings = self._config_service.someip_settings
+        config_local_ip = someip_settings.get("local_ip")
 
-        self.log_signal.emit(f"启动 SomeIPClient: Multi={multicast_ip}:{multicast_port}, LocalPort={local_port}, ClientID={hex(client_id)}, VLAN={vlan_id}, LocalIP={LOCAL_CLIENT_IP}")
+        # Use configured IP, or fallback to a hardcoded default
+        if config_local_ip:
+            LOCAL_CLIENT_IP = config_local_ip
+        else:
+             self.log_signal.emit(f"警告: SomeIP 本地 IP 未配置")
+             LOCAL_CLIENT_IP = "172.16.64.47"
+
+        LOCAL_CLIENT_MAC = self._get_mac_address(LOCAL_CLIENT_IP)
+        if not LOCAL_CLIENT_MAC:
+             # Fallback MAC if look up fails
+             LOCAL_CLIENT_MAC = "00:00:00:00:00:00"
+
+        self.log_signal.emit(f"启动 SomeIPClient: Multi={multicast_ip}:{multicast_port}, LocalPort={local_port}, ClientID={hex(client_id)}, VLAN={vlan_id}, LocalIP={LOCAL_CLIENT_IP}, MAC={LOCAL_CLIENT_MAC}")
 
         client = SomeIPClient(local_ip=LOCAL_CLIENT_IP, local_port=local_port, client_id=client_id,
                               multicast_ip=multicast_ip, multicast_port=multicast_port, vlan_id=vlan_id,

@@ -38,6 +38,15 @@ class AppConfigModel(BaseModel):
         self.dataChanged.emit()
 
     @property
+    def someip_settings(self):
+        return self._config_service.someip_settings
+
+    @someip_settings.setter
+    def someip_settings(self, value):
+        self._config_service.someip_settings = value
+        self.dataChanged.emit()
+
+    @property
     def domain_update_settings(self):
         return self._config_service.domain_update_settings
 
@@ -60,6 +69,9 @@ class AppConfigModel(BaseModel):
 
     def save_diag_layer_settings(self, settings):
         self.diag_layer_settings = settings
+
+    def save_someip_settings(self, settings):
+        self.someip_settings = settings
 
     def save_domain_update_settings(self, settings):
         self.domain_update_settings = settings
@@ -90,6 +102,11 @@ class AppConfigModel(BaseModel):
             "ecu_config_path": "",
             "target_ecu_name": "",
             "diag_addr_mode": 1
+        }
+
+    def reset_someip_defaults(self):
+        self.someip_settings = {
+            "local_ip": ""
         }
 
     def reset_domain_update_settings(self):

@@ -78,6 +78,15 @@ class AppConfigurationService(BaseService):
         self.save_settings()
 
     @property
+    def someip_settings(self):
+        return self._settings.get("someip", {})
+
+    @someip_settings.setter
+    def someip_settings(self, value):
+        self._settings["someip"] = value
+        self.save_settings()
+
+    @property
     def domain_update_settings(self):
         return self._settings.get("domain_update", {})
 
