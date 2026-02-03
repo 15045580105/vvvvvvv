@@ -269,7 +269,10 @@ class UpgradeWorker(QThread):
                     time_hex = " ".join(f"{b:02X}" for b in time_bytes)
 
                     # Try to format as Time if count is appropriate (3 bytes = H M S, 2 bytes = M S?)
-                    if len(time_bytes) == 3:
+                    if len(time_bytes) == 4:
+                        # Format "Century Year Month Day" e.g. 14 1A 02 02 -> 20 26 02 02 -> 2026.02.02
+                        time_info_str = f", 时间: {time_bytes[0]:02d}{time_bytes[1]:02d}.{time_bytes[2]:02d}.{time_bytes[3]:02d}"
+                    elif len(time_bytes) == 3:
                         time_info_str = f", 时间: {time_bytes[0]:02d}:{time_bytes[1]:02d}:{time_bytes[2]:02d}"
                     elif len(time_bytes) == 2:
                         time_info_str = f", 时间: {time_bytes[0]:02d}:{time_bytes[1]:02d}"
@@ -905,6 +908,7 @@ class UpgradeController(BaseController):
             self.view.upgrade_log.append(log_entry)
 
         self._write_to_log_file(log_entry)
+        OperationLogManager.instance().append_log("设备升级", log_entry)
 
     def _log_packet_info(self, packet, info):
         """Custom format: Packet   Info"""
@@ -919,7 +923,7 @@ class UpgradeController(BaseController):
             self.view.upgrade_log.append(log_entry)
 
         self._write_to_log_file(log_entry)
-        OperationLogManager.instance().append_log("设备升级", message)
+        OperationLogManager.instance().append_log("设备升级", log_entry)
 
     def _write_to_log_file(self, content):
         try:
