@@ -556,8 +556,11 @@ class SomeIPClient:
         except Exception as e:
             logger.error(f"TCP 连接失败: {e}")
 
-    def send_request(self, service_id, method_id, payload=b'', target_ip=None, target_port=30500):
+    def send_request(self, service_id, method_id, payload: Optional[bytes]=b'', target_ip=None, target_port=30500):
         """发送请求"""
+        if payload is None:
+            payload = b''
+
         pkt = SOMEIP(
             srv_id=service_id,
             sub_id=method_id,
@@ -798,6 +801,9 @@ class TestRunner:
         self.target_tcp = None
 
     def run(self):
+        # JSON payload as hex byte array
+        test_payload = None
+
         print("\n=== 启动测试 (三步策略) ===")
 
         # --- 配置 ---
@@ -816,7 +822,7 @@ class TestRunner:
         VLAN_ID = 4  # 设置 VLAN ID
 
         # 必须确保这两个 ID 和控制器数据库(ARXML)一致
-        SERVICE_ID = 0x106E
+        SERVICE_ID = 0x700D
         METHOD_ID = 0x0001
 
         # 盲测时的默认端口 (通常是 30500, 30501, 30491 等)
@@ -867,10 +873,9 @@ class TestRunner:
             except:
                 pass
             print("-------------------")
-            payload = pkt.payload.load if hasattr(pkt.payload, 'load') else b''
+            # 兼容性修复：使用 bytes(pkt.payload) 获取内容，即使它不是 Raw 层
+            payload = bytes(pkt.payload)
             print(f"Payload (Hex): {payload.hex()}")
-            self.received.set()
-
         client.register_callback(SERVICE_ID, METHOD_ID, on_msg)
 
         try:
@@ -904,7 +909,7 @@ class TestRunner:
                 client.send_request(
                     service_id=SERVICE_ID,
                     method_id=METHOD_ID,
-                    payload=b'\x01\x02',
+                    payload=test_payload,
                     target_ip=self.target_udp['ip'],
                     target_port=self.target_udp['port']
                 )
@@ -929,7 +934,7 @@ class TestRunner:
                     client.send_request(
                         service_id=SERVICE_ID,
                         method_id=METHOD_ID,
-                        payload=b'\x01\x02'
+                        payload=test_payload
                     )
 
                     if self.received.wait(timeout=5):
