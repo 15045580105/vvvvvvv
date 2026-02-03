@@ -133,7 +133,8 @@ class DeviceController(BaseController):
             "someip_connect_info": ""
         }
 
-        self.model.add_device(device)
+        # Use unpacking to pass dictionary items as arguments
+        self.model.add_device(**device)
         self._clear_inputs()
         self._persist_devices()
         self.on_model_changed()

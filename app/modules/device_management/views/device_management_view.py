@@ -33,58 +33,58 @@ class DeviceView(BaseView):
         grid_layout = QtWidgets.QGridLayout()
         grid_layout.setSpacing(12)
 
+        def _create_input_field(label_text: str, widget: QtWidgets.QWidget):
+            container = QtWidgets.QWidget()
+            layout = QtWidgets.QHBoxLayout(container)
+            layout.setContentsMargins(0, 0, 0, 0)
+            layout.setSpacing(8)
+            label = QtWidgets.QLabel(label_text + "：")
+            layout.addWidget(label)
+            layout.addWidget(widget)
+            return container
+
         self.ip_input = QtWidgets.QLineEdit()
-        self.ip_input.setPlaceholderText("IP地址")
         self.port_input = QtWidgets.QLineEdit()
-        self.port_input.setPlaceholderText("SSH端口(默认22)")
         self.port_input.setText("22")
         self.name_input = QtWidgets.QLineEdit()
-        self.name_input.setPlaceholderText("设备名")
         self.user_input = QtWidgets.QLineEdit()
-        self.user_input.setPlaceholderText("用户名")
         self.password_input = QtWidgets.QLineEdit()
-        self.password_input.setPlaceholderText("密码")
         self.password_input.setEchoMode(QtWidgets.QLineEdit.Password)
         self.type_input = QtWidgets.QComboBox()
         self.type_input.addItems(["ECU", "网关", "域控", "其他"])
 
         # Second row: Special inputs
         self.multicast_ip_input = QtWidgets.QLineEdit()
-        self.multicast_ip_input.setPlaceholderText("标准组播 IP")
         self.multicast_ip_input.setText("239.71.0.2")
 
         self.multicast_port_input = QtWidgets.QLineEdit()
-        self.multicast_port_input.setPlaceholderText("标准组播端口")
         self.multicast_port_input.setText("30490")
 
         self.vlan_id_input = QtWidgets.QLineEdit()
-        self.vlan_id_input.setPlaceholderText("VLAN ID")
         self.vlan_id_input.setText("4")
 
         self.client_port_input = QtWidgets.QLineEdit()
-        self.client_port_input.setPlaceholderText("客户端端口")
         self.client_port_input.setText("30813")
 
         self.client_id_input = QtWidgets.QLineEdit()
-        self.client_id_input.setPlaceholderText("客户端 ID")
         self.client_id_input.setText("30813")
 
         self.add_btn = ModernButton("添加设备", "#0EA5E9", "➕")
 
         # Row 0
-        grid_layout.addWidget(self.ip_input, 0, 0)
-        grid_layout.addWidget(self.port_input, 0, 1)
-        grid_layout.addWidget(self.user_input, 0, 2)
-        grid_layout.addWidget(self.password_input, 0, 3)
-        grid_layout.addWidget(self.name_input, 0, 4)
-        grid_layout.addWidget(self.type_input, 0, 5)
+        grid_layout.addWidget(_create_input_field("IP地址", self.ip_input), 0, 0)
+        grid_layout.addWidget(_create_input_field("SSH端口", self.port_input), 0, 1)
+        grid_layout.addWidget(_create_input_field("用户名", self.user_input), 0, 2)
+        grid_layout.addWidget(_create_input_field("密码", self.password_input), 0, 3)
+        grid_layout.addWidget(_create_input_field("设备名", self.name_input), 0, 4)
+        grid_layout.addWidget(_create_input_field("设备类型", self.type_input), 0, 5)
 
         # Row 1
-        grid_layout.addWidget(self.multicast_ip_input, 1, 0)
-        grid_layout.addWidget(self.multicast_port_input, 1, 1)
-        grid_layout.addWidget(self.vlan_id_input, 1, 2)
-        grid_layout.addWidget(self.client_port_input, 1, 3)
-        grid_layout.addWidget(self.client_id_input, 1, 4)
+        grid_layout.addWidget(_create_input_field("标准组播 IP", self.multicast_ip_input), 1, 0)
+        grid_layout.addWidget(_create_input_field("标准组播端口", self.multicast_port_input), 1, 1)
+        grid_layout.addWidget(_create_input_field("VLAN ID", self.vlan_id_input), 1, 2)
+        grid_layout.addWidget(_create_input_field("客户端端口", self.client_port_input), 1, 3)
+        grid_layout.addWidget(_create_input_field("客户端 ID", self.client_id_input), 1, 4)
         grid_layout.addWidget(self.add_btn, 1, 5)
 
         input_group.setLayout(grid_layout)

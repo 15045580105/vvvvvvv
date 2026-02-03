@@ -1,5 +1,8 @@
 from PyQt5 import QtWidgets
 import json
+import os
+import re
+from app.common.ui.modern_widgets import MessageToast
 
 class NoScrollComboBox(QtWidgets.QComboBox):
     def wheelEvent(self, event):
@@ -86,7 +89,7 @@ class ServiceConfigDialog(QtWidgets.QDialog):
         self.req_did_edit.textChanged.connect(self.update_preview)
 
         self.req_source_combo = NoScrollComboBox()
-        self.req_source_combo.addItems(["raw", "ascii", "calculated", "DPT/ODX"])
+        self.req_source_combo.addItems(["raw", "ascii", "DPT"])
         self.req_source_combo.currentTextChanged.connect(self.update_preview)
 
         self.req_conversion_combo = NoScrollComboBox()
@@ -136,7 +139,7 @@ class ServiceConfigDialog(QtWidgets.QDialog):
 
         # Type Dropdown
         type_combo = NoScrollComboBox()
-        type_combo.addItems(["fixed", "input", "dropdown", "checkabledropdown", "dynamic"])
+        type_combo.addItems(["fixed", "input", "dropdown", "checkabledropdown"])
         layout.addRow("类型 (Type):", type_combo)
         widgets["type"] = type_combo
 
@@ -186,6 +189,19 @@ class ServiceConfigDialog(QtWidgets.QDialog):
 
             value_edit.setVisible(is_fixed)
             value_label.setVisible(is_fixed)
+
+            if is_fixed:
+                default_edit.setText("N/A")
+                value_edit.setText("N/A")
+                default_edit.setReadOnly(True)
+                value_edit.setReadOnly(True)
+            else:
+                default_edit.setReadOnly(False)
+                value_edit.setReadOnly(False)
+                if default_edit.text() == "N/A":
+                    default_edit.setText("---")
+                if value_edit.text() == "N/A":
+                    value_edit.clear()
 
             # Only update preview if UI setup is complete (or roughly complete)
             # Simplest check: check if attributes exist if they are needed in get_current_data
@@ -279,17 +295,52 @@ class ServiceConfigDialog(QtWidgets.QDialog):
         return data
 
     def update_preview(self):
+        if not hasattr(self, 'preview_edit'):
+            return
         data = self.get_current_data()
         self.preview_edit.setText(json.dumps(data, indent=2, ensure_ascii=False))
 
     def on_insert(self):
         # Validation
-        if not self.service_id_edit.text():
-             QtWidgets.QMessageBox.warning(self, "校验失败", "服务ID不能为空")
+        service_id = self.service_id_edit.text().strip()
+        if not service_id:
+             self.show_toast("校验失败: 服务ID不能为空", "error")
              return
+
+        # 1. Hex validation for Service ID
+        if not re.match(r'^0x[0-9A-Fa-f]+$', service_id):
+             self.show_toast("校验失败: 服务ID必须是十六进制 (如 0xF190)", "error")
+             return
+
+        try:
+             val = int(service_id, 16)
+             if val < 0 or val > 0xFFFF:
+                 self.show_toast("校验失败: 服务ID超出有效范围 (0x0000 - 0xFFFF)", "error")
+                 return
+        except ValueError:
+             self.show_toast("校验失败: 服务ID无效", "error")
+             return
+
+        # 2. Help Image validation
+        help_img = self.help_image_edit.text().strip()
+        if help_img:
+            if not os.path.isabs(help_img):
+                 self.show_toast("校验失败: 图片路径必须是完整路径", "error")
+                 return
+            if not os.path.exists(help_img) or not os.path.isfile(help_img):
+                 self.show_toast("校验失败: 图片文件不存在", "error")
+                 return
+
         if not self.req_did_edit.text():
-             QtWidgets.QMessageBox.warning(self, "校验失败", "DataIdentifier不能为空")
+             self.show_toast("校验失败: DataIdentifier不能为空", "error")
              return
 
         self.result_json = self.get_current_data()
         self.accept()
+
+    def show_toast(self, message, type_):
+        level = 3 if type_ == "error" else 1
+        try:
+            MessageToast(self).show_toast(message, level)
+        except Exception:
+            QtWidgets.QMessageBox.warning(self, "提示", message)

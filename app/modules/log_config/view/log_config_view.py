@@ -20,6 +20,21 @@ class LogConfigView(BaseView):
         main_layout.setContentsMargins(10, 10, 10, 10)
         main_layout.setSpacing(10)
 
+        # 新增日志配置文件导入区域
+        import_layout = QtWidgets.QHBoxLayout()
+        import_label = QtWidgets.QLabel("日志配置文件路径:")
+        import_layout.addWidget(import_label)
+
+        self.map_path_edit = QtWidgets.QLineEdit()
+        self.map_path_edit.setPlaceholderText("请导入 process_log_config_map.json")
+        self.map_path_edit.setReadOnly(True)
+        import_layout.addWidget(self.map_path_edit)
+
+        self.import_map_btn = ModernButton("导入json文件", "#0EA5E9", "📂")
+        import_layout.addWidget(self.import_map_btn)
+
+        main_layout.addLayout(import_layout)
+
         self.tab_widget = QtWidgets.QTabWidget()
         # 移除局部样式，使用全局样式
         main_layout.addWidget(self.tab_widget)
@@ -193,7 +208,7 @@ class LogConfigView(BaseView):
         self.restore_ccua = QtWidgets.QCheckBox("恢复CCUA默认配置")
         self.restore_ccu0 = QtWidgets.QCheckBox("恢复CCU0默认配置")
         self.restore_ccu1 = QtWidgets.QCheckBox("恢复CCU1默认配置")
-        self.delete_logs = QtWidgets.QCheckBox("同时删除所有日志文件")
+        self.delete_logs = QtWidgets.QCheckBox("删除DLT日志文件")
 
         # 加大字体
         font = self.restore_ccua.font()
@@ -205,7 +220,7 @@ class LogConfigView(BaseView):
         layout.addWidget(options_group)
 
         btn_layout = QtWidgets.QHBoxLayout()
-        self.restore_btn = ModernButton("执行恢复操作", "#EF4444", "⚠️")
+        self.restore_btn = ModernButton("执行", "#EF4444", "⚠️")
         self.restore_btn.setMinimumWidth(150)
         btn_layout.addWidget(self.restore_btn)
         btn_layout.addStretch()
@@ -225,6 +240,17 @@ class LogConfigView(BaseView):
         layout.addWidget(log_group, stretch=1)
 
         self.tab_widget.addTab(self.restore_tab, "恢复默认配置")
+
+    def show_confirm(self, message: str) -> bool:
+        """显式展示模态确认弹窗"""
+        reply = QtWidgets.QMessageBox.question(
+            self,
+            "确认操作",
+            message,
+            QtWidgets.QMessageBox.StandardButton.Yes | QtWidgets.QMessageBox.StandardButton.No,
+            QtWidgets.QMessageBox.StandardButton.No
+        )
+        return reply == QtWidgets.QMessageBox.StandardButton.Yes
 
     def append_log(self, message: str):
         """向所有日志窗口添加日志"""

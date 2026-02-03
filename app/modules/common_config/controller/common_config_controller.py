@@ -406,8 +406,7 @@ class CommonConfigController(BaseController):
         worker.log_signal.connect(self.view.append_routine_log)
 
         def on_finished(success):
-            self.view.append_routine_log(f"开始执行: {service_info.get('content', 'Unknown')}")
-
+            # self.view.append_routine_log(f"开始执行: {service_info.get('content', 'Unknown')}")
             self.view.set_button_status(self.view.routine_table, row_index, "executing")
 
             if not self._device_service or not self._device_service.get_doip_client():
