@@ -9,6 +9,16 @@ class AppConfigurationService(BaseService):
         self._system_config_service = SystemConfigService()
         self._config_name = "app_settings"
         self._settings = self._load_settings()
+        self._batch_mode = False  # Add batch mode flag
+
+    def suspend_save(self):
+        """Suspend auto-save for batch updates"""
+        self._batch_mode = True
+
+    def resume_save(self):
+        """Resume auto-save and force a save"""
+        self._batch_mode = False
+        self.save_settings()
 
     def _load_settings(self) -> Dict[str, Any]:
         defaults = self._get_default_settings()
@@ -34,7 +44,10 @@ class AppConfigurationService(BaseService):
                 "network_interface": 0,
                 "tcp_use_any": False,
                 "udp_broadcast": False,
-                "dpt_file": ""
+                "dpt_file": "",
+                "target_phy_addr": "0x004F",
+                "target_fun_addr": "0x07DF",
+                "target_addr_mode": 1
             },
             "diag_layer": {
                 "s3_client_time": "3000",
@@ -42,7 +55,9 @@ class AppConfigurationService(BaseService):
                 "dll_path": "",
                 "physical_addr": "0x004F",
                 "functional_addr": "0x07DF",
-                "ecu_config_path": ""
+                "ecu_config_path": "",
+                "target_ecu_name": "",
+                "diag_addr_mode": 1
             },
             "domain_update": {
                 "success_delay": "20",
@@ -53,11 +68,31 @@ class AppConfigurationService(BaseService):
             "app_log": {
                 "export_path": "",
                 "export_module": "All Modules"
+            },
+            "someip": {
+                "local_ip": ""
             }
         }
 
     def save_settings(self):
+        if not self._batch_mode:
+            self._system_config_service.save_json(self._config_name, self._settings)
+
+    def update_all_settings(self, new_settings: Dict[str, Any]) -> None:
+        """Bulk update all settings and persist once.
+
+        This is the only method that should write `app_settings.json` during UI 'OK' save.
+        `new_settings` can contain partial sections; we'll merge with defaults.
+        """
+        defaults = self._get_default_settings()
+        merged = self._merge_defaults(new_settings or {}, defaults)
+        self._settings = merged
+        # Always persist once (atomic write is handled by SystemConfigService)
         self._system_config_service.save_json(self._config_name, self._settings)
+
+    def reload(self) -> None:
+        """Reload settings from disk."""
+        self._settings = self._load_settings()
 
     @property
     def doip_settings(self):

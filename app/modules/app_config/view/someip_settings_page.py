@@ -94,8 +94,13 @@ class SomeIPSettingsPage(QWidget):
 
     def save_settings(self):
         """Save settings"""
+        ip_data = self.network_combo.currentData()
+        # Ensure data is serializable (convert to str if it's not None)
+        if ip_data is not None and not isinstance(ip_data, (str, int, float, bool)):
+            ip_data = str(ip_data)
+
         settings = {
-            "local_ip": self.network_combo.currentData()
+            "local_ip": ip_data
         }
         self.save_signal.emit(settings)
 

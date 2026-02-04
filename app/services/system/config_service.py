@@ -58,13 +58,28 @@ class ConfigService(BaseService):
     def save_json(self, name: str, data: Any) -> None:
         path = self.get_config_path(name)
 
+        # Safe serialize check
+        try:
+             json_str = json.dumps(data, ensure_ascii=False, indent=2)
+        except Exception as e:
+             print(f"[ConfigService] Serialization failed: {e}")
+             # If serialization fails, DO NOT touch the file.
+             return
+
         # 增加重试机制
         for i in range(5):
             try:
-                with path.open("w", encoding="utf-8") as f:
-                    json.dump(data, f, ensure_ascii=False, indent=2)
+                # Use atomic write pattern: write to temp file, then rename
+                temp_path = path.with_suffix('.tmp')
+                with temp_path.open("w", encoding="utf-8") as f:
+                    f.write(json_str)
                     f.flush()
                     os.fsync(f.fileno())
+
+                # Atomic rename
+                if path.exists():
+                     path.unlink()
+                temp_path.rename(path)
                 return
             except Exception as e:
                 if i == 4:
