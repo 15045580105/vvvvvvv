@@ -33,6 +33,9 @@ class AppConfigController(BaseController):
         self.view.doip_page.save_signal.connect(self.save_doip_settings)
         self.view.doip_page.reset_signal.connect(self.reset_doip_settings)
 
+        self.view.someip_page.save_signal.connect(self.save_someip_settings)
+        self.view.someip_page.reset_signal.connect(self.reset_someip_settings)
+
         self.view.diag_layer_page.save_signal.connect(self.save_diag_layer_settings)
         self.view.diag_layer_page.reset_signal.connect(self.reset_diag_layer_settings)
         self.view.diag_layer_page.ecu_file_changed_signal.connect(self.on_ecu_file_changed)
@@ -63,6 +66,7 @@ class AppConfigController(BaseController):
     def on_model_changed(self):
         """Update view when model changes"""
         self.view.doip_page.update_ui(self.model.doip_settings)
+        self.view.someip_page.load_settings(self.model.someip_settings)
 
         # Load ECU config if path exists
         ecu_config_path = self.model.diag_layer_settings.get("ecu_config_path")
@@ -91,6 +95,12 @@ class AppConfigController(BaseController):
 
     def reset_doip_settings(self):
         self.model.reset_doip_defaults()
+
+    def save_someip_settings(self, settings):
+        self.model.save_someip_settings(settings)
+
+    def reset_someip_settings(self):
+        self.model.reset_someip_defaults()
 
     def save_diag_layer_settings(self, settings):
         self.model.save_diag_layer_settings(settings)

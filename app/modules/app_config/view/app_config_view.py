@@ -212,10 +212,6 @@ class SettingsWindow(QWidget):
             self.doip_page.save_settings()
         if hasattr(self, 'someip_page'):
             self.someip_page.save_settings()
-        if hasattr(self, 'doip_page'):
-            self.doip_page.save_settings()
-        if hasattr(self, 'someip_page'):
-            self.someip_page.save_settings()
         if hasattr(self, 'diag_layer_page'):
             self.diag_layer_page.save_settings()
         if hasattr(self, 'domain_update_page'):

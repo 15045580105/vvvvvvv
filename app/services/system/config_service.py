@@ -1,5 +1,6 @@
 import json
 import os
+import time
 from pathlib import Path
 from typing import Any, Dict, List
 
@@ -41,21 +42,34 @@ class ConfigService(BaseService):
         path = self.get_config_path(name)
         if not path.exists():
             return default
-        try:
-            with path.open("r", encoding="utf-8") as f:
-                return json.load(f)
-        except Exception:
-            # 解析失败时返回默认值，避免影响界面
-            return default
+
+        # 增加重试机制，防止文件锁竞争
+        for i in range(5):
+            try:
+                with path.open("r", encoding="utf-8") as f:
+                    return json.load(f)
+            except Exception as e:
+                if i == 4:  # 最后一次尝试失败
+                    print(f"[ConfigService] Load failed for {name}: {e}")
+                    return default
+                time.sleep(0.2)
+        return default
 
     def save_json(self, name: str, data: Any) -> None:
         path = self.get_config_path(name)
-        try:
-            with path.open("w", encoding="utf-8") as f:
-                json.dump(data, f, ensure_ascii=False, indent=2)
-        except Exception:
-            # 简单实现：暂不向上抛异常，后续可加日志
-            pass
+
+        # 增加重试机制
+        for i in range(5):
+            try:
+                with path.open("w", encoding="utf-8") as f:
+                    json.dump(data, f, ensure_ascii=False, indent=2)
+                    f.flush()
+                    os.fsync(f.fileno())
+                return
+            except Exception as e:
+                if i == 4:
+                    print(f"[ConfigService] Save failed for {name}: {e}")
+                time.sleep(0.2)
 
     # ----------------- 设备专用封装 -----------------
     def load_devices(self) -> List[Dict[str, Any]]:
@@ -68,4 +82,3 @@ class ConfigService(BaseService):
     def save_devices(self, devices: List[Dict[str, Any]]) -> None:
         """将设备列表保存到配置文件。"""
         self.save_json("devices", devices)
-
