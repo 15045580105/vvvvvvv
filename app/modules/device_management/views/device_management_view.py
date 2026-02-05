@@ -6,6 +6,7 @@ from app.common.ui.widgets import ModernButton, TableButton, LoadingSpinner
 from app.common.log.operation_log_manager import OperationLogManager
 from app.modules.device_management.models.device_model import CONNECTING
 from app.presentation.views.base_view import BaseView
+from PyQt5.QtCore import QDateTime
 
 # Use Qt.AlignmentFlag (not raw int) so QLabel.setAlignment avoids TypeError in some PyQt builds.
 # Also keep an integer alignment for QTableWidgetItem.setTextAlignment which expects an int.
@@ -27,35 +28,75 @@ class DeviceView(BaseView):
 
         # 输入区域
         input_group = QtWidgets.QGroupBox("添加设备")
-        form_layout = QtWidgets.QHBoxLayout()
-        form_layout.setSpacing(12)
+
+        # Use QGridLayout for better alignment
+        grid_layout = QtWidgets.QGridLayout()
+        grid_layout.setSpacing(12)
+
+        def _create_input_field(label_text: str, widget: QtWidgets.QWidget):
+            container = QtWidgets.QWidget()
+            layout = QtWidgets.QHBoxLayout(container)
+            layout.setContentsMargins(0, 0, 0, 0)
+            layout.setSpacing(8)
+            label = QtWidgets.QLabel(label_text + "：")
+            layout.addWidget(label)
+            layout.addWidget(widget)
+            return container
 
         self.ip_input = QtWidgets.QLineEdit()
-        self.ip_input.setPlaceholderText("IP地址")
         self.port_input = QtWidgets.QLineEdit()
-        self.port_input.setPlaceholderText("SSH端口(默认22)")
-        self.port_input.setText("22")  # 默认端口写上 22
+        self.port_input.setText("22")
         self.name_input = QtWidgets.QLineEdit()
-        self.name_input.setPlaceholderText("设备名")
         self.user_input = QtWidgets.QLineEdit()
-        self.user_input.setPlaceholderText("用户名")
         self.password_input = QtWidgets.QLineEdit()
-        self.password_input.setPlaceholderText("密码")
         self.password_input.setEchoMode(QtWidgets.QLineEdit.Password)
         self.type_input = QtWidgets.QComboBox()
         self.type_input.addItems(["ECU", "网关", "域控", "其他"])
+
+        # Second row: Special inputs
+        self.multicast_ip_input = QtWidgets.QLineEdit()
+        self.multicast_ip_input.setText("239.71.0.2")
+
+        self.multicast_port_input = QtWidgets.QLineEdit()
+        self.multicast_port_input.setText("30490")
+
+        self.vlan_id_input = QtWidgets.QLineEdit()
+        self.vlan_id_input.setText("4")
+
+        self.client_port_input = QtWidgets.QLineEdit()
+        self.client_port_input.setText("30813")
+
+        self.client_id_input = QtWidgets.QLineEdit()
+        self.client_id_input.setText("30813")
+
         self.add_btn = ModernButton("添加设备", "#0EA5E9", "➕")
 
-        for w in [self.ip_input, self.port_input, self.user_input, self.password_input, self.name_input, self.type_input, self.add_btn]:
-            form_layout.addWidget(w)
-        form_layout.addStretch()
-        input_group.setLayout(form_layout)
+        # Row 0
+        grid_layout.addWidget(_create_input_field("IP地址", self.ip_input), 0, 0)
+        grid_layout.addWidget(_create_input_field("SSH端口", self.port_input), 0, 1)
+        grid_layout.addWidget(_create_input_field("用户名", self.user_input), 0, 2)
+        grid_layout.addWidget(_create_input_field("密码", self.password_input), 0, 3)
+        grid_layout.addWidget(_create_input_field("设备名", self.name_input), 0, 4)
+        grid_layout.addWidget(_create_input_field("设备类型", self.type_input), 0, 5)
+
+        # Row 1
+        grid_layout.addWidget(_create_input_field("标准组播 IP", self.multicast_ip_input), 1, 0)
+        grid_layout.addWidget(_create_input_field("标准组播端口", self.multicast_port_input), 1, 1)
+        grid_layout.addWidget(_create_input_field("VLAN ID", self.vlan_id_input), 1, 2)
+        grid_layout.addWidget(_create_input_field("客户端端口", self.client_port_input), 1, 3)
+        grid_layout.addWidget(_create_input_field("客户端 ID", self.client_id_input), 1, 4)
+        grid_layout.addWidget(self.add_btn, 1, 5)
+
+        input_group.setLayout(grid_layout)
         self.layout.addWidget(input_group)
 
         # 设备表格
-        # 列：序号 / 设备名 / 设备类型 / IP地址 / SSH端口 / 连接状态(3行) / 详情(3行) / 操作
-        self.table = QtWidgets.QTableWidget(0, 8)
-        self.table.setHorizontalHeaderLabels(["序号", "设备名", "设备类型", "IP地址", "SSH端口", "连接状态", "详情", "操作"])
+        # 列：序号(0) / 设备名(1) / 设备类型(2) / IP地址(3) / SSH端口(4) / 标准组播 IP(5) / 标准组播端口(6) / 连接状态(7) / 详情(8) / 操作(9)
+        self.table = QtWidgets.QTableWidget(0, 10)
+        self.table.setHorizontalHeaderLabels([
+            "序号", "设备名", "设备类型", "IP地址", "SSH端口",
+            "标准组播 IP", "标准组播端口", "连接状态", "详情", "操作"
+        ])
         self.table.verticalHeader().setVisible(False)
         self.table.setWordWrap(False)
         vheader = self.table.verticalHeader()
@@ -68,16 +109,18 @@ class DeviceView(BaseView):
         hheader.setSectionResizeMode(1, QHeaderView.Interactive)       # 设备名
         hheader.setSectionResizeMode(2, QHeaderView.ResizeToContents)  # 设备类型
         hheader.setSectionResizeMode(3, QHeaderView.ResizeToContents)  # IP地址
-        hheader.setSectionResizeMode(4, QHeaderView.ResizeToContents)  # 端口
-        hheader.setSectionResizeMode(5, QHeaderView.Interactive)       # 连接状态
-        hheader.setSectionResizeMode(6, QHeaderView.Interactive)       # 详情
-        hheader.setSectionResizeMode(7, QHeaderView.Stretch)           # 操作
+        hheader.setSectionResizeMode(4, QHeaderView.ResizeToContents)  # SSH端口
+        hheader.setSectionResizeMode(5, QHeaderView.ResizeToContents)  # 标准组播 IP
+        hheader.setSectionResizeMode(6, QHeaderView.ResizeToContents)  # 标准组播端口
+        hheader.setSectionResizeMode(7, QHeaderView.Interactive)       # 连接状态
+        hheader.setSectionResizeMode(8, QHeaderView.Interactive)       # 详情
+        hheader.setSectionResizeMode(9, QHeaderView.Stretch)           # 操作
 
         self.table.setColumnWidth(1, 150)
         self.table.setColumnWidth(2, 90)
         # 加宽连接状态和详情列，便于三行显示
-        self.table.setColumnWidth(5, 170)
-        self.table.setColumnWidth(6, 220)
+        self.table.setColumnWidth(7, 170)
+        self.table.setColumnWidth(8, 220)
 
         self.table.setAlternatingRowColors(True)
         self.table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
@@ -169,24 +212,38 @@ class DeviceView(BaseView):
             ip_item.setTextAlignment(ALIGN_CENTER_ITEM)
             self.table.setItem(row, 3, ip_item)
 
-            # 端口
+            # SSH 端口
             port_item = QtWidgets.QTableWidgetItem(str(port))
             port_item.setTextAlignment(ALIGN_CENTER_ITEM)
             self.table.setItem(row, 4, port_item)
 
-            # 连接状态列：3 行文字 + 在线/离线图标/LoadingSpinner
+            # 标准组播 IP (Index 5)
+            # The previous 'controller_ip' seems to have been used or displayed.
+            # Now we want "Standard Multicast IP". Let's assume device dict has 'multicast_ip'
+            mcast_ip = str(dev.get("multicast_ip", "239.71.0.2"))
+            mcast_ip_item = QtWidgets.QTableWidgetItem(mcast_ip)
+            mcast_ip_item.setTextAlignment(ALIGN_CENTER_ITEM)
+            self.table.setItem(row, 5, mcast_ip_item)
+
+            # 标准组播端口 (Index 6)
+            # The previous 'controller_port' is replaced.
+            mcast_port = str(dev.get("multicast_port", ""))
+            if mcast_port == "None": mcast_port = ""
+            mcast_port_item = QtWidgets.QTableWidgetItem(mcast_port)
+            mcast_port_item.setTextAlignment(ALIGN_CENTER_ITEM)
+            self.table.setItem(row, 6, mcast_port_item)
+
+            # 连接状态 (3行) (Index 7)
             status_widget = QtWidgets.QWidget()
             status_layout = QtWidgets.QVBoxLayout(status_widget)
             status_layout.setContentsMargins(4, 2, 4, 2)
             status_layout.setSpacing(0)
-
             status_layout.addWidget(_create_status_row("SSH", ssh_status))
             status_layout.addWidget(_create_status_row("DoIP", doip_status))
             status_layout.addWidget(_create_status_row("SomeIP", someip_status))
+            self.table.setCellWidget(row, 7, status_widget)
 
-            self.table.setCellWidget(row, 5, status_widget)
-
-            # 详情列：直接展示各协议的 *_connect_info 字段
+            # 详情列：直接展示各协议的 *_connect_info 字段 (Index 8)
             ssh_detail = dev.get("ssh_connect_info", "")
             doip_detail = dev.get("doip_connect_info", "")
             someip_detail = dev.get("someip_connect_info", "")
@@ -199,13 +256,14 @@ class DeviceView(BaseView):
             ssh_detail_label = QtWidgets.QLabel(f"SSH: {ssh_detail or '无'}")
             doip_detail_label = QtWidgets.QLabel(f"DoIP: {doip_detail or '无'}")
             someip_detail_label = QtWidgets.QLabel(f"SomeIP: {someip_detail or '无'}")
+
             for lbl in (ssh_detail_label, doip_detail_label, someip_detail_label):
                 lbl.setAlignment(ALIGN_LEFT_LABEL)
                 detail_layout.addWidget(lbl)
 
-            self.table.setCellWidget(row, 6, detail_widget)
+            self.table.setCellWidget(row, 8, detail_widget)
 
-            # 操作列：连接 / 断开 / 修改信息 / 删除 / 软件升级 / 状态查询
+            # 操作列 (Index 9)
             action_widget = QtWidgets.QWidget()
             ah = QtWidgets.QHBoxLayout(action_widget)
             ah.setContentsMargins(4, 4, 4, 4)
@@ -233,9 +291,12 @@ class DeviceView(BaseView):
                 ah.addWidget(b)
             ah.addStretch(1)
 
-            self.table.setCellWidget(row, 7, action_widget)
+            self.table.setCellWidget(row, 9, action_widget)
+            self.table.setRowHeight(row, 70)  # 高度适应 3 行文字
 
     def append_log(self, text: str):
-        self.log_view.append(text)
+        timestamp = QDateTime.currentDateTime().toString("yyyy-MM-dd HH:mm:ss")
+        log_msg = f"[{timestamp}] {text}"
+        self.log_view.append(log_msg)
         # Record to OperationLogManager for export
         OperationLogManager.instance().append_log("设备管理", text)

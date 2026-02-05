@@ -181,8 +181,8 @@ class AppLogSettingsPage(QWidget):
     def save_settings(self):
         """Save settings"""
         settings = {
-            "export_path": self.export_path_edit.text(),
-            "export_module": self.export_module_combo.currentText(),
+            "export_path": str(self.export_path_edit.text()),
+            "export_module": str(self.export_module_combo.currentText()),
             # "start_time": ...
         }
         self.save_signal.emit(settings)

@@ -95,36 +95,63 @@ class DeviceController(BaseController):
 
     # -------------------- 设备添加 --------------------
     def _on_add_clicked(self):
-        name = self.view.name_input.text().strip()
         ip = self.view.ip_input.text().strip()
-        port_text = self.view.port_input.text().strip() or "22"
-        user = self.view.user_input.text().strip() or "root"
+        port = self.view.port_input.text().strip() or "22"
+        user = self.view.user_input.text().strip()
         password = self.view.password_input.text().strip()
-        dev_type = self.view.type_input.currentText() or "其他"
+        name = self.view.name_input.text().strip()
+        dev_type = self.view.type_input.currentText()
 
-        # 前置校验：名称和 IP 必填
-        if not name or not ip:
-            MessageToast(self.view).show_toast("设备名与IP不能为空", 1)
+        # New fields from the view update
+        multicast_ip = self.view.multicast_ip_input.text().strip()
+        multicast_port = self.view.multicast_port_input.text().strip()
+        vlan_id = self.view.vlan_id_input.text().strip()
+        client_port = self.view.client_port_input.text().strip()
+        client_id = self.view.client_id_input.text().strip()
+
+        if not ip:
+            self.view.show_message("请输入IP地址", "warning")
             return
-        # 端口必须为数字
-        try:
-            port = int(port_text)
-        except ValueError:
-            MessageToast(self.view).show_toast("端口必须为数字", 1)
-            return
 
-        # TODO: 可扩展为更严格的 IP 格式校验
+        device = {
+            "ip": ip,
+            "port": int(port),
+            "user": user,
+            "password": password,
+            "name": name,
+            "type": dev_type,
+            "multicast_ip": multicast_ip,
+            "multicast_port": multicast_port,
+            "vlan_id": vlan_id,
+            "client_port": client_port,
+            "client_id": client_id,
+            "ssh_connect_status": "未连接",
+            "doip_connect_status": "未连接",
+            "someip_connect_status": "未连接",
+            "ssh_connect_info": "",
+            "doip_connect_info": "",
+            "someip_connect_info": ""
+        }
 
-        self.model.add_device(name, ip, port, user, password=password, dev_type=dev_type)
+        # Use unpacking to pass dictionary items as arguments
+        self.model.add_device(**device)
+        self._clear_inputs()
         self._persist_devices()
-        self.view.append_log(f"添加设备: {name} ({ip}:{port}) [{dev_type}]")
+        self.on_model_changed()
 
-        # 清空输入
-        self.view.name_input.clear()
+    def _clear_inputs(self):
         self.view.ip_input.clear()
-        self.view.port_input.clear()
+        self.view.port_input.setText("22")
         self.view.user_input.clear()
         self.view.password_input.clear()
+        self.view.name_input.clear()
+        self.view.type_input.setCurrentIndex(0)
+
+        self.view.multicast_ip_input.setText("239.71.0.2")
+        self.view.multicast_port_input.clear()
+        self.view.vlan_id_input.setText("4")
+        self.view.client_port_input.clear()
+        self.view.client_id_input.clear()
 
     def on_model_changed(self):
         self.view.populate(self.model.devices)
@@ -133,14 +160,14 @@ class DeviceController(BaseController):
     def _bind_row_buttons(self):
         """为当前表格中的每一行重新绑定操作按钮的信号。
 
-        注意：视图中列���序为：
-        0 序号 / 1 设备名 / 2 设备类型 / 3 IP / 4 端口 / 5 连接状态 / 6 详情 / 7 操作
-        因此操作按钮容器位于列索引 7。
+        注意：视图中列序为：
+        0 序号 / 1 设备名 / 2 设备类型 / 3 IP / 4 端口 / 5 控制器IP / 6 控制器端口 / 7 连接状态 / 8 详情 / 9 操作
+        因此操作按钮容器位于列索引 9。
         """
         table = self.view.table
         row_count = table.rowCount()
         for row in range(row_count):
-            action_widget = table.cellWidget(row, 7)  # 修正为操作列索引 7
+            action_widget = table.cellWidget(row, 9)  # 修正为操作列索引 9
             if not action_widget:
                 continue
             buttons = {}

@@ -1236,32 +1236,41 @@ class DIDController(BaseController):
         # 0: selected, 1: description, 2: did, 3: data_format, 4: follow_dpt, 5: session, 6: security, 7: value
         key_func = None
         if col == 0:
-            key_func = lambda r: r.selected
+            key_func = lambda r: bool(r.selected)
         elif col == 1:
-            key_func = lambda r: r.description.lower()
+            key_func = lambda r: (r.description or "").lower()
         elif col == 2:
             def sort_did(r):
+                val = r.did
+                if not val:
+                    # Empty values come after valid numbers (group 1 vs group 0)
+                    return (1, "")
                 try:
                     # 去把空格，尝试转int
-                    d = r.did.strip().replace(" ", "")
+                    d = val.strip().replace(" ", "")
                     # 如果是 0x 开头，或是纯 hex
-                    return int(d, 16)
+                    return (0, int(d, 16))
                 except:
-                    return r.did
+                    # Non-numeric strings come after valid numbers
+                    return (1, val)
             key_func = sort_did
         elif col == 3:
-            key_func = lambda r: r.data_format
+            key_func = lambda r: (r.data_format or "")
         elif col == 4:
-            key_func = lambda r: r.follow_dpt
+            key_func = lambda r: bool(r.follow_dpt)
         elif col == 5:
-            key_func = lambda r: r.diagnostic_session
+            key_func = lambda r: (r.diagnostic_session or "")
         elif col == 6:
-            key_func = lambda r: r.security_access
+            key_func = lambda r: (r.security_access or "")
         elif col == 7:
-            key_func = lambda r: r.value
+            key_func = lambda r: (r.value or "")
 
         if key_func:
-            self.model.did_rows.sort(key=key_func, reverse=reverse)
+            try:
+                self.model.did_rows.sort(key=key_func, reverse=reverse)
+            except Exception as e:
+                print(f"Sort failed: {e}")
+
             # 排序一定要触发重建
             self.model.dataChanged.emit()
             # 由于 on_model_changed 现在会检测对象顺序变化，所以这里 emit 信号后会自动 rebuild

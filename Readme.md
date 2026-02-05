@@ -452,8 +452,7 @@ main.py
 
 **克隆代码库**
 
-git clone http://10.99.17.96/atcode/python/oneboxforgac.git
-
+git clone git@10.99.17.96:atcode/python/oneboxforgac.git
 
 
 ##### **模块开发最佳实践**

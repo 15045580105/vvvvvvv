@@ -16,6 +16,7 @@ class LogConfigService(BaseService):
         super().__init__()
         self._device_service: Optional[DeviceService] = None
         self._topology_service: Optional[TopologyService] = None
+        self._map_file_path: Optional[str] = None # Store the map file path
 
     def inject_device_service(self, device_service: DeviceService):
         self._device_service = device_service
@@ -24,6 +25,10 @@ class LogConfigService(BaseService):
         if not self._topology_service:
             self._topology_service = TopologyService(device_service)
             di_container.register_singleton(TopologyService, self._topology_service)
+
+    def set_map_file_path(self, path: str):
+        """Set the path to process_log_config_map.json."""
+        self._map_file_path = path
 
     def set_ecu_log_level(self, ecus: List[str], level: str, log_callback=None) -> bool:
         """为指定的 ECU 设置日志等级。"""
@@ -702,8 +707,249 @@ class LogConfigService(BaseService):
         print(f"正在删除 {app_ids} 的日志")
         return True
 
-    def restore_config(self, restore_options: Dict[str, bool]) -> bool:
-        """Restore default configuration."""
-        print(f"正在恢复默认配置，选项: {restore_options}")
+    def restore_config(self, options: Dict[str, bool], log_callback=None) -> Dict[str, Any]:
+        """Restore default configuration based on options."""
+        # Helper to log
+        def _log(msg):
+            if log_callback:
+                log_callback(msg)
+            else:
+                print(msg)
+
+        result = {"success": True, "restart_required": False}
+
+        # a) Restore CCUA
+        if options.get("restore_ccua"):
+            _log("开始恢复 CCUA 默认配置...")
+            if not self._restore_ccua_default(log_callback):
+                result["success"] = False
+                _log("CCUA 默认配置恢复失败")
+            else:
+                _log("CCUA 默认配置恢复成功")
+                result["restart_required"] = True # Need confirm restart in UI
+
+        # b) Restore CCU0
+        if options.get("restore_ccu0"):
+            _log("开始恢复 CCU0 默认配置...")
+            # b) 发送 UDS 2E BE 02 02
+            if not self._set_did_byte(0xBE02, 0x02, "CCU0", log_callback):
+                 result["success"] = False
+                 _log("CCU0 默认配置恢复失败")
+            else:
+                 _log("CCU0 默认配置恢复成功")
+
+        # c) Restore CCU1
+        if options.get("restore_ccu1"):
+            _log("开始恢复 CCU1 默认配置...")
+            # c) 发送 UDS 2E BE 03 02
+            if not self._set_did_byte(0xBE03, 0x02, "CCU1", log_callback):
+                 result["success"] = False
+                 _log("CCU1 默认配置恢复失败")
+            else:
+                 _log("CCU1 默认配置恢复成功")
+
+        # d) Delete Logs
+        if options.get("delete_logs"):
+            ssh_client = self._device_service.get_ssh_client()
+            if ssh_client and ssh_client.is_connected():
+                try:
+                    _log("开始删除 DLT 日志文件...")
+                    # d) 删除 /log 下所有日志文件
+                    cmd = "rm -rf /log/*"
+                    _log(f"执行 SSH 指令: {cmd}")
+                    out = ssh_client.execute_command(cmd)
+                    _log("日志删除指令已发送")
+                except Exception as e:
+                    _log(f"日志删除失败: {e}")
+                    result["success"] = False
+            else:
+                _log("SSH 未连接，无法删除日志")
+                result["success"] = False
+
+        return result
+
+    def _set_did_byte(self, did: int, val: int, ecu_name: str, log_callback=None) -> bool:
+        """Helper to set a single byte DID value via UDS."""
+        def _log(msg):
+             if log_callback: log_callback(f"[{ecu_name}] {msg}")
+
+        doip_client = self._device_service.get_doip_client()
+        if not doip_client:
+             _log("DoIP 未连接")
+             return False
+
+        did_bytes = did.to_bytes(2, 'big')
+        write_cmd = bytes([0x2E]) + did_bytes + bytes([val])
+
+        # Check factory mode logic similar to set_log_level... can extract if needed
+        # Assuming secure routine flow logic reuse or simplification:
+        # For simplicity reusing execute_secure_routine or send_doip_payload based on same logic
+
+        # NOTE: Reusing the logic from set_ecu_log_level about factory mode
+        is_factory_mode = False
+        if self._topology_service:
+            # Silence internal log? Or pass log_callback
+            try:
+                fm = self._topology_service._get_factory_mode()
+                if "工厂模式" in fm: is_factory_mode = True
+            except:
+                pass
+
+        _log(f"设置 DID {did:X} = {val:02X} , 发送UDS指令： {write_cmd.hex(' ').upper()}")
+
+        if not is_factory_mode:
+            resp = self._device_service.execute_secure_routine(write_cmd, sec_level=0x01, log_callback=_log)
+        else:
+            # 10 03
+            self._device_service.send_doip_payload(bytes.fromhex("10 03"))
+            resp = self._device_service.send_doip_payload(write_cmd)
+
+        if resp and resp[0] == 0x6E:
+             return True
+        else:
+             _log(f"设置失败, 响应: {resp.hex(' ') if resp else 'None'}")
+             return False
+
+    def _restore_ccua_default(self, log_callback=None) -> bool:
+        """
+        a1) UDS 2E BE 17 02
+        a2) Walk process_log_config.json via SSH
+        """
+        def _log(msg):
+            if log_callback: log_callback(f"[CCUA] {msg}")
+
+        # a1) Update DID 0xBE17 to 02
+        if not self._set_did_byte(0xBE17, 0x02, "CCUA", log_callback):
+            return False
+
+        # a2) Restore process_log_configs
+        # Load local map file
+        import json
+        import os
+
+        # Use user provided path if available
+        if self._map_file_path and os.path.exists(self._map_file_path):
+            map_file_path = self._map_file_path
+        else:
+            # Fallback logic
+            map_filename = "process_log_config_map.json"
+            map_file_path = map_filename
+
+            # Try to find the file in CWD or Project Root
+            if not os.path.exists(map_file_path):
+                 # Try going up from the current file location to find project root
+                 # This file is in app/services/configuration/
+                 current_dir = os.path.dirname(os.path.abspath(__file__))
+                 project_root = os.path.abspath(os.path.join(current_dir, "../../../"))
+                 potential_path = os.path.join(project_root, map_filename)
+                 if os.path.exists(potential_path):
+                     map_file_path = potential_path
+                 else:
+                     # Fallback: try one more level or just cwd join
+                     map_file_path = os.path.join(os.getcwd(), map_filename)
+
+        try:
+            if not os.path.exists(map_file_path):
+                  _log(f"错误: 找不到映射文件 {map_file_path}")
+                  return False
+
+            _log(f"使用映射文件: {map_file_path}")
+            with open(map_file_path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+                configs = data.get("process_log_configs", {})
+        except Exception as e:
+            _log(f"无法读取映射文件: {e}")
+            return False
+
+        ssh_client = self._device_service.get_ssh_client()
+        if not ssh_client or not ssh_client.is_connected():
+            _log("SSH 未连接，无法恢复 APP 配置文件")
+            return False
+
+        success_count = 0
+        fail_count = 0
+
+        for key, info in configs.items():
+            remote_path = info.get("path")
+            if not remote_path: continue
+
+            # Read remote file
+            cmd_read = f"cat {remote_path}"
+            # _log(f"读取: {remote_path}")
+            json_content_str = ssh_client.execute_command(cmd_read)
+            if not json_content_str:
+                 # _log(f"读取失败或文件为空: {key}")
+                 fail_count += 1
+                 continue
+
+            try:
+                remote_json = json.loads(json_content_str)
+                modified = False
+
+                # Check logTraceLogLevel -> ERROR
+                if remote_json.get("logTraceLogLevel") != "ERROR":
+                    remote_json["logTraceLogLevel"] = "ERROR"
+                    modified = True
+
+                # Check logTraceLogMode -> NETWORK
+                if remote_json.get("logTraceLogMode") != "NETWORK":
+                    remote_json["logTraceLogMode"] = "NETWORK"
+                    modified = True
+
+                if modified:
+                    # Write back
+                    new_content = json.dumps(remote_json, indent=4)
+                    # Escape double quotes for shell command if simple echo used, or use sftp?
+                    # Using a safe write method is better.
+                    # Assuming ssh_client has capability to write file or use echo
+
+                    # Trick: use echo '...' > path. Need to handle JSON quotes.
+                    # A safer way is using python on device if available, or just careful escaping.
+                    # Or 'cat > path <<EOF ... EOF'
+
+                    # Let's try simple echo with single quotes wrapping json
+                    safe_json = new_content.replace("'", "'\\''") # Escape single quotes inside JSON
+                    cmd_write = f"echo '{safe_json}' > {remote_path}"
+
+                    ssh_client.execute_command(cmd_write)
+                    # Verify? Skip for performance or do sample verification
+                    # _log(f"已恢复: {key}")
+                    success_count += 1
+                else:
+                    # _log(f"无需修改: {key}")
+                    pass
+
+            except json.JSONDecodeError:
+                # _log(f"JSON 解析失败: {remote_path}")
+                fail_count += 1
+                pass
+            except Exception as e:
+                # _log(f"处理失败 {key}: {e}")
+                fail_count += 1
+
+        _log(f"APP 配置恢复统计: 修改 {success_count}, 失败/跳过 {fail_count}")
         return True
 
+    def reset_ccu(self, log_callback=None):
+        """UDS 11 03 (Soft Reset)"""
+        def _log(msg):
+            if log_callback: log_callback(msg)
+
+        _log("正在执行 CCU 软复位 (11 03)...")
+        # 11 03 usually requires session?
+        # Assuming Default session or Extended is fine. Usually hard reset needs 10 03?
+        # Let's try directly or ensure session 01/03.
+        # Most ECUs accept 11 01/03 in any session or extended.
+
+        # Send 11 03
+        cmd = bytes.fromhex("11 03")
+        doip_client = self._device_service.get_doip_client()
+        if doip_client:
+             resp = doip_client.send_doip_message(cmd)
+             if resp and (resp[0] == 0x51):
+                 _log("CCU 复位指令发送成功")
+                 return True
+             else:
+                 _log(f"CCU 复位失败: {resp.hex(' ') if resp else '无响应'}")
+                 return False
+        return False

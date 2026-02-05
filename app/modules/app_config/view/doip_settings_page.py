@@ -244,13 +244,18 @@ class DoIPSettingsPage(QWidget):
 
     def save_settings(self):
         """保存设置"""
+        ip_data = self.network_combo.currentData()
+        # Ensure data is serializable
+        if ip_data is not None and not isinstance(ip_data, (str, int, float, bool)):
+            ip_data = str(ip_data)
+
         settings = {
             "protocol_version": self.protocol_version_combo.currentIndex(),
             "logical_addr": self.logical_addr_edit.text(),
             "routing_type": self.routing_type_edit.text(),
             "routing_request": self.routing_request_check.isChecked(),
             "network_interface": self.network_combo.currentIndex(),
-            "network_interface_ip": self.network_combo.currentData(),
+            "network_interface_ip": ip_data,
             "target_phy_addr": self.phy_addr_edit.text(),
             "target_fun_addr": self.fun_addr_edit.text(),
             "target_addr_mode": self.addr_group.checkedId(),

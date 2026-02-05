@@ -1,5 +1,7 @@
 import time
 import warnings
+import socket
+import psutil
 from typing import Dict, Any, Callable, Optional
 
 from PyQt5.QtCore import QObject, pyqtSignal
@@ -222,22 +224,92 @@ class DeviceService(QObject):
             device["doip_connect_status"] = "连接失败"
             device["doip_connect_info"] = f"DoIP 连接 {ip}:{tcp_port} 失败"
 
-    def _ensure_someip_client(self, device_ip: str | None = None) -> SomeIPClient | None:
+    def _get_mac_address(self, ip_address: str) -> str:
+        """获取指定 IP 地址对应的网卡 MAC 地址"""
+        try:
+            for interface, snics in psutil.net_if_addrs().items():
+                for snic in snics:
+                    if snic.family == socket.AF_INET and snic.address == ip_address:
+                        # 找到对应 IP 的网卡，现在查找 MAC 地址
+                        # 在 Windows 上，MAC 地址通常也在同一个网卡的 addresses 列表中，AF_LINK 标识
+                        for snic_mac in snics:
+                            if snic_mac.family == psutil.AF_LINK:
+                                return snic_mac.address.replace("-", ":").upper()
+        except Exception as e:
+            self.log_signal.emit(f"获取 MAC 地址失败: {e}")
+        return ""
+
+    def _ensure_someip_client(self, device: Dict[str, Any]) -> SomeIPClient | None:
         """内部辅助：创建并启动 SomeIPClient。
 
-        当前简单实现：
-          * local_ip 为空时使用 127.0.0.1，方便本地联调；
-          * 仅负责创建 + start，不做服务发现，后续可在业务 Service 中细化。
+        使用设备配置中的参数进行连接：
+        - client_port: 作为本地绑定的端口 (local_port)
+        - multicast_ip: 组播 IP
+        - multicast_port: 组播端口
+        - vlan_id: VLAN ID
+        - client_id: 客户端 ID (用于 SomeIP header)
         """
         if self._someip_client is not None:
+            # TODO: 如果参数变化是否需要重启？目前假定单例
             return self._someip_client
 
-        ip = device_ip or "10.1.0.79"
-        local_ip = "10.1.0.99"
-        client = SomeIPClient(local_ip=local_ip)
+        # 从 device 中获取参数 (所有参数均有默认值，方便测试)
+        multicast_ip = device.get("multicast_ip") or "239.192.255.1"  # Default Multicast IP
+        multicast_port_str = device.get("multicast_port") or "30490"  # Default Multicast Port
+        vlan_id_str = str(device.get("vlan_id") or "4")              # Default VLAN
+        client_port_str = device.get("client_port") or "30813"      # Default Client Port
+        client_id_str = device.get("client_id") or "30813"      # Default Client ID
+
+        try:
+            multicast_port = int(multicast_port_str)
+        except ValueError:
+            multicast_port = 30490
+
+        try:
+            local_port = int(client_port_str)
+        except ValueError:
+            local_port = 30813
+
+        try:
+            # Parse hex or int for client_id
+            if str(client_id_str).strip().lower().startswith("0x"):
+                client_id = int(str(client_id_str), 16)
+            else:
+                client_id = int(client_id_str)
+        except ValueError:
+            client_id = 30813
+
+        vlan_id = None
+        if vlan_id_str and vlan_id_str.lower() != "none" and vlan_id_str != "":
+            try:
+                vlan_id = int(vlan_id_str)
+            except:
+                pass
+
+        # Try to get Local IP from App Config
+        someip_settings = self._config_service.someip_settings
+        config_local_ip = someip_settings.get("local_ip")
+
+        # Use configured IP, or fallback to a hardcoded default
+        if config_local_ip:
+            LOCAL_CLIENT_IP = config_local_ip
+        else:
+             self.log_signal.emit(f"警告: SomeIP 本地 IP 未配置")
+             LOCAL_CLIENT_IP = "172.16.64.47"
+
+        LOCAL_CLIENT_MAC = self._get_mac_address(LOCAL_CLIENT_IP)
+        if not LOCAL_CLIENT_MAC:
+             # Fallback MAC if look up fails
+             LOCAL_CLIENT_MAC = "00:00:00:00:00:00"
+
+        self.log_signal.emit(f"启动 SomeIPClient: Multi={multicast_ip}:{multicast_port}, LocalPort={local_port}, ClientID={hex(client_id)}, VLAN={vlan_id}, LocalIP={LOCAL_CLIENT_IP}, MAC={LOCAL_CLIENT_MAC}")
+
+        client = SomeIPClient(local_ip=LOCAL_CLIENT_IP, local_port=local_port, client_id=client_id,
+                              multicast_ip=multicast_ip, multicast_port=multicast_port, vlan_id=vlan_id,
+                              client_mac=LOCAL_CLIENT_MAC)
         started = client.start()
         if not started:
-            self.log_signal.emit(f"SomeIP 客户端启动失败，本地IP={ip}")
+            self.log_signal.emit(f"SomeIP 客户端启动失败，配置: IP={LOCAL_CLIENT_IP}")
             return None
         self._someip_client = client
         return self._someip_client
@@ -245,19 +317,16 @@ class DeviceService(QObject):
     def _connect_someip(self, device: Dict[str, Any]) -> None:
         self.log_signal.emit(f"正在通过SomeIP连接设备...")
         """内部辅助：为当前设备准备 SOME/IP 通信客户端，并更新状态字段。
-
         注意：SOME/IP 多数场景是无连接 UDP，这里仅表示“本地客户端已就绪”。
         """
-        # 可以按需从 device 中取本地网卡 IP 或接口信息，目前简单使用回环地址
-        device_ip = device.get("ip")  # 可选字段
-        client = self._ensure_someip_client(device_ip)
+        client = self._ensure_someip_client(device)
         if client is None:
             device["someip_connect_status"] = "连接失败"
             device["someip_connect_info"] = "SomeIP 客户端启动失败"
             return
 
         device["someip_connect_status"] = "建链成功"
-        device["someip_connect_info"] = f"SomeIP 客户端就绪，本地 {client.local_ip}:{client.local_port}"
+        device["someip_connect_info"] = f"SomeIP 连接成功>> {client.local_ip}:{client.local_port} (VLAN {client.vlan_id})"
 
     def _change_status(self, device):
         payload = {
@@ -271,8 +340,6 @@ class DeviceService(QObject):
             "someip_connect_info": device.get("someip_connect_info"),
         }
         self.protocol_status_changed_signal.emit(payload)
-
-
 
     def _connect_ssh(
         self,
@@ -431,9 +498,6 @@ class DeviceService(QObject):
                 pass
 
         return resp
-
-
-
 
     def execute_secure_routine(self, routine_command: bytes, sec_level: int = 0x21, log_callback: Optional[Callable[[str], None]] = None, return_on_auth_fail: bool = False) -> bool | bytes:
         """

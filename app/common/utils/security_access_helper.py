@@ -16,8 +16,15 @@ class SecurityAccessHelper:
         """
         if not dll_path:
             try:
+                from app.core.dependency_injection import di_container
                 from app.services.configuration.config_service import AppConfigurationService
-                config_service = AppConfigurationService()
+
+                config_service = di_container.resolve(AppConfigurationService)
+                if not config_service:
+                    config_service = AppConfigurationService()
+                    # 注册单例，确保后续调用复用同一实例（避免重复读取文件）
+                    di_container.register_singleton(AppConfigurationService, config_service)
+
                 dll_path = config_service.diag_layer_settings.get("dll_path", "")
             except Exception:
                 pass

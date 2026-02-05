@@ -1,16 +1,22 @@
 from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout,
                              QTreeWidget, QTreeWidgetItem, QStackedWidget,
                              QPushButton, QSplitter)
+from PyQt5 import QtCore
 from PyQt5.QtCore import Qt
 from app.common.ui.style import APP_STYLE
 from app.modules.app_config.view.app_log_settings_page import AppLogSettingsPage
 from app.modules.app_config.view.diagnostic_layer_settings_page import DiagnosticLayerSettingsPage
 from app.modules.app_config.view.doip_settings_page import DoIPSettingsPage
+from app.modules.app_config.view.someip_settings_page import SomeIPSettingsPage
 from app.modules.app_config.view.domain_software_update_page import DomainSoftwareUpdatePage
 
 
 class SettingsWindow(QWidget):
     """主设置窗口"""
+    # Define signals for save transaction
+    save_started = QtCore.pyqtSignal()
+    save_finished = QtCore.pyqtSignal()
+    window_shown = QtCore.pyqtSignal()  # New signal
 
     def __init__(self):
         super().__init__()
@@ -18,6 +24,11 @@ class SettingsWindow(QWidget):
         self.resize(1000, 750)
         self.current_page = None
         self.init_ui()
+
+    def showEvent(self, event):
+        """Override showEvent to emit signal"""
+        super().showEvent(event)
+        self.window_shown.emit()
 
     def init_ui(self):
         """初始化界面"""
@@ -140,6 +151,10 @@ class SettingsWindow(QWidget):
         doip_item.setText(0, "DoIP 设置")
         doip_item.setData(0, Qt.UserRole, "doip")
 
+        someip_item = QTreeWidgetItem(protocol_item)
+        someip_item.setText(0, "SomeIP 设置")
+        someip_item.setData(0, Qt.UserRole, "someip")
+
         diag_layer_item = QTreeWidgetItem(protocol_item)
         diag_layer_item.setText(0, "诊断层")
         diag_layer_item.setData(0, Qt.UserRole, "diag_layer")
@@ -167,6 +182,10 @@ class SettingsWindow(QWidget):
         self.doip_page = DoIPSettingsPage()
         self.stacked_widget.addWidget(self.doip_page)
 
+        # SomeIP设置页面
+        self.someip_page = SomeIPSettingsPage()
+        self.stacked_widget.addWidget(self.someip_page)
+
         # Diagnostic Layer设置页面
         self.diag_layer_page = DiagnosticLayerSettingsPage()
         self.stacked_widget.addWidget(self.diag_layer_page)
@@ -188,26 +207,91 @@ class SettingsWindow(QWidget):
             "doip": self.doip_page,
             "diag_layer": self.diag_layer_page,
             "domain_update": self.domain_update_page,
-            "app_log": self.app_log_page
+            "app_log": self.app_log_page,
+            "someip": self.someip_page
         }
 
         if page_id in page_mapping:
             self.current_page = page_mapping[page_id]
             self.stacked_widget.setCurrentWidget(self.current_page)
 
+    def _collect_all_settings(self) -> dict:
+        """Collect settings from all pages without persisting."""
+        settings: dict = {}
+
+        # NOTE: these pages already know how to extract their UI state
+        # We call page-level helpers rather than emitting signals.
+        if hasattr(self, 'doip_page'):
+            settings["doip"] = {
+                "protocol_version": self.doip_page.protocol_version_combo.currentIndex(),
+                "logical_addr": self.doip_page.logical_addr_edit.text(),
+                "routing_type": self.doip_page.routing_type_edit.text(),
+                "routing_request": self.doip_page.routing_request_check.isChecked(),
+                "network_interface": self.doip_page.network_combo.currentIndex(),
+                "network_interface_ip": self.doip_page.network_combo.currentData(),
+                "target_phy_addr": self.doip_page.phy_addr_edit.text(),
+                "target_fun_addr": self.doip_page.fun_addr_edit.text(),
+                "target_addr_mode": int(self.doip_page.addr_group.checkedId()),
+                "dpt_file": self.doip_page.dpt_path_edit.text(),
+            }
+
+        if hasattr(self, 'someip_page'):
+            settings["someip"] = {
+                "local_ip": self.someip_page.network_combo.currentData(),
+            }
+
+        if hasattr(self, 'diag_layer_page'):
+            settings["diag_layer"] = {
+                "s3_client_time": self.diag_layer_page.s3_client_edit.text(),
+                "s3_server_time": self.diag_layer_page.s3_server_edit.text(),
+                "dll_path": self.diag_layer_page.dll_path_edit.text(),
+                "physical_addr": self.diag_layer_page.physical_addr_edit.text(),
+                "functional_addr": self.diag_layer_page.functional_addr_edit.text(),
+                "ecu_config_path": self.diag_layer_page.ecu_file_edit.text(),
+                "target_ecu_name": self.diag_layer_page.target_ecu_combo.currentText(),
+                "diag_addr_mode": int(self.diag_layer_page.addr_group.checkedId()),
+            }
+
+        if hasattr(self, 'domain_update_page'):
+            settings["domain_update"] = {
+                "success_delay": self.domain_update_page.success_delay_edit.text(),
+                "failure_delay": self.domain_update_page.failure_delay_edit.text(),
+                "ecu_reset": self.domain_update_page.ecu_reset_check.isChecked(),
+                "stop_on_failure": self.domain_update_page.stop_on_failure_check.isChecked(),
+            }
+
+        if hasattr(self, 'app_log_page'):
+            settings["app_log"] = {
+                "export_path": self.app_log_page.export_path_edit.text(),
+                "export_module": self.app_log_page.export_module_combo.currentText(),
+            }
+
+        # Sanitize to primitives
+        for section, data in list(settings.items()):
+            if isinstance(data, dict):
+                for k, v in list(data.items()):
+                    if v is None:
+                        continue
+                    if isinstance(v, (str, int, float, bool)):
+                        continue
+                    data[k] = str(v)
+
+        return settings
+
     def on_ok_clicked(self):
         """OK按钮点击事件 - 保存所有页面设置并关闭窗口"""
-        # 保存所有页面的设置
-        if hasattr(self, 'doip_page'):
-            self.doip_page.save_settings()
-        if hasattr(self, 'diag_layer_page'):
-            self.diag_layer_page.save_settings()
-        if hasattr(self, 'domain_update_page'):
-            self.domain_update_page.save_settings()
-        if hasattr(self, 'app_log_page'):
-            self.app_log_page.save_settings()
+        # Emit signal to start batch save
+        self.save_started.emit()
 
-        self.close()
+        try:
+            # Collect all settings once; actual persistence is handled by controller
+            all_settings = self._collect_all_settings()
+            # attach to instance for controller to pick up
+            self._pending_all_settings = all_settings
+        finally:
+            # Emit signal to finish batch save and write to disk
+            self.save_finished.emit()
+            self.close()
 
     def on_cancel_clicked(self):
         """Cancel按钮点击事件 - 不保存直接关闭窗口"""
