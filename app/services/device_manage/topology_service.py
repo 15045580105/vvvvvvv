@@ -241,6 +241,8 @@ class TopologyService:
 
     # --- DoIP Helpers ---
     def _send_uds_read(self, did_high, did_low, log_callback: Optional[Callable[[str], None]] = None) -> Optional[bytes]:
+        # 发送 UDS 读取请求 (22 xx xx)，返回数据部分
+        #  # [0x22] -> Service ID (SID) 表示 "按标识符读取数据"
         payload = bytes([0x22, did_high, did_low])
         if log_callback: log_callback(f"发送 UDS 读取: {payload.hex(' ').upper()}")
         rx = self._device_service.send_doip_payload(payload, timeout=1.0)

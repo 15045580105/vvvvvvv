@@ -4,6 +4,7 @@ import scp
 import os
 import stat
 from datetime import datetime
+from app.common.communication.clients.ssh_client import SSHClient
 
 
 class FileTransferModel(BaseModel):
@@ -18,6 +19,29 @@ class FileTransferModel(BaseModel):
         self.sftp_client = None
         self.connected = False
         self.current_device_info = None  # Store (ip, port, user)
+
+
+    def use_global_connection(self):
+        """Use the global SSH client connection"""
+        global_client = SSHClient()
+        if not global_client.is_connected():
+            return False
+
+        self.ssh_client = global_client.get_client()
+        if self.ssh_client and self.ssh_client.get_transport() and self.ssh_client.get_transport().is_active():
+            # Init SCP
+            self.scp_client = scp.SCPClient(self.ssh_client.get_transport())
+
+            # Init SFTP if possible
+            try:
+                self.sftp_client = self.ssh_client.open_sftp()
+            except Exception as e:
+                print(f"SFTP not available: {e}")
+                self.sftp_client = None
+
+            self.connected = True
+            return True
+        return False
 
     def connect(self, ip, port, user, password):
         """Connect to remote device via SSH"""

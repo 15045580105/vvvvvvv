@@ -13,304 +13,322 @@ class DownloadManager:
     """
 
     # 定义需要扫描的日志目录
-    LOG_DIRS = ["/log/CCUA/app", "/log/CCUA/core"]
-    BUS_BASE_DIRS = [
-        {"path": "/bigdatadb/eth/SOMEIP", "protocol": "SOMEIP"},
-        {"path": "/bigdatadb/eth/CAN", "protocol": "CAN"},
-        # 默认扫描 /bigdatadb/eth
-    ]
+    LOG_ROOT = "/log"
+    BUS_ROOT = "/bigdatadb/eth"
 
     def __init__(self):
+        """初始化下载管理器，实例化底层传输服务。"""
+        # 1. 创建文件传输服务实例
         self.service = FileTransferService()
 
     def connect(self, host: str, user: str, pass_: str) -> bool:
-        """连接设备"""
+        """连接设备，建立会话。"""
+        # 1. 检查当前连接状态
         if self.service.is_connected():
-            # 已经连接则直接返回成功
+            # 2. 如果已连接则直接返回成功
             return True
-        # 进行连接
+        # 3. 未连接则发起连接请求
         return self.service.connect_device(host, 22, user, pass_)
 
     def is_connected(self) -> bool:
+        """检查设备是否已连接。"""
+        # 1. 返回底层服务的连接状态
         return self.service.is_connected()
 
     def fetch_log_list(self, log_callback: Callable[[str], None] = None, custom_path: str = None) -> List[Dict[str, Any]]:
-        """
-        获取所有日志文件的完整列表（经过业务处理）。
-        如果指定了 custom_path，则仅扫描该目录；否则扫描默认的 LOG_DIRS。
-        """
+        """获取所有日志文件的完整列表（经过业务处理）。"""
+        # 1. 初始化回调函数
         if not log_callback:
             log_callback = lambda msg: None
 
+        # 2. 确定要扫描的目录列表
+        dirs_to_scan = self._resolve_scan_dirs(
+            root_path=self.LOG_ROOT,
+            custom_path=custom_path,
+            log_callback=log_callback
+        )
+
+        # 3. 定义针对日志文件的处理回调
+        def log_processor(raw_file, dir_path):
+            return self._process_log_file(raw_file)
+
+        # 4. 执行目录扫描并获取文件列表
+        return self._scan_dirs_and_fetch_files(dirs_to_scan, log_processor, log_callback)
+
+    def _resolve_scan_dirs(self, root_path: str, custom_path: str, log_callback: Callable) -> List[str]:
+        """辅助方法：确定需要扫描的目录列表。"""
+        # 1. 如果指定了有效自定义路径，直接返回该路径
+        if custom_path and custom_path.strip() and custom_path != root_path:
+            return [custom_path]
+
+        # 2. 否则动态扫描根目录下的所有子目录
+        log_callback(f"未指定具体路径，正在动态扫描 {root_path} 下的所有目录...")
+        try:
+            # 3. 获取远程路径选项
+            options = self.fetch_remote_path_options(root_path, log_callback)
+            # 4. 提取有效路径值（排除根目录自身）
+            return [
+                opt["value"] for opt in options
+                if opt["value"] != root_path
+            ]
+        except Exception as e:
+            # 5. 异常处理
+            log_callback(f"动态目录发现失败: {e}")
+            return []
+
+    def _scan_dirs_and_fetch_files(self, dirs: List[str], processor: Callable[[Dict, str], Dict], log_callback: Callable) -> List[Dict[str, Any]]:
+        """通用模版方法：遍历目录 -> 下载列表 -> 处理文件 -> 排序。"""
+        # 1. 检查目录列表是否为空
+        if not dirs:
+            return []
+
         all_processed_files = []
-
-        # 确定要扫描的目录列表
-        if custom_path:
-            dirs_to_scan = [custom_path]
-        else:
-            dirs_to_scan = self.LOG_DIRS
-
-        for remote_dir in dirs_to_scan:
+        # 2. 遍历每个目录
+        for remote_dir in dirs:
             log_callback(f"正在扫描目录: {remote_dir} ...")
-
-            # 1. 调用底层服务获取原始文件列表
             try:
+                # 3. 获取该目录下的原始文件列表
                 raw_files = self.service.get_remote_file_list(remote_dir)
             except Exception as e:
                 log_callback(f"扫描目录 {remote_dir} 失败: {str(e)}")
                 continue
 
-            # 2. 应用业务规则：过滤和解析
+            # 4. 遍历并处理每个文件
             for raw_file in raw_files:
-                # 过滤掉文件夹，只看文件
                 if raw_file.get("is_dir"):
                     continue
 
-                # 解析元数据
-                processed = self._process_log_file(raw_file)
-                all_processed_files.append(processed)
+                # 5. 调用传入的处理器进行格式化
+                processed = processor(raw_file, remote_dir)
+                if processed:
+                    all_processed_files.append(processed)
 
-        # 3. 按时间倒序排列（最近的日志在前）
-        all_processed_files.sort(key=lambda x: x["create_time"], reverse=True)
-
+        # 6. 按创建时间倒序排列结果
+        all_processed_files.sort(key=lambda x: x.get("create_time", ""), reverse=True)
         return all_processed_files
 
     def download_file(self, remote_path: str, local_path: str, progress_callback=None):
-        """下载单个文件"""
+        """下载单个文件到本地。"""
+        # 1. 委托给底层服务执行下载
         return self.service.download_file(remote_path, local_path, progress_callback)
 
     def _process_log_file(self, raw_file: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        核心业务逻辑：将原始文件信息转换为业务对象
-        """
+        """核心业务逻辑：将原始文件信息转换为业务对象。"""
+        # 1. 获取文件名
         filename = raw_file.get("name", "")
-        # 解析文件名中的元数据
+        # 2. 解析文件名元数据 (APPID, 时间)
         meta = self._parse_filename_metadata(filename)
 
-        # 优先使用文件名里的时间，如果没有则使用文件系统修改时间
+        # 3. 确定显示时间：优先用文件名时间，其次用修改时间
         display_time = meta["create_time"] if meta["create_time"] else raw_file.get("mtime", "")
 
+        # 4. 构建并返回统一格式的文件记录
+        return self._build_file_record(
+            filename=filename,
+            path=raw_file.get("path", ""),
+            raw_file=raw_file,
+            appid=meta["appid"],
+            create_time=display_time
+        )
+
+    def _build_file_record(self, filename: str, path: str, raw_file: Dict[str, Any], appid: str, create_time: str) -> Dict[str, Any]:
+        """构建标准的文件业务对象字典。"""
+        # 1. 组装文件基本信息字典
         return {
             "filename": filename,
-            "path": raw_file.get("path", ""),
-            "appid": meta["appid"],
+            "path": path,
+            "appid": appid,
             "size_kb": raw_file.get("size_kb", ""),
-            "create_time": display_time,
+            "create_time": create_time,
             "modified_time": raw_file.get("mtime", ""),
-            # 初始状态
+            # 2. 设置初始下载状态
             "progress": 0,
             "status": "未下载",
-            # 保留原始大小用于计算
+            # 3. 保留原始字节大小
             "raw_size": raw_file.get("size", 0)
         }
 
     def _parse_filename_metadata(self, filename: str) -> Dict[str, str]:
-        """Delegate filename parsing to the centralized helper.
-
-        Returns a minimal dict compatible with the previous internal shape
-        (keys: 'appid', 'create_time' both strings). The centralized parser may
-        return additional fields; we discard them to keep this method's contract
-        unchanged.
-        """
+        """解析文件名中的元数据（委托给集中于 helper 的解析器）。"""
+        # 1. 调用外部工具解析
         parsed = parse_filename_metadata(filename)
+        # 2. 转换为本类兼容的格式
         return {
             "appid": parsed.get("appid") or "",
             "create_time": parsed.get("create_time") or "",
         }
 
-    def fetch_bus_tabs(self, log_callback: Callable[[str], None] = None) -> List[Dict[str, Any]]:
+    def fetch_remote_path_options(self, base_path: str, log_callback: Callable[[str], None] = None) -> List[Dict[str, Any]]:
         """
-        获取总线数据的 Tab 选项列表（下拉框内容来源）。
-
-        逻辑解释：
-        此函数并不返回文件，而是返回“去哪里找文件”的目录列表。
-        它扫描 /bigdatadb/eth 目录：
-        1. 如果一级目录（如 SOMEIP）下还有子目录（如 Session_1），则生成选项 "SOMEIP/Session_1"，这种情况下数据在子目录里。
-        2. 如果一级目录（如 CAN）下没有子目录（只有文件），则生成选项 "CAN"，这种情况下数据就在一级目录里。
+        获取远程目录的下拉选项（递归查找所有叶子目录）。
         """
+        # 1. 初始化回调
         if not log_callback:
             log_callback = lambda msg: None
 
+        # 2. 检查连接状态
         if not self.is_connected():
             return []
 
         tabs = []
-        base_eth = "/bigdatadb/eth"
 
-        # Add the root "All" option requested by user
+        # 3. 添加默认的“全部”选项
         tabs.append({
-            "label": base_eth,
-            "value": base_eth,
+            "label": base_path,
+            "value": base_path,
             "name": "ALL",
             "protocol": "ALL"
         })
 
         try:
-            # 1. 第一步：扫描根路径 /bigdatadb/eth 获取所有协议组 (Group) 目录
-            # 例如获取到: [{"name": "CAN", ...}, {"name": "SOMEIP", ...}]
-            groups = self.service.get_remote_file_list(base_eth)
+            # 4. 扫描根路径获取第一层目录（用于 Protocol/Group 分组）
+            groups = self.service.get_remote_file_list(base_path)
         except Exception as e:
-            log_callback(f"无法根据 {base_eth} 获取协议列表: {e}")
+            log_callback(f"无法扫描路径 {base_path}: {e}")
             return []
 
+        if not groups:
+             return tabs
+
+        # 5. 遍历第一层目录
         for g in groups:
             # 忽略文件，只处理文件夹
             if not g.get("is_dir"):
                 continue
 
-            g_name = g.get("name") # 例如 "SOMEIP"
-            g_path = g.get("path") # 例如 "/bigdatadb/eth/SOMEIP"
+            g_name = g.get("name")
+            g_path = g.get("path")
 
-            # 2. 第二步：深入扫描该协议目录下是否有子目录（Session目录）
-            try:
-                children = self.service.get_remote_file_list(g_path)
-                # 过滤出里面的所有文件夹
-                sub_dirs = [c for c in children if c.get("is_dir")]
-            except Exception:
-                sub_dirs = []
+            # 6. 从该层开始递归寻找所有叶子目录
+            leaves = self._find_leaf_dirs_recursive(g_path)
 
-            # 3. 根据是否存在子目录来决定下拉选项的结构
-            if sub_dirs:
-                # 情况A：存在子目录 (复杂结构) -> 每个子目录作为一个独立的 Tab 选项
-                # 修改：展示绝对路径 (e.g. "/bigdatadb/eth/SOMEIP/Session_1")
-                for s in sub_dirs:
-                    s_name = s.get("name")
-                    s_path = s.get("path")
-                    label = s_path # 使用绝对路径作为标签
+            # 7. 将找到的叶子目录加入选项列表
+            if leaves:
+                for leaf_path in leaves:
                     tabs.append({
-                        "label": label,    # 界面显示的文字
-                        "value": s_path,   # 选中后去这个路径查文件
-                        "name": label,
-                        "protocol": g_name
+                        "label": leaf_path,
+                        "value": leaf_path,
+                        "name": leaf_path,
+                        "protocol": g_name # 保持所属的第一层分组名
                     })
             else:
-                # 情况B：不存在子目录 (简单结构) -> 协议本身作为一个 Tab 选项
-                # 修改：展示绝对路径 (e.g. "/bigdatadb/eth/CAN")
-                label = g_path # 使用绝对路径作为标签
+                # 8. 兜底处理
                 tabs.append({
-                    "label": label,  # 界面显示的文字
+                    "label": g_path,
                     "value": g_path,
                     "name": g_name,
                     "protocol": g_name
                 })
 
-        # 按 label 字母顺序排序，方便用户查找
+        # 9. 按路径名称排序
         tabs.sort(key=lambda x: x["label"])
         return tabs
 
+    def _find_leaf_dirs_recursive(self, current_path: str, current_depth: int = 0, max_depth: int = 5) -> List[str]:
+        """递归查找包含文件的有效数据目录（叶子节点或中间有效节点）。"""
+        # 1. 检查递归深度限制
+        if current_depth > max_depth:
+            return [current_path]
+
+        try:
+            # 2. 获取当前目录内容
+            entries = self.service.get_remote_file_list(current_path)
+        except Exception:
+            return [current_path]
+
+        # 3. 分离文件和子目录
+        sub_dirs = []
+        files = []
+        for e in entries:
+            if e.get("is_dir"):
+                sub_dirs.append(e)
+            else:
+                files.append(e)
+
+        results = []
+
+        # 4. 如果包含文件，当前目录视为有效数据源
+        if files:
+            results.append(current_path)
+
+        # 5. 如果是空目录（无文件且无子目录），也包含进去
+        if not sub_dirs and not files:
+            results.append(current_path)
+
+        # 6. 递归处理子目录
+        for d in sub_dirs:
+            # 递归结果合并
+            children_result = self._find_leaf_dirs_recursive(d.get("path"), current_depth + 1, max_depth)
+            results.extend(children_result)
+
+        return results
+
+    def fetch_bus_tabs(self, log_callback: Callable[[str], None] = None) -> List[Dict[str, Any]]:
+        """获取总线数据的 Tab 选项列表（兼容旧接口）。"""
+        # 1. 调用通用方法获取总线根目录下的选项
+        return self.fetch_remote_path_options("/bigdatadb/eth", log_callback)
+
     def fetch_bus_file_list(self, log_callback: Callable[[str], None] = None, tab_path: str | None = None) -> List[Dict[str, Any]]:
-        """获取总线数据文件列表"""
+        """获取总线数据文件列表。"""
+        # 1. 初始化回调
         if not log_callback:
             log_callback = lambda msg: None
 
+        # 2. 检查连接状态
         if not self.is_connected():
             log_callback("⚠️ 设备未连接，无法获取总线数据列表。")
             return []
 
-        files: List[Dict[str, Any]] = []
+        # 3. 确定扫描目录
+        dirs_to_scan = self._resolve_scan_dirs(
+            root_path=self.BUS_ROOT,
+            custom_path=tab_path,
+            log_callback=log_callback
+        )
 
-        # 确定需要扫描文件的目录列表
-        dirs_to_scan = []
-
-        if tab_path and tab_path != "/bigdatadb/eth":
-            # 如果指定了 tab_path 且不是根目录，直接扫描该目录
-            # tab_path 是由 fetch_bus_tabs 获取的 value，指向具体含有文件的目录
-            dirs_to_scan.append(tab_path)
-        else:
-            # 如果未指定或指定为根目录，则执行自动发现逻辑 (与 fetch_bus_tabs 类似，但直接收集文件)
-            base_eth = "/bigdatadb/eth"
-            try:
-                groups = self.service.get_remote_file_list(base_eth)
-                for g in groups:
-                    if not g.get("is_dir"): continue
-                    g_path = g.get("path")
-
-                    # 扫描组内容
-                    try:
-                        children = self.service.get_remote_file_list(g_path)
-                        has_subdirs = False
-                        for c in children:
-                            if c.get("is_dir"):
-                                has_subdirs = True
-                                dirs_to_scan.append(c.get("path"))
-
-                        # 如果没有子文件夹，或为了覆盖根目录文件?
-                        # 假设如果作为 Group 存在，可能直接包含文件
-                        # 简单策略：总是把 Group 本身也加入扫描?
-                        # 或者仅当没有子文件夹时?
-                        # 对应 fetch_bus_tabs 的逻辑：
-                        if not has_subdirs:
-                            dirs_to_scan.append(g_path)
-                        # 注意：如果目录既有文件又有子文件夹，这里可能漏掉文件。
-                        # 如果需要非常全面，应该始终扫描 dirs_to_scan.append(g_path)
-                        # 但这可能导致重复或混乱（如果 g_path 很大）。
-                        # 鉴于 fetch_bus_tabs 只在 !has_subdirs 时提供 TAB，保持一致。
-
-                    except Exception:
-                        pass
-            except Exception:
-                pass
-
-        for d_path in dirs_to_scan:
-            log_callback(f"正在扫描: {d_path} ...")
-            try:
-                entries = self.service.get_remote_file_list(d_path)
-            except Exception as e:
-                log_callback(f"扫描 {d_path} 失败: {e}")
-                continue
-
-            # 推断 protocol / appid
-            # 路径: /bigdatadb/eth/GROUP/SESSION/file  -> APPID = GROUP
-            # 路径: /bigdatadb/eth/GROUP/file          -> APPID = GROUP
-            parts = d_path.strip("/").split("/")
-            # parts 可能是 ['bigdatadb', 'eth', 'SOMEIP', 'Session1'] -> protocol=SOMEIP
-            # parts 可能是 ['bigdatadb', 'eth', 'Other'] -> protocol=Other
+        # 4. 定义 Bus 文件处理器
+        def bus_processor(raw_file, dir_path):
+            # 推断 protocol
+            # 路径: /bigdatadb/eth/GROUP/SESSION/file -> proto=GROUP
+            parts = dir_path.strip("/").split("/")
             proto = "Unknown"
             if len(parts) >= 3 and parts[1] == "eth":
                 proto = parts[2]
+            return self._process_bus_file(proto, dir_path, raw_file)
 
-            for ent in entries:
-                if ent.get("is_dir"):
-                    continue
-                processed = self._process_bus_file(proto, d_path, ent)
-                files.append(processed)
-
-        # 按时间倒序
-        files.sort(key=lambda x: x.get("create_time", ""), reverse=True)
-        return files
+        # 5. 执行扫描
+        return self._scan_dirs_and_fetch_files(dirs_to_scan, bus_processor, log_callback)
 
     def _process_bus_file(self, proto: str, tab_path: str, raw_file: Dict[str, Any]) -> Dict[str, Any]:
+        """处理总线文件，构造业务对象。"""
+        # 1. 获取基本信息和元数据
         filename = raw_file.get("name", "")
-        # 复用日志的元数据解析逻辑（解析 APPID 和 CreateTime）
         meta = self._parse_filename_metadata(filename)
 
-        # Type 字段使用解析出的 APPID，如果解析失败才使用 proto 作为兜底
+        # 2. 确定 APPID/Proto
         appid = meta["appid"]
         if not appid:
             appid = proto
 
-        # 时间
+        # 3. 确定创建时间
         create_time = meta["create_time"]
         if not create_time:
-            # 尝试旧的 bus filename 解析逻辑或者直接用 mtime
             old_meta = self._parse_bus_filename(filename)
             create_time = old_meta["create_time"] or raw_file.get("mtime", "")
 
-        return {
-            "filename": filename,
-            "path": f"{tab_path}/{filename}",
-            "appid": appid,
-            "size_kb": raw_file.get("size_kb", ""),
-            "create_time": create_time,
-            "modified_time": raw_file.get("mtime", ""),
-            "progress": 0,
-            "status": "未下载",
-            "raw_size": raw_file.get("size", 0),
-        }
+        # 4. 构建业务对象
+        return self._build_file_record(
+            filename=filename,
+            path=f"{tab_path}/{filename}",
+            raw_file=raw_file,
+            appid=appid,
+            create_time=create_time
+        )
 
     def _parse_bus_filename(self, filename: str) -> Dict[str, str]:
+        """解析旧版总线文件名中的时间信息。"""
         meta = {"create_time": ""}
-        # 提取 20250612_145433 这种时间片段
+        # 1. 正则匹配时间戳 (YYYYMMDD_HHMMSS)
         m = re.search(r"_(\d{8}_\d{6})(?:\.[^.]+)?$", filename)
         if m:
             meta["create_time"] = m.group(1)

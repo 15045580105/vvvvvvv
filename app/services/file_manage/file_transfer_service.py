@@ -1,15 +1,40 @@
+from typing import Optional
 from datetime import datetime
 import os
 import scp
 from PyQt5.QtCore import pyqtSignal
 from app.core.base_service import BaseService
 from app.common.communication.clients.ssh_client import SSHClient
-from app.services.file_manage.utils.formatting import format_size as _format_size
 from app.services.file_manage.progress.progress import make_scp_progress_adapter
 
 
 class FileTransferService(BaseService):
     connection_status_changed = pyqtSignal(bool, str)
+
+    @staticmethod
+    def _format_size(size_bytes: Optional[int]) -> str:
+        """[静态方法] 格式化传输速度（B/s, KB/s, MB/s）"""
+        if size_bytes is None:
+            return "0 B"
+        try:
+            size_bytes = int(size_bytes)
+        except Exception:
+            return "0 B"
+
+        negative = size_bytes < 0
+        size_bytes = abs(size_bytes)
+
+        # 1. 格式化速度显示
+        if size_bytes < 1024:
+            s = f"{size_bytes:.0f} B"
+        elif size_bytes < 1024 * 1024:
+            s = f"{size_bytes/1024:.1f} KB"
+        elif size_bytes < 1024 * 1024 * 1024:
+            s = f"{size_bytes/(1024*1024):.1f} MB"
+        else:
+            s = f"{size_bytes/(1024*1024*1024):.1f} GB"
+
+        return f"-{s}" if negative else s
 
     def __init__(self, transport=None):
         super().__init__()
@@ -121,7 +146,7 @@ class FileTransferService(BaseService):
                     size_str = ""
                     try:
                         if not is_dir and len(parts) > 4:
-                            size_str = _format_size(int(parts[4]))
+                            size_str = self._format_size(int(parts[4]))
                     except Exception:
                         size_str = ""
 
@@ -180,16 +205,6 @@ class FileTransferService(BaseService):
         except Exception as e:
             print(f"Download failed: {e}")
             return False
-
-    @staticmethod
-    def _format_size(size_bytes: int) -> str:
-        units = ["B", "KB", "MB", "GB", "TB"]
-        size = float(size_bytes)
-        for unit in units:
-            if size < 1024 or unit == "TB":
-                return f"{size:.1f} {unit}" if unit != "B" else f"{int(size)} {unit}"
-            size /= 1024.0
-        return f"{size:.1f} TB"
 
     def _get_scp_client(self, progress=None):
         """Helper to create a temporary SCP client from singleton SSHClient"""
@@ -276,7 +291,7 @@ class FileTransferService(BaseService):
                     "name": entry.name,
                     "path": entry.path,
                     "is_dir": False,
-                    "size": _format_size(st.st_size),
+                    "size": self._format_size(st.st_size),
                     "mtime": self._format_mtime(st.st_mtime),
                 })
         except OSError:
