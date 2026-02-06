@@ -109,6 +109,12 @@ class LogConfigController(BaseController):
         worker.finished.connect(lambda: self._workers.remove(worker) if worker in self._workers else None)
 
     def _on_app_search(self):
+        # 0. 检查是否已导入配置文件
+        if not self.log_config_service._map_file_path:
+             from app.common.ui.modern_widgets import MessageToast
+             MessageToast(self.view).show_toast("请先导入 process_log_config_map.json 配置文件", 1) # 1=warning/error style
+             return
+
         # 1. 获取 UI 参数（必须在主线程完成）
         ecu_id = self.view.app_filter_ecu_combo.currentText()
         app_id = self.view.app_filter_appid_combo.currentText()
@@ -119,10 +125,13 @@ class LogConfigController(BaseController):
         if app_id == "全部": app_id = ""
         if log_level == "全部": log_level = ""
 
-        # 禁用按钮防止重复点击
-        self.view.app_search_btn.setEnabled(False)
-        self.view.app_refresh_btn.setEnabled(False)
-        self.view.show_message("正在获取配置...", "info")
+        # 在 Controller 里增加一个标志位，防止重复点击，而不是禁用按钮
+        if getattr(self, '_is_searching', False):
+             self.view.show_message("正在执行搜索中，请稍候...", "info")
+             return
+        self._is_searching = True
+
+        self.view.append_log("正在获取配置...")
 
         # 2. 定义后台任务
         def search_task(log_callback):
@@ -131,9 +140,12 @@ class LogConfigController(BaseController):
 
         # 3. 定义完成回调
         def on_search_finished(result):
-            # 恢复按钮
-            self.view.app_search_btn.setEnabled(True)
-            self.view.app_refresh_btn.setEnabled(True)
+            # 任务结束，释放标志位
+            self._is_searching = False
+
+            # 按钮之前被禁用了吗？没有，所以不需要恢复。
+            # self.view.app_search_btn.setEnabled(True)
+            # self.view.app_refresh_btn.setEnabled(True)
 
             if result is None:
                 self.view.show_message("获取配置失败，请检查连接", "error")
@@ -175,9 +187,10 @@ class LogConfigController(BaseController):
 
     def _on_app_refresh(self):
         # 刷新时清空筛选条件，进行全量查询
-        self.view.app_filter_ecu_combo.setCurrentIndex(0)
-        self.view.app_filter_appid_combo.setCurrentIndex(0)
-        self.view.app_filter_loglevel_combo.setCurrentIndex(0)
+        # self.view.app_filter_ecu_combo.setCurrentIndex(0)
+        # self.view.app_filter_appid_combo.setCurrentIndex(0)
+        # self.view.app_filter_loglevel_combo.setCurrentIndex(0)
+        # 刷新时不用清空筛选条件，直接用现有条件查询
         self._on_app_search()
 
     def _on_prev_page(self):
@@ -256,7 +269,7 @@ class LogConfigController(BaseController):
         self.view.append_log("正在请求重启 CCU...")
 
         def restart_task(log_callback):
-            return self.log_config_service.restart_ccu(ecu="CCUA") # 显式指定 CCUA
+            return self.log_config_service.restart_ccu(ecu="CCUA", log_callback=log_callback)
 
         def on_restart_finished(success):
             if success:
@@ -400,8 +413,6 @@ class LogConfigController(BaseController):
 
     def _handle_ccua_modification(self, app_id, new_level):
         """处理 CCUA 专用的修改流程：Worker异步写入 -> 重启确认"""
-        # 1. 提示并锁定 UI
-        self.view.show_message("正在写入配置并同步文件，请稍候...", "info")
 
         # 2. 定义后台任务
         def task(log_callback):
@@ -417,6 +428,9 @@ class LogConfigController(BaseController):
                 # 更新 Model 显示
                 self.model.update_app_level(app_id, "CCUA", new_level)
                 self.on_model_changed()
+
+                # 刷新 UI，确保用户先看到表格变化
+                QtWidgets.QApplication.processEvents()
 
                 # 弹出重启询问
                 msg = f"应用 {app_id} 的日志等级已修改为 {new_level}。\n\n注意：该修改需要重启 CCU 才能生效。\n是否立即重启 CCU？"
@@ -437,7 +451,8 @@ class LogConfigController(BaseController):
 
     def on_model_changed(self):
         # 1. 更新表格内容
-        self.view.populate(self.model.apps)
+        start_index = (self.model.current_page - 1) * self.model.page_size + 1
+        self.view.populate(self.model.apps, start_index=start_index)
 
         # 2. 更新分页 UI 状态
         current = self.model.current_page

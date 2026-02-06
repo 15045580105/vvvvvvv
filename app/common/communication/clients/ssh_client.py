@@ -118,13 +118,13 @@ class SSHClient:
             error = stderr.read().decode('utf-8', errors='ignore').strip()
             # print(f"---接收反馈: {output}")
             if error:
-                print(f"命令执行错误: {error}")
+                # print(f"命令执行错误: {error}")
                 return None
             # print(f"命令执行成功: {output}")
             return output
 
         except Exception as e:
-            print(f"命令执行异常: {e}")
+            # print(f"命令执行异常: {e}")
             # 发生异常时可能连接已断开
             if not (self._client.get_transport() and self._client.get_transport().is_active()):
                 self._connected = False

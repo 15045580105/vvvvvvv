@@ -155,20 +155,20 @@ class LogConfigService(BaseService):
 
         return success_all
 
-    def set_app_log_level(self, app_id: str, ecu_id: str, new_level: str) -> bool:
-        """
-        设置单个应用的日志等级。
-        目前仅作为演示架构，实际需要对接 DLT Control 协议或修改远程配置。
-        """
-        # 这里应该放置实际的通信代码，例如：
-        # 1. 查找 App 对应的 ID
-        # 2. 通过 UDS 或 TCP 发送指令
-        # 3. 或者通过 SSH 修改 dlt_logstorage.conf
-
-        print(f"[Service] 正在设置 App: {app_id} (ECU: {ecu_id}) 的日志等级为: {new_level}")
-
-        # 模拟操作成功
-        return True
+    # def set_app_log_level(self, app_id: str, ecu_id: str, new_level: str) -> bool:
+    #     """
+    #     设置单个应用的日志等级。
+    #     目前仅作为演示架构，实际需要对接 DLT Control 协议或修改远程配置。
+    #     """
+    #     # 这里应该放置实际的通信代码，例如：
+    #     # 1. 查找 App 对应的 ID
+    #     # 2. 通过 UDS 或 TCP 发送指令
+    #     # 3. 或者通过 SSH 修改 dlt_logstorage.conf
+    #
+    #     print(f"[Service] 正在设置 App: {app_id} (ECU: {ecu_id}) 的日志等级为: {new_level}")
+    #
+    #     # 模拟操作成功
+    #     return True
 
     def _ensure_ccua_mode_enabled(self, log_callback=None) -> bool:
         """确保 CCUA 处于个性化配置模式 (DID 0xBE17 Bit7 = 1)"""
@@ -224,23 +224,27 @@ class LogConfigService(BaseService):
             if log_callback: log_callback(msg)
             else: print(msg)
 
-        _log(f"[{app_id}] 开始修改 CCUA 应用 {app_id} 配置...")
+        _log(f"开始修改 CCUA 应用 {app_id} 配置...")
 
         # --- 状态标记 ---
         ssh_success = False
 
         # --- 1. SSH 操作 (Json) ---
-        _log(f"[{app_id}] 准备通过 SSH 修改远程配置文件...")
+        _log(f"准备通过 SSH 修改{app_id}]远程配置文件...")
         try:
             ssh = SSHClient()
             if not ssh.is_connected():
-                _log(f"[{app_id}] SSH 未连接，无法修改文件")
+                _log(f" SSH 未连接，无法修改{app_id}文件")
                 return False
 
             # 1.1 获取远程路径
-            local_map_path = r"D:\GAC客户提供\process_log_config_map.json"
+            if not self._map_file_path:
+                _log(f"未设置{app_id}]本地映射文件路径，请在导入区域选择JSON文件")
+                return False
+
+            local_map_path = self._map_file_path
             if not os.path.exists(local_map_path):
-                _log(f"[{app_id}] 找不到本地映射文件: {local_map_path}")
+                _log(f"{app_id}]找不到本地映射文件: {local_map_path}")
                 return False
 
             remote_path = None
@@ -257,67 +261,83 @@ class LogConfigService(BaseService):
                     entry = mapping.get(clean_app_id)
                     if entry:
                         remote_path = entry.get("path")
-                        print(f"当前APP[{app_id}]对应的配置文件的路径:", remote_path)
+                        print(f"{app_id}对应的配置文件的路径:", remote_path)
                     else:
                         print(f"映射表中未找到APP[{app_id}]")
 
             except Exception as e:
-                _log(f"[{app_id}] 读取本地映射文件异常: {e}")
+                _log(f"{app_id}]读取本地映射文件异常: {e}")
                 return False
 
             if not remote_path:
-                _log(f"[{app_id}] 映射文件({local_map_path})中未找到 AppID '{app_id}' 对应的路径")
+                _log(f"{app_id}]映射文件({local_map_path})中未找到 AppID '{app_id}' 对应的路径")
                 return False
 
-            _log(f"[{app_id}] 获取到远程配置文件路径: {remote_path}")
+            _log(f"{app_id}获取到远程配置文件路径: {remote_path}")
 
             # 1.2 读取远程 JSON 文件
-            _log(f"[{app_id}] 正在读取远程文件: {remote_path}")
+            _log(f"{app_id}正在读取远程文件: {remote_path}")
             content = ssh.execute_command(f"cat {remote_path}")
             if not content:
-                _log(f"[{app_id}] 无法读取远程文件或文件为空: {remote_path}")
+                _log(f"{app_id}无法读取远程文件或文件为空: {remote_path}")
                 return False
 
             json_data = None
             try:
                 json_data = json.loads(content)
             except json.JSONDecodeError:
-                _log(f"[{app_id}] 远程文件内容非 JSON 格式: {content[:50]}...")
+                _log(f"{app_id}远程文件内容非 JSON 格式: {content[:50]}...")
                 return False
 
             # 1.3 修改配置
+            # TODO sed命令存在一个问题：如果JSON文件没有换行符，而是一行显示，无法正确读取到loglevel对应的值，不够健壮；可以创建一个修改后的配置文件，上传上去。
             old_level = json_data.get("logTraceLogLevel", "UNKNOWN")
             if old_level == new_level:
-                _log(f"[{app_id}] 日志等级已是 {new_level}，无需更新文件")
-                ssh_success = True # 文件本身符合要求算是成功
-            else:
-                json_data["logTraceLogLevel"] = new_level
-                _log(f"[{app_id}] 正在修改字段 logTraceLogLevel: {old_level} -> {new_level}")
-
-                # 1.4 写回文件
-                import base64
-                new_str = json.dumps(json_data, indent=4)
-                b64_str = base64.b64encode(new_str.encode('utf-8')).decode('utf-8')
-                write_cmd = f"echo '{b64_str}' | base64 -d > {remote_path}"
-
-                _log(f"[{app_id}] 正在写入远程文件: {remote_path} ...")
-                ssh.execute_command(write_cmd)
+                _log(f"{app_id}日志等级已是 {new_level}，无需更新文件")
                 ssh_success = True
+            else:
+                _log(f"{app_id}正在修改字段 logTraceLogLevel: {old_level} -> {new_level}")
+
+                # 1.4 使用 sed 直接修改文件，避免回写导致文件被清空
+                # 构造 sed 命令: s/"logTraceLogLevel": "OLD"/"logTraceLogLevel": "NEW"/
+                search_pattern = f'"logTraceLogLevel": "{old_level}"'
+                replace_pattern = f'"logTraceLogLevel": "{new_level}"'
+
+                # -i 表示直接修改文件
+                sed_cmd = f"sed -i 's/{search_pattern}/{replace_pattern}/' {remote_path}"
+
+                _log(f"{app_id}正在执行修改指令: {sed_cmd}")
+                ssh.execute_command(sed_cmd)
+
+                # 1.5 验证修改是否生效
+                verify_content = ssh.execute_command(f"cat {remote_path}")
+                try:
+                    verify_json = json.loads(verify_content)
+                    current_level = verify_json.get("logTraceLogLevel", "UNKNOWN")
+                    if current_level == new_level:
+                        _log(f"{app_id}文件修改校验通过")
+                        ssh_success = True
+                    else:
+                        _log(f"{app_id}文件修改校验失败，当前仍为: {current_level} (可能由于文件格式不标准导致 sed 匹配失败)")
+                        ssh_success = False
+                except:
+                    _log(f"{app_id}文件修改后校验出现异常或 JSON 损坏")
+                    ssh_success = False
 
         except Exception as e:
-            _log(f"[{app_id}] SSH 操作出现异常: {str(e)}")
+            _log(f"{app_id}SSH 操作出现异常: {str(e)}")
             import traceback
             _log(traceback.format_exc())
             return False
 
         if not ssh_success:
-            _log(f"[{app_id}] 文件修改失败，中止后续 UDS 操作")
+            _log(f"{app_id}文件修改失败，中止后续 UDS 操作")
             return False
 
         # --- 2. UDS 操作 (0xBE17 Bit7) ---
         # 只有在文件操作确认无误后，才去修改 UDS 模式
         if not self._ensure_ccua_mode_enabled(log_callback=_log):
-            _log(f"[{app_id}] 警告：文件已修改但 UDS 模式切换失败，配置可能不生效")
+            _log(f"{app_id}警告：文件已修改但 UDS 模式切换失败，配置可能不生效")
             # 这里可以选择返回 False，或者 True (部分成功)
             # 鉴于文件已改，还是算成功让用户决定是否重试或重启
             return False
@@ -327,32 +347,53 @@ class LogConfigService(BaseService):
             ssh = SSHClient()
             if ssh.is_connected():
                 ssh.execute_command("sync")
-                _log(f"[{app_id}] 执行 Sync 落盘完成")
+                _log(f"{app_id}执行 Sync 落盘完成")
         except:
             pass
-
         return True
 
-    def restart_ccu(self, ecu="CCUA"):
+    def restart_ccu(self, ecu="CCUA", log_callback=None):
         """重启 CCU (UDS 11 03)"""
-        if not self._device_service: return False
+        def _log(msg):
+            if log_callback: log_callback(msg)
+            else: print(msg)
+
+        if not self._device_service:
+            _log("DeviceService 未就绪")
+            return False
 
         # 发送软复位指令
-        # 11 03 HardReset/SoftReset definition depends on ECU, usually 11 01 hard, 11 03 soft
-        print(f"[Service] 正在重启 {ecu} (11 03) ...")
+        _log(f"[Service] 正在重启 {ecu} (11 03) ...")
 
-        # 注意：这里假设 Transport Layer 已经配置好或者直接发送给当前连接的 ECU
-        # 如果需要指定 Target Address (TA)，需要确保 DeviceService 的配置正确
         reset_cmd = bytes([0x11, 0x03])
 
         try:
             # 发送后设备通常会立即断开或不回复正响应，视具体实现而定
-            # 这里我们只管发，不强求响应检查
-            self._device_service.send_doip_payload(reset_cmd)
-        except Exception as e:
-            print(f"发送重启指令时出现异常(正常现象，设备可能已离线): {e}")
+            resp = self._device_service.send_doip_payload(reset_cmd)
 
-        return True
+            # 1. 检查正响应 51 03
+            if resp and len(resp) >= 2 and resp[0] == 0x51:
+                _log(f"收到重启确认响应: {resp.hex(' ').upper()} (成功)")
+                return True
+
+            # 2. 检查负响应 7F 11 XX
+            if resp and resp[0] == 0x7F:
+                _log(f"重启请求被拒绝 (NRC): {resp.hex(' ').upper()}")
+                return False
+
+            # 3. 无响应但无异常
+            _log(f"指令已发送，未收到标准确认，Payload: {resp.hex(' ') if resp else 'Empty'}")
+            return True
+
+        except Exception as e:
+            err_msg = str(e)
+            # 4. 常见的连接断开错误，视为重启成功的标志
+            if any(x in err_msg for x in ["Connection reset", "closed", "Broken pipe", "10053", "10054"]):
+                _log(f"连接断开，判定重启指令已生效: {err_msg}")
+                return True
+
+            _log(f"发送重启指令时出现异常: {e}")
+            return False # 其他异常视为失败
 
     def batch_update_ccua_apps(self, app_list: List[str], new_level: str, log_callback=None) -> bool:
         """
@@ -387,7 +428,11 @@ class LogConfigService(BaseService):
                 pass
 
             # 2.1 获取映射表
-            local_map_path = r"D:\GAC客户提供\process_log_config_map.json"
+            if not self._map_file_path:
+                _log("未设置本地映射文件路径，请在导入区域选择JSON文件")
+                return False
+
+            local_map_path = self._map_file_path
             if not os.path.exists(local_map_path):
                 _log(f"找不到本地映射文件: {local_map_path}")
                 return False
@@ -402,7 +447,6 @@ class LogConfigService(BaseService):
                 _log(f"读取映射文件失败: {e}")
                 return False
 
-            import base64
 
             files_modified_count = 0
 
@@ -434,16 +478,29 @@ class LogConfigService(BaseService):
                         _log(f"APP [{app_id}] 等级已是 {new_level}，无需修改")
                         continue
 
-                    json_data["logTraceLogLevel"] = new_level
+                    # 构造 sed 命令
+                    search_str = f'"logTraceLogLevel": "{old_l}"'
+                    replace_str = f'"logTraceLogLevel": "{new_level}"'
+                    sed_cmd = f"sed -i 's/{search_str}/{replace_str}/' {remote_path}"
 
-                    # 写入
-                    new_str = json.dumps(json_data, indent=4)
-                    b64_str = base64.b64encode(new_str.encode('utf-8')).decode('utf-8')
-                    write_cmd = f"echo '{b64_str}' | base64 -d > {remote_path}"
+                    # 执行命令
+                    ssh.execute_command(sed_cmd)
 
-                    ssh.execute_command(write_cmd)
-                    _log(f"APP [{app_id}] 配置已更新 ({old_l} -> {new_level})")
-                    files_modified_count += 1
+                    # 验证
+                    check_content = ssh.execute_command(f"cat {remote_path}")
+                    try:
+                        check_json = json.loads(check_content)
+                        if check_json.get("logTraceLogLevel") == new_level:
+                            _log(f"APP [{app_id}] 配置已更新 ({old_l} -> {new_level})")
+                            files_modified_count += 1
+                        else:
+                            _log(f"APP [{app_id}] 修改失败，校验值仍为 {check_json.get('logTraceLogLevel')}")
+                            # 设置 success = False ? 还是容忍部分失败？
+                            # 这里设为 False 可能会让用户知道出问题了
+                            success = False
+                    except:
+                        _log(f"APP [{app_id}] 修改后文件校验异常")
+                        success = False
 
                 except json.JSONDecodeError:
                     _log(f"APP [{app_id}] JSON 解析失败，跳过")
@@ -540,12 +597,16 @@ class LogConfigService(BaseService):
 
     def _get_remote_json_level(self, app_id: str, ssh: SSHClient) -> str:
         # 1. 读取本地映射文件
-        local_map_path = r"D:\GAC客户提供\process_log_config_map.json"
+        if not self._map_file_path:
+            print(f"[{app_id}] 获取配置失败: 未导入映射文件")
+            return "UNKNOWN"
 
-        # 这里应该放置实际的通信代码，例如：
-        # 1. 查找 App 对应的 ID
-        # 2. 通过 UDS 或 TCP 发送指令
-        # 3. 或者通过 SSH 修改 dlt_logstorage.conf
+        local_map_path = self._map_file_path
+        if not os.path.exists(local_map_path):
+            print(f"[{app_id}] 获取配置失败: 映射文件丢失 {local_map_path}")
+            return "UNKNOWN"
+
+        remote_path = None
 
         try:
             with open(local_map_path, 'r', encoding='utf-8') as f:
@@ -553,16 +614,17 @@ class LogConfigService(BaseService):
                 # 严格按照新结构 process_log_configs 读取
                 mapping = root_data.get("process_log_configs", {})
 
-                # 尝试去除 app_id 可能的空格
                 clean_app_id = app_id.strip() if app_id else ""
-
                 entry = mapping.get(clean_app_id)
 
                 if entry and isinstance(entry, dict):
                     remote_path = entry.get("path")
-                    print(f"当前APP[{app_id}]对应的配置文件的路径:", remote_path)
+                    # print(f"当前APP[{app_id}]对应的配置文件的路径:", remote_path)
                 else:
-                    print(f"映射表中未找到APP[{app_id}]")
+                    # print(f"映射表中未找到APP[{app_id}]")
+                    # 不返回错误字符串，而是 logging 并返回 UNKNOWN
+                    # print(f"[{app_id}] 未配置路径") 
+                    return "UNKNOWN"
 
         except Exception as e:
             print(f"读取本地映射文件出错: {e}")
@@ -575,7 +637,8 @@ class LogConfigService(BaseService):
         try:
             content = ssh.execute_command(f"cat {remote_path}")
             if not content:
-                print(f"远程 JSON 为空或未找到: {remote_path}")
+                # print(f"远程 JSON 为空或未找到: {remote_path}")
+                print(f"[{app_id}] 远程文件缺失: {remote_path}")
                 return "UNKNOWN"
 
             # 3. 解析 JSON
@@ -583,10 +646,12 @@ class LogConfigService(BaseService):
                 data = json.loads(content)
                 return data.get("logTraceLogLevel", "UNKNOWN")
             except json.JSONDecodeError:
-                print(f"解析 {app_id} 的远程 JSON 出错")
+                # print(f"解析 {app_id} 的远程 JSON 出错")
+                print(f"[{app_id}] JSON 格式损坏")
                 return "UNKNOWN"
         except Exception as e:
-            print(f"读取 {app_id} 的远程 JSON 出错: {e}")
+            # print(f"读取 {app_id} 的远程 JSON 出错: {e}")
+            print(f"[{app_id}] 读取远程文件异常: {e}")
             return "UNKNOWN"
 
     def get_apps(self, ecu_filter: str = "", app_filter: str = "", level_filter: str = "") -> List[Dict[str, Any]]:
@@ -831,22 +896,8 @@ class LogConfigService(BaseService):
         if self._map_file_path and os.path.exists(self._map_file_path):
             map_file_path = self._map_file_path
         else:
-            # Fallback logic
-            map_filename = "process_log_config_map.json"
-            map_file_path = map_filename
-
-            # Try to find the file in CWD or Project Root
-            if not os.path.exists(map_file_path):
-                 # Try going up from the current file location to find project root
-                 # This file is in app/services/configuration/
-                 current_dir = os.path.dirname(os.path.abspath(__file__))
-                 project_root = os.path.abspath(os.path.join(current_dir, "../../../"))
-                 potential_path = os.path.join(project_root, map_filename)
-                 if os.path.exists(potential_path):
-                     map_file_path = potential_path
-                 else:
-                     # Fallback: try one more level or just cwd join
-                     map_file_path = os.path.join(os.getcwd(), map_filename)
+            _log("错误: 未设置本地映射文件路径，请在导入区域选择JSON文件")
+            return False
 
         try:
             if not os.path.exists(map_file_path):
