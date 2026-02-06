@@ -88,10 +88,29 @@ class SecurityAccessHelper:
         if struct.calcsize("P") * 8 == 32:
             return sys.executable
 
+        # 0.1 允许通过环境变量显式指定 32 位 Python
+        # - PYTHON_32BIT: 直接指向 python.exe
+        env_exe = os.environ.get("PYTHON_32BIT")
+        if env_exe and os.path.exists(env_exe):
+            return env_exe
+
+        # - PYTHON32_HOME: 指向 32 位 Python 根目录
+        env_home = os.environ.get("PYTHON32_HOME")
+        if env_home:
+            cand = os.path.join(env_home, "python.exe")
+            if os.path.exists(cand):
+                return cand
+
         # 1. 优先查找打包环境或当前目录下附带的 32 位 Python 环境
+        # 约定打包到 runtime32/python.exe
         search_roots = []
         if getattr(sys, 'frozen', False):
-            search_roots.append(os.path.dirname(sys.executable))
+            exe_dir = os.path.dirname(sys.executable)
+            # onedir：exe 同级目录
+            search_roots.append(exe_dir)
+            # PyInstaller >= 6 onedir: 额外文件通常在 _internal 下
+            search_roots.append(os.path.join(exe_dir, "_internal"))
+            # onefile：解包临时目录
             if hasattr(sys, '_MEIPASS'):
                 search_roots.append(sys._MEIPASS)
         else:
@@ -103,7 +122,7 @@ class SecurityAccessHelper:
 
         for root in search_roots:
             # 检查常见路径
-            for rel in ["python32/python.exe", "runtime32/python.exe", "tools/python32/python.exe"]:
+            for rel in ["runtime32/python.exe", "python32/python.exe", "tools/python32/python.exe"]:
                 p = os.path.join(root, rel)
                 if os.path.exists(p):
                     return p
@@ -127,10 +146,11 @@ class SecurityAccessHelper:
                     if "32-bit" in line:
                         parts = line.strip().split()
                         if parts:
-                            ver_tag = parts[0] # e.g. -V:3.10-32
+                            ver_tag = parts[0]  # e.g. -V:3.10-32
                             path_res = subprocess.run(
                                 ["py", ver_tag, "-c", "import sys; print(sys.executable)"],
-                                capture_output=True, text=True
+                                capture_output=True,
+                                text=True,
                             )
                             if path_res.returncode == 0:
                                 exe_path = path_res.stdout.strip()
@@ -139,7 +159,7 @@ class SecurityAccessHelper:
         except Exception:
             pass
 
-        # 2. 尝试通过注册表查找
+        # 3. 尝试通过注册表查找
         try:
             for hive in [winreg.HKEY_CURRENT_USER, winreg.HKEY_LOCAL_MACHINE]:
                 try:
@@ -162,7 +182,7 @@ class SecurityAccessHelper:
         except Exception:
             pass
 
-        # 3. 尝试常见的安装路径
+        # 4. 尝试常见的安装路径
         common_paths = [
             r"C:\Python37-32\python.exe",
             r"C:\Python38-32\python.exe",
@@ -178,10 +198,6 @@ class SecurityAccessHelper:
             if os.path.exists(path):
                 return path
 
-        # 4. 如果用户在环境变量中配置了 PYTHON_32BIT
-        env_path = os.environ.get("PYTHON_32BIT")
-        if env_path and os.path.exists(env_path):
-            return env_path
 
         return None
 
