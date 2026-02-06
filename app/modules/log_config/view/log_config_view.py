@@ -57,6 +57,7 @@ class LogConfigEditDialog(QtWidgets.QDialog):
         self.level_combo = QtWidgets.QComboBox()
         self.level_combo.addItems(["OFF", "FATAL", "ERROR", "WARN", "INFO", "DEBUG", "VERBOSE"])
         self.level_combo.setCurrentText(self.current_level)
+        _setup_searchable_combo(self.level_combo)
         self.level_combo.setStyleSheet("""
             QComboBox {
                 background-color: #FFFFFF;
@@ -167,6 +168,7 @@ class LogConfigView(BaseView):
         self.ecu_log_level_combo = QtWidgets.QComboBox()
         self.ecu_log_level_combo.setMinimumWidth(250)
         self.ecu_log_level_combo.addItems(["OFF", "FATAL", "ERROR", "WARN", "INFO", "DEBUG", "VERBOSE"])
+        _setup_searchable_combo(self.ecu_log_level_combo)
         controls_layout.addWidget(self.ecu_log_level_combo, 1, 1)
 
         # Row 2: Execute button
@@ -204,17 +206,20 @@ class LogConfigView(BaseView):
         filter_layout.addWidget(QtWidgets.QLabel("ECUID:"))
         self.app_filter_ecu_combo = QtWidgets.QComboBox()
         self.app_filter_ecu_combo.setMinimumWidth(100)
+        _setup_searchable_combo(self.app_filter_ecu_combo)
         filter_layout.addWidget(self.app_filter_ecu_combo)
 
         filter_layout.addWidget(QtWidgets.QLabel("APPID:"))
         self.app_filter_appid_combo = QtWidgets.QComboBox()
         self.app_filter_appid_combo.setMinimumWidth(100)
+        _setup_searchable_combo(self.app_filter_appid_combo)
         filter_layout.addWidget(self.app_filter_appid_combo)
 
         filter_layout.addWidget(QtWidgets.QLabel("LOGLevel:"))
         self.app_filter_loglevel_combo = QtWidgets.QComboBox()
         self.app_filter_loglevel_combo.setMinimumWidth(100)
         self.app_filter_loglevel_combo.addItems(["全部", "OFF", "FATAL", "ERROR", "WARN", "INFO", "DEBUG", "VERBOSE"])
+        _setup_searchable_combo(self.app_filter_loglevel_combo)
         filter_layout.addWidget(self.app_filter_loglevel_combo)
 
         filter_layout.addStretch()
@@ -279,6 +284,7 @@ class LogConfigView(BaseView):
         page_size_layout.addWidget(QtWidgets.QLabel("每页显示"))
         self.page_size_combo = QtWidgets.QComboBox()
         self.page_size_combo.addItems(["10", "20", "50"])
+        self.page_size_combo.setCurrentText("20")
         page_size_layout.addWidget(self.page_size_combo)
         page_size_layout.addWidget(QtWidgets.QLabel("条"))
         bottom_layout.addLayout(page_size_layout)
@@ -440,7 +446,7 @@ class LogConfigView(BaseView):
 
         MessageToast(self).show_toast(message, msg_type)
 
-    def populate(self, apps):
+    def populate(self, apps, start_index=1):
         """Populate the APP table.
 
         Supports legacy 3-field data and new 6-field data.
@@ -468,7 +474,7 @@ class LogConfigView(BaseView):
             self.app_table.setItem(i, 0, check_item)
 
             # Column 1: index
-            index_item = QtWidgets.QTableWidgetItem(str(i + 1))
+            index_item = QtWidgets.QTableWidgetItem(str(start_index + i))
             index_item.setTextAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
             self.app_table.setItem(i, 1, index_item)
 
@@ -506,3 +512,16 @@ class LogConfigView(BaseView):
             modify_btn = ModernButton("修改", "#3B82F6", "✎")
             modify_btn.clicked.connect(lambda _, r=i: self.modify_requested.emit(r))
             self.app_table.setCellWidget(i, 8, modify_btn)
+
+def _setup_searchable_combo(combo):
+    """
+    辅助函数：配置 QComboBox 支持输入关键词模糊匹配（包含匹配）。
+    """
+    combo.setEditable(True)
+    combo.setInsertPolicy(QtWidgets.QComboBox.NoInsert)
+    # 使用 combo 当前的 model 作为补全源
+    completer = QtWidgets.QCompleter(combo.model(), combo)
+    completer.setFilterMode(QtCore.Qt.MatchContains)      # 包含模式
+    completer.setCaseSensitivity(QtCore.Qt.CaseInsensitive) # 忽略大小写
+    combo.setCompleter(completer)
+

@@ -15,7 +15,7 @@ class LogConfigModel(BaseModel):
 
         # 分页状态
         self.current_page = 1
-        self.page_size = 10
+        self.page_size = 20
         self.total_pages = 1
 
     def set_data(self, data):

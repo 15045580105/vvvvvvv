@@ -99,6 +99,7 @@ class FileTransferController(BaseController):
     def refresh_local_directory(self):
         path = self.view.local_path_edit.text()
         if path and os.path.exists(path):
+            # 读取该目录下的所有文件和文件夹
             self.change_local_directory(path)
         else:
             self.load_local_roots()
@@ -126,6 +127,7 @@ class FileTransferController(BaseController):
             return
 
         self.view.local_path_edit.setText(path)
+        # 获取该目录下的所有文件和文件夹
         items = self.get_local_directory_content(path)
         self.view.update_node_children(path, items, is_remote=False)
 
