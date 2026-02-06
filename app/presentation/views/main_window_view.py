@@ -113,10 +113,18 @@ class MainView(QtWidgets.QMainWindow):
         self.setCentralWidget(self.central_stack)
 
         self.status_bar = QtWidgets.QStatusBar()
-        self.status_bar.addPermanentWidget(QtWidgets.QLabel("DoIP: ✅ 在线"))
-        self.status_bar.addPermanentWidget(QtWidgets.QLabel("SSH: ✅ 已连接"))
-        self.status_bar.addPermanentWidget(QtWidgets.QLabel("SFTP: ⏸️ 离线"))
-        self.status_bar.addPermanentWidget(QtWidgets.QLabel(" | "))
+        self.doip_status_label = QtWidgets.QLabel("DoIP: ⏸️ 离线")
+        self.ssh_status_label = QtWidgets.QLabel("SSH: ⏸️ 离线")
+        self.someip_status_label = QtWidgets.QLabel("SOMEIP: ⏸️ 离线")
+
+        # 初始状态设为灰色/离线
+        for lbl in [self.doip_status_label, self.ssh_status_label, self.someip_status_label]:
+            lbl.setStyleSheet("color: #6B7280;")
+
+        # self.status_bar.addPermanentWidget(self.doip_status_label)
+        # self.status_bar.addPermanentWidget(self.ssh_status_label)
+        # self.status_bar.addPermanentWidget(self.someip_status_label)
+        # self.status_bar.addPermanentWidget(QtWidgets.QLabel(" | "))
         self.performance_label = QtWidgets.QLabel("💻 CPU: -- | 内存: -- | 📡 --设备在线")
         self.status_bar.addPermanentWidget(self.performance_label)
         self.setStatusBar(self.status_bar)
@@ -132,7 +140,6 @@ class MainView(QtWidgets.QMainWindow):
                 child_item.setText(0, child)
                 child_item.setData(0, Qt.UserRole, "function")
         self.nav_tree.expandAll()
-
 
     def show_search_results(self, items, pos=None):
         self.search_result_list.clear()

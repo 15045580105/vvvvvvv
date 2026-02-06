@@ -4,9 +4,10 @@ from pathlib import Path
 from datetime import datetime
 
 from app.common.utils.machine_code import get_machine_code
+from app.common.utils.path_utils import get_app_config_path
 
 
-APP_DIR = Path.home() / ".oneboxforgac"
+APP_DIR = Path(get_app_config_path())
 LICENSE_FILE = APP_DIR / "license.json"
 _SECRET = "GAC-ONEBOX-2025"
 
@@ -66,7 +67,7 @@ def activate(activation_code: str) -> bool:
     payload = {
         "machine_code": machine_code,
         "activation_code": expected_activation_code(machine_code),
-        "activated_at": datetime.utcnow().isoformat() + "Z",
+        "activated_at": datetime.now().isoformat(),
     }
     _save_license(payload)
     return True

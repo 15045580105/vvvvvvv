@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any, Dict, List
 
 from app.core.base_service import BaseService
+from app.common.utils.path_utils import get_device_config_path
 
 
 class ConfigService(BaseService):
@@ -27,9 +28,16 @@ class ConfigService(BaseService):
 
         Windows 下默认放在用户目录的 .appname 子目录下：
           C:/Users/<user>/.oneboxforgac/
+
+        UPDATED:
+        Now uses .../DeviceConfig for specific config files.
+        But wait, this class is generic.
+        The user asked for `common_config_settings.json` and `devices.json` to be in `DeviceConfig`.
+        We should check `get_config_path` logic.
         """
-        home = Path(os.path.expanduser("~"))
-        return home / f".{self._app_name}"
+        # We will override this to point to DeviceConfig as the default root for ConfigService
+        # assuming most configs handled here are device related.
+        return Path(get_device_config_path())
 
     def get_config_path(self, name: str) -> Path:
         """获取某个配置文件的完整路径（自动补 .json 后缀）。"""

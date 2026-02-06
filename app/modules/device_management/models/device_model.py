@@ -50,6 +50,10 @@ class DeviceModel(BaseModel):
         dev_type: str = "其他",
         **kwargs # Accept extended fields like controller_ip, etc.
     ):
+        # Handle 'type' passed in kwargs causing dev_type to stay default
+        if dev_type == "其他" and "type" in kwargs:
+            dev_type = kwargs["type"]
+
         device_entry = {
                 "name": name,
                 "ip": ip,
@@ -68,7 +72,11 @@ class DeviceModel(BaseModel):
         }
 
         # Add any extended fields that were passed
-        valid_extended_fields = ["controller_ip", "controller_port", "multicast_ip", "vlan_id"]
+        valid_extended_fields = [
+            "controller_ip", "controller_port",
+            "multicast_ip", "multicast_port",
+            "vlan_id", "client_port", "client_id"
+        ]
         for field in valid_extended_fields:
             if field in kwargs:
                 device_entry[field] = kwargs[field]

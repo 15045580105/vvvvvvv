@@ -5,7 +5,7 @@ from app.common.ui.modern_widgets import MessageToast, ModernConfirmDialog
 from app.core.base_controller import BaseController
 from app.core.dependency_injection import di_container
 from app.core.event_bus import event_bus
-from app.modules.device_management.models.device_model import DeviceModel, OFFLINE, ONLINE, DISCONNECTED
+from app.modules.device_management.models.device_model import DeviceModel, OFFLINE, ONLINE, DISCONNECTED, CONNECT_FAILED
 from app.modules.device_management.views.device_management_view import DeviceView
 from app.services.device_manage.device_service import DeviceService
 from app.services.system.config_service import ConfigService
@@ -148,10 +148,10 @@ class DeviceController(BaseController):
         self.view.type_input.setCurrentIndex(0)
 
         self.view.multicast_ip_input.setText("239.71.0.2")
-        self.view.multicast_port_input.clear()
+        self.view.multicast_port_input.setText("30490")
         self.view.vlan_id_input.setText("4")
-        self.view.client_port_input.clear()
-        self.view.client_id_input.clear()
+        self.view.client_port_input.setText("30813")
+        self.view.client_id_input.setText("30813")
 
     def on_model_changed(self):
         self.view.populate(self.model.devices)
@@ -196,7 +196,8 @@ class DeviceController(BaseController):
         doip_status = str(device.get("doip_connect_status", OFFLINE))
         someip_status = str(device.get("someip_connect_status", OFFLINE))
         # 所有协议都必须是离线或已断链才能建立连接
-        allowed = (OFFLINE, DISCONNECTED)
+        # FIX: "连接失败" also should be allowed to edit/delete
+        allowed = (OFFLINE, DISCONNECTED, CONNECT_FAILED, "连接失败") # Added CONNECT_FAILED and "连接失败"
         if ssh_status not in allowed or doip_status not in allowed or someip_status not in allowed:
             MessageToast(self.view).show_toast("仅在设备离线状态下允许修改信息", 1)
             return
@@ -213,12 +214,26 @@ class DeviceController(BaseController):
         pwd_edit.setEchoMode(QtWidgets.QLineEdit.Password)
         type_label = QtWidgets.QLabel(device.get("type", "其他"))
 
+        # 新增/修改字段
+        multicast_ip_edit = QtWidgets.QLineEdit(str(device.get("multicast_ip", "239.71.0.2")))
+        multicast_port_edit = QtWidgets.QLineEdit(str(device.get("multicast_port", "30490")))
+        vlan_id_edit = QtWidgets.QLineEdit(str(device.get("vlan_id", "4")))
+        client_port_edit = QtWidgets.QLineEdit(str(device.get("client_port", "30813")))
+        client_id_edit = QtWidgets.QLineEdit(str(device.get("client_id", "30813")))
+
+
         form.addRow("设备名:", name_edit)
         form.addRow("IP地址:", ip_edit)
         form.addRow("SSH端口:", port_edit)
         form.addRow("用户名:", user_edit)
         form.addRow("密码:", pwd_edit)
         form.addRow("设备类型(只读):", type_label)
+
+        form.addRow("标准组播 IP:", multicast_ip_edit)
+        form.addRow("标准组播端口:", multicast_port_edit)
+        form.addRow("VLAN ID:", vlan_id_edit)
+        form.addRow("客户端端口:", client_port_edit)
+        form.addRow("客户端 ID:", client_id_edit)
 
         btn_box = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel)
         form.addRow(btn_box)
@@ -235,6 +250,12 @@ class DeviceController(BaseController):
         user = user_edit.text().strip()
         pwd = pwd_edit.text().strip()
 
+        multicast_ip = multicast_ip_edit.text().strip()
+        multicast_port = multicast_port_edit.text().strip()
+        vlan_id = vlan_id_edit.text().strip()
+        client_port = client_port_edit.text().strip()
+        client_id = client_id_edit.text().strip()
+
         if not name or not ip:
             MessageToast(self.view).show_toast("设备名与IP不能为空", 1)
             return
@@ -244,7 +265,12 @@ class DeviceController(BaseController):
             MessageToast(self.view).show_toast("端口必须为数字", 1)
             return
 
-        self.model.update_device(index, name=name, ip=ip, port=port, user=user, password=pwd)
+        self.model.update_device(
+            index,
+            name=name, ip=ip, port=port, user=user, password=pwd,
+            multicast_ip=multicast_ip, multicast_port=multicast_port,
+            vlan_id=vlan_id, client_port=client_port, client_id=client_id
+        )
         self._persist_devices()
         self.on_model_changed()
         self.view.append_log(f"修改设备信息 -> {self._device_repr(index)}")
@@ -261,7 +287,8 @@ class DeviceController(BaseController):
         doip_status = str(device.get("doip_connect_status", OFFLINE))
         someip_status = str(device.get("someip_connect_status", OFFLINE))
         # 所有协议都必须是离线或已断链才能建立连接
-        allowed = (OFFLINE, DISCONNECTED, "连接失败")
+        # FIX: Also allow if connection previously failed
+        allowed = (OFFLINE, DISCONNECTED, CONNECT_FAILED, "连接失败")
         if ssh_status not in allowed or doip_status not in allowed or someip_status not in allowed:
             MessageToast(self.view).show_toast("仅在所有协议均为离线/已断链状态下可建立连接", 1)
             return
@@ -301,7 +328,8 @@ class DeviceController(BaseController):
         doip_status = str(device.get("doip_connect_status", OFFLINE))
         someip_status = str(device.get("someip_connect_status", OFFLINE))
         # 所有协议都必须是离线或断开才能建立连接
-        allowed = (OFFLINE, DISCONNECTED)
+        # FIX: Also allow deletion if connection failed
+        allowed = (OFFLINE, DISCONNECTED, CONNECT_FAILED, "连接失败")
         if ssh_status not in allowed or doip_status not in allowed or someip_status not in allowed:
             MessageToast(self.view).show_toast("仅在离线/已断链状态下允许删除设备", 1)
             return

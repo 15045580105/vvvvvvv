@@ -314,13 +314,9 @@ class TopologyWidget(QGraphicsView):
         self.security_info_widget = QWidget()
         self.sec_labels = {}
         setup_form_layout(self.security_info_widget, self.sec_labels, [
-            ("cert_server", "证书服务器："),
-            ("pki_status", "PKI服务状态："),
-            ("cert_valid_date", "证书有效日期："),
+            ("cert_info", "证书信息："),
             ("key_slot_status", "密钥槽状态："),
-            ("tls_switch", "TLS开关状态："),
-            ("secoc_switch", "SecOC开关状态："),
-            ("cms_env", "CMS环境：")
+            ("cms_env", "CMS环境信息：")
         ])
 
         # 4. 网络管理
@@ -415,12 +411,8 @@ class TopologyWidget(QGraphicsView):
         self.status_labels["srv_id03"].setText(info.get("srv_id03", "—"))
 
     def update_security_info(self, info: dict):
-        self.sec_labels["cert_server"].setText(info.get("cert_server", "—"))
-        self.sec_labels["pki_status"].setText(info.get("pki_status", "—"))
-        self.sec_labels["cert_valid_date"].setText(info.get("cert_valid_date", "—"))
+        self.sec_labels["cert_info"].setText(info.get("cert_info", "—"))
         self.sec_labels["key_slot_status"].setText(info.get("key_slot_status", "—"))
-        self.sec_labels["tls_switch"].setText(info.get("tls_switch", "—"))
-        self.sec_labels["secoc_switch"].setText(info.get("secoc_switch", "—"))
         self.sec_labels["cms_env"].setText(info.get("cms_env", "—"))
 
     def update_network_mgmt(self, info: dict):

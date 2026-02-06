@@ -78,7 +78,6 @@ class SomeIPClient:
              raise RuntimeError("Scapy library is missing.")
 
         self.local_ip = local_ip
-
         self.local_port = local_port
         self.client_id = client_id
         self.multicast_ip = multicast_ip

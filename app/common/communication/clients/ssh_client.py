@@ -109,18 +109,18 @@ class SSHClient:
                 return None
 
         try:
-            print(f"---正在执行命令: {command}")
+            # print(f"---正在执行命令: {command}")
             # exec_command 是非阻塞的
             stdin, stdout, stderr = self._client.exec_command(command)
 
             # 读取输出
             output = stdout.read().decode('utf-8', errors='ignore').strip()
             error = stderr.read().decode('utf-8', errors='ignore').strip()
-            print(f"---接收反馈: {output}")
+            # print(f"---接收反馈: {output}")
             if error:
                 print(f"命令执行错误: {error}")
                 return None
-            print(f"命令执行成功: {output}")
+            # print(f"命令执行成功: {output}")
             return output
 
         except Exception as e:
