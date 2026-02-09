@@ -10,6 +10,7 @@ from app.core.event_bus import event_bus
 from app.modules.file_transfer.model.file_transfer_model import FileTransferModel
 from app.modules.file_transfer.view.file_transfer_view import FileTransferView
 from app.services.system.config_service import ConfigService
+from app.common.communication.clients.ssh_client import SSHClient
 
 
 class FileTransferController(BaseController):
@@ -98,6 +99,7 @@ class FileTransferController(BaseController):
     def refresh_local_directory(self):
         path = self.view.local_path_edit.text()
         if path and os.path.exists(path):
+            # 读取该目录下的所有文件和文件夹
             self.change_local_directory(path)
         else:
             self.load_local_roots()
@@ -125,6 +127,7 @@ class FileTransferController(BaseController):
             return
 
         self.view.local_path_edit.setText(path)
+        # 获取该目录下的所有文件和文件夹
         items = self.get_local_directory_content(path)
         self.view.update_node_children(path, items, is_remote=False)
 
@@ -164,27 +167,16 @@ class FileTransferController(BaseController):
 
     # ---------------- Remote File System Logic ----------------
     def refresh_remote_directory(self):
-        device = self.view.get_selected_device()
-        if not device:
-            self.view.show_error("错误", "请先选择一个设备")
+        # Check if connected using Singleton
+        client = SSHClient()
+        if not client.is_connected():
+            self.view.show_toast("未连接设备")
             return
 
-        self.view.append_log(f"正在连接到 {device.get('ip')}...")
-        QtCore.QCoreApplication.processEvents()
-
-        success = self.model.connect(
-            device.get('ip'),
-            int(device.get('port', 22)),
-            device.get('user', 'root'),
-            device.get('password')
-        )
-
-        if not success:
-            self.view.append_log("连接失败")
-            self.view.show_error("错误", "无法连接到设备")
-            return
-
-        self.view.append_log("连接成功")
+        # Ensure model uses the global connection
+        if not self.model.use_global_connection():
+             self.view.show_toast("无法获取SSH会话")
+             return
 
         path = self.view.remote_path_edit.text()
         if not path:

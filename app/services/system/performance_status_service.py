@@ -180,6 +180,20 @@ class PerformanceStatusService:
     def _default_device_provider(self) -> Tuple[Optional[int], Optional[int]]:
         if not self._device_model:
             return None, None
-        total = len(getattr(self._device_model, "devices", []) or [])
-        online = sum(1 for d in getattr(self._device_model, "devices", []) if "✅" in d.get("status", ""))
-        return online, total
+
+        from app.modules.device_management.models.device_model import ONLINE
+
+        devices = getattr(self._device_model, "devices", []) or []
+        total = len(devices)
+
+        # 判断在线逻辑：任一协议状态为 "建链成功" 则视为在线
+        count_online = 0
+        for d in devices:
+            is_ssh_ok = d.get("ssh_connect_status") == ONLINE
+            is_doip_ok = d.get("doip_connect_status") == ONLINE
+            is_someip_ok = d.get("someip_connect_status") == ONLINE
+
+            if is_ssh_ok or is_doip_ok or is_someip_ok:
+                count_online += 1
+
+        return count_online, total

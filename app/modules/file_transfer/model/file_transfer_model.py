@@ -4,6 +4,7 @@ import scp
 import os
 import stat
 from datetime import datetime
+from app.common.communication.clients.ssh_client import SSHClient
 
 
 class FileTransferModel(BaseModel):
@@ -18,6 +19,29 @@ class FileTransferModel(BaseModel):
         self.sftp_client = None
         self.connected = False
         self.current_device_info = None  # Store (ip, port, user)
+
+
+    def use_global_connection(self):
+        """Use the global SSH client connection"""
+        global_client = SSHClient()
+        if not global_client.is_connected():
+            return False
+
+        self.ssh_client = global_client.get_client()
+        if self.ssh_client and self.ssh_client.get_transport() and self.ssh_client.get_transport().is_active():
+            # Init SCP
+            self.scp_client = scp.SCPClient(self.ssh_client.get_transport())
+
+            # Init SFTP if possible
+            try:
+                self.sftp_client = self.ssh_client.open_sftp()
+            except Exception as e:
+                print(f"SFTP not available: {e}")
+                self.sftp_client = None
+
+            self.connected = True
+            return True
+        return False
 
     def connect(self, ip, port, user, password):
         """Connect to remote device via SSH"""
@@ -94,7 +118,6 @@ class FileTransferModel(BaseModel):
                 # Skip . and ..
                 if name in ('.', '..'):
                     continue
-
                 timestamp = entry.st_mtime
                 mtime = datetime.fromtimestamp(timestamp).strftime('%Y-%m-%d %H:%M')
                 is_dir = stat.S_ISDIR(entry.st_mode)
@@ -111,28 +134,21 @@ class FileTransferModel(BaseModel):
             return None
 
     def _list_ssh(self, path):
-        # Fallback to ls command
+        """SSH 执行 ls -l 命令列出目录内容"""
         items = []
 
-        # Try ls with time-style first (Linux standard)
+        # 1. 优先方案：尝试使用 --time-style 格式化时间，便于解析
         cmd = f"ls -l --time-style=+%Y-%m-%d__%H:%M '{path}'"
         stdin, stdout, stderr = self.ssh_client.exec_command(cmd)
-
         lines = stdout.readlines()
-        use_fallback = False
 
-        # Check if command failed (e.g. busybox doesn't support --time-style)
-        # Often stderr will have "invalid option" or similar
-        # But simply, if lines is just empty or contains error looking things?
+        use_fallback = False
+        # 如果没有输出（通常意味着命令不支持该参数，如 Busybox），则启用备用方案
         if not lines:
              use_fallback = True
-        else:
-             # Check first line for error or check if it looks like ls output
-             # If busybox fails, it might output usage to stderr, so stdout is empty.
-             pass
 
+        # 2. 兜底方案：通用 ls -l
         if use_fallback:
-             # Try generic ls -l
              cmd = f"ls -l '{path}'"
              stdin, stdout, stderr = self.ssh_client.exec_command(cmd)
              lines = stdout.readlines()
@@ -143,45 +159,29 @@ class FileTransferModel(BaseModel):
                 continue
 
             parts = line.split()
-            if len(parts) < 6: # Minimal columns
+            if len(parts) < 6:
                 continue
 
-            # Parse ls -l output
-            # Standard: drwxr-xr-x 2 root root 4096 2023-01-01__12:00 FolderName
-            # Fallback: drwxr-xr-x 2 root root 4096 Jan 1 00:00 Folder Name
-
+            # 3. 解析基础信息
             perms = parts[0]
             is_dir = perms.startswith('d')
             ftype = "文件夹" if is_dir else "文件"
 
-            # Try to identify columns dynamically
-            # Usually: [perms] [links] [user] [group] [size] [date...] [name]
-            # But sometimes group is missing?
-            # Let's assume standard layout:
-            # col 0: perms
-            # col -1: name part (but name can have spaces)
-
+            # 4. 动态解析列（大小、时间、文件名）
+            # 分支 A: 使用了 --time-style (标准格式: 权限 链接 用户 组 大小 日期__时间 文件名)
             if not use_fallback and len(parts) >= 7:
-                 # We expect: ... size date_time name
-                 # size is usually index 4
                  try:
                      size_bytes = int(parts[4])
                      dt_str = parts[5].replace('__', ' ')
                      name = ' '.join(parts[6:])
                  except:
-                     # Parsing failed, use simpler approach
                      name = parts[-1]
                      size_bytes = 0
                      dt_str = ""
+
+            # 分支 B: 兜底通用格式 (日期通常占3列: Month Day Time/Year)
             else:
-                 # Fallback parsing (Busybox style or varying date cols)
-                 # Date fields usually take 3 columns (Month Day Time/Year)
-                 # We can try to finding the size column (first numeric digit column after user/group)
-                 # This is tricky.
-                 # Let's simplify:
-                 # Name is everything after the 8th column usually (indices 0..7 are meta)
-                 # If name has spaces, ' '.join(parts[8:])
-                 # perms links user group size M D Y Name
+                 # 假设结构: 权限 链接 用户 组 大小 M D Y Name
                  if len(parts) >= 9:
                       try:
                           size_bytes = int(parts[4])
@@ -199,9 +199,9 @@ class FileTransferModel(BaseModel):
             if name in ('.', '..'): continue
 
             size = self._format_size(size_bytes) if not is_dir else ""
-
             items.append((name, dt_str, ftype, size))
 
+        # 5. 排序：文件夹优先，再按名称
         items.sort(key=lambda x: (x[2] != "文件夹", x[0].lower()))
         return items
 

@@ -7,6 +7,7 @@ from PyQt5.QtWidgets import (
     QMessageBox, QComboBox, QTextEdit
 )
 from app.presentation.views.base_view import BaseView
+from app.common.ui.modern_widgets import MessageToast
 
 
 class SortableTreeWidgetItem(QTreeWidgetItem):
@@ -352,6 +353,14 @@ class FileTransferView(BaseView):
 
     def append_log(self, message):
         self.transfer_log.append(f"[{QtCore.QTime.currentTime().toString()}] {message}")
+
+    def show_toast(self, message, message_type=1): # Default to Error (1) as requested context implies "Not Connected"
+        # But generic usage might be Info.
+        # User said "Show toast if not connected".
+        # Let's default to Info (2) or make it explicit.
+        # ModernWidgets MessageToast: 0=Success, 1=Error, else=Info.
+        toast = MessageToast(self)
+        toast.show_toast(message, message_type)
 
     def show_error(self, title, message):
         QMessageBox.critical(self, title, message)

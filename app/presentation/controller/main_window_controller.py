@@ -10,6 +10,7 @@ from app.presentation.model.main_window_model import MainModel
 from app.presentation.views.main_window_view import MainView
 from app.services.system.performance_status_service import PerformanceStatusService
 from app.modules.device_management.models.device_model import DeviceModel
+from app.core.dependency_injection import di_container
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +40,17 @@ class MainController(BaseController):
         self._init_navigation()
         self._init_device_metrics_source()
         self._init_performance_monitor()
+
+        self.device_service = di_container.resolve("DeviceService")
+        # 如果获取不到(可能还未注册)，可以在init_dependencies中再试
+        if not self.device_service:
+            # 尝试通过类名获取
+            from app.services.device_manage.device_service import DeviceService
+            self.device_service = di_container.resolve(DeviceService)
+
+        # 订阅协议状态变更信号
+        if self.device_service:
+             self.device_service.protocol_status_changed_signal.connect(self._on_protocol_status_changed)
 
     # ----------------- UI初始化 -----------------
     def _init_ui(self) -> None:
@@ -365,6 +377,10 @@ class MainController(BaseController):
         worker.signals.finished.connect(lambda w=worker: self._active_workers.remove(w) if w in self._active_workers else None)
         self._active_workers.append(worker)
         QtCore.QThreadPool.globalInstance().start(worker)
+
+    def _on_protocol_status_changed(self, device_data: dict):
+        # 协议状态变化可能影响"在线设备"计数，因此立即更新性能概要
+        self._refresh_performance()
 
     # ----------------- 工具方法 -----------------
     def get_view(self) -> MainView:

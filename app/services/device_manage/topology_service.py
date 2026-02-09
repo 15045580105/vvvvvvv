@@ -241,6 +241,8 @@ class TopologyService:
 
     # --- DoIP Helpers ---
     def _send_uds_read(self, did_high, did_low, log_callback: Optional[Callable[[str], None]] = None) -> Optional[bytes]:
+        # 发送 UDS 读取请求 (22 xx xx)，返回数据部分
+        #  # [0x22] -> Service ID (SID) 表示 "按标识符读取数据"
         payload = bytes([0x22, did_high, did_low])
         if log_callback: log_callback(f"发送 UDS 读取: {payload.hex(' ').upper()}")
         rx = self._device_service.send_doip_payload(payload, timeout=1.0)
@@ -346,315 +348,109 @@ class TopologyService:
         if log_callback: log_callback("电压读取失败: 无数据")
         return "Unknown"
 
+    # --- Data Parsing Helper ---
+    def _parse_data(self, data: bytes, did: str) -> str:
+        """解析数据，如果DPT可用则使用DPT，否则返回HEX字符串"""
+        if not data:
+            return "No Data"
+
+        # 尝试使用 DPT 解析
+        if self._dpt_service.is_ready():
+            try:
+                parsed_result = self._dpt_service.parse_bytes(data, did=did)
+                if parsed_result and parsed_result.fields:
+                    # 将解析出的字段拼接成字符串
+                    # 例如: "Status: 0x01 (Active), Count: 5"
+                    parts = []
+                    for field in parsed_result.fields:
+                         if hasattr(field, 'name') and hasattr(field, 'parsed_value'):
+                             parts.append(f"{field.name}: {field.parsed_value}")
+                    if parts:
+                        return ", ".join(parts)
+            except Exception as e:
+                # 解析出错，记录但不崩溃，回退到 HEX
+                pass
+
+        # 默认回退：转 HEX 字符串
+        return data.hex(' ').upper()
+
     def _get_cert_info(self, log_callback: Optional[Callable[[str], None]] = None) -> str:
         if log_callback: log_callback("-->读取证书信息<--")
-        # 31 01 BE E8 (Routine Control)
-        # 需要 Security Access，这里尝试直接发送，如果失败则返回提示
-        payload = bytes([0x31, 0x01, 0xBE, 0xE8])
 
-        routine = bytes.fromhex("31 01 BE E9")
-        self._device_service.execute_secure_routine(routine, sec_level=0x21)
+        # 1. 安全访问解锁 (Level 0x21/0x22)
+        # DeviceService.execute_secure_routine 内部实现了 27 21 -> 27 22 的逻辑
+        # 这里需要先执行一次安全解锁，可以是任意需要解锁的操作，或者直接调解锁接口
+        # 但 execute_secure_routine 是设计为"执行一个需要安全的routine"
 
-        # rx = self._device_service.send_doip_payload(payload, timeout=2.0)
-        # if rx and rx[0] == 0x71:
-        #     if log_callback: log_callback(f"收到 UDS 响应: {rx.hex(' ').upper()}")
-        #     result = "读取成功: " + rx[4:].hex() # 假设格式
-        #     if log_callback: log_callback(f"证书信息解析结果: {result}")
-        #     return result
-        # if log_callback: log_callback(f"UDS 例程失败或无响应: {rx.hex(' ').upper() if rx else 'None'}")
-        return "读取失败(可能需要解锁)"
-
-    def _get_key_slot_status(self, log_callback: Optional[Callable[[str], None]] = None) -> str:
-        if log_callback: log_callback("-->读取密钥槽状态<--")
-        data = self._send_uds_read(0xBE, 0x2C, log_callback)
-        if data:
-            if log_callback: log_callback(f"密钥槽状态原始数据: {data.hex(' ').upper()}")
-            result = data.hex()
-            if log_callback: log_callback(f"密钥槽状态解析结果: {result}")
-            return result
-        if log_callback: log_callback("密钥槽状态读取失败: 无数据")
-        return "Unknown"
-
-    def _get_cms_env(self, log_callback: Optional[Callable[[str], None]] = None) -> str:
-        if log_callback: log_callback("-->读取CMS环境<--")
-        data = self._send_uds_read(0xBE, 0x2D, log_callback)
-        if data:
-            if log_callback: log_callback(f"CMS环境原始数据: {data.hex(' ').upper()}")
-            result = data.hex()
-            if log_callback: log_callback(f"CMS环境解析结果: {result}")
-            return result
-        if log_callback: log_callback("CMS环境读取失败: 无数据")
-        return "Unknown"
-
-    # --- SomeIP Helpers ---
-    def _someip_request_sync(self, service: int, method: int, payload: bytes = b'', timeout: float = 2.0, target_port: int = 30500) -> Optional[bytes]:
-        client = self._device_service.get_someip_client()
-        if not client:
-            return None
-
-        # 1. 获取目标IP
-        target_ip = self._device_service.get_current_device_ip()
-        if not target_ip:
-            # 未知IP时尝试使用默认值
-            target_ip = "10.1.0.79"
-
-        # 记录详细的发送参数
-        if hasattr(self, '_log_callback') and self._log_callback:
-            self._log_callback(f"[Debug] Sending SOME/IP to {target_ip}:{target_port}")
-
-        result = None
-        event = threading.Event()
-
-        # 2. 定义回调
-        def cb(pkt):
-            nonlocal result
-            try:
-                # 尝试提取 load
-                if hasattr(pkt, 'payload') and hasattr(pkt.payload, 'load'):
-                     result = pkt.payload.load
-                else:
-                     # 兜底转换
-                     result = bytes(pkt.payload)
-            except:
-                result = b''
-            event.set()
-
-        # 注册回调
-        client.register_callback(service, method, cb)
-        try:
-            # 发送请求 (假设 target IP 是组播或已知)
-            # 这里需要 target IP，DeviceService 里的 client 可能有默认 multicast
-            # 但通常请求是单播。这里假设 client 已经配置好或者我们广播
-            # 由于 DeviceService.send_someip_request 需要 target_ip，我们这里直接用 client 发
-            # 暂时用 '239.255.0.1' 或 client.multicast_ip 如果是 discovery，但这是 method call
-            # 假设发给 localhost 或者 device IP?
-            # 我们没有 device IP 在这里。
-            # 这是一个问题。SomeIP 需要目标 IP。
-            # 暂时使用 '127.0.0.1' 模拟或者需要 device_info 中的 IP
-            # 发送请求
-            client.send_request(service, method, payload, target_ip=target_ip, target_port=target_port)
-            event.wait(timeout)
-        finally:
-            # 清理回调
-            client.unregister_callback(service, method)
-
-        return result
-
-    def _get_user_mode(self, log_callback: Optional[Callable[[str], None]] = None) -> str:
-        # 保存 callback 引用，以便 _someip_request_sync 可以使用它来打印调试信息
-        self._log_callback = log_callback
-
-        if log_callback: log_callback("-->读取用户模式<--")
-        try:
-            client = self._device_service.get_someip_client()
-        except Exception:
-            client = None
-        if not client:
-            if log_callback: log_callback("SomeIP Client 未就绪或未注入")
-            return "SomeIP Client未就绪"
-
-
-    def _get_service_status(self, log_callback: Optional[Callable[[str], None]] = None) -> str:
-        # 10FA, 0003
-        try:
-            client = self._device_service.get_someip_client()
-        except Exception:
-            client = None
-        if not client:
-            if log_callback: log_callback("SomeIP Client 未就绪或未注入")
-            return "SomeIP Client未就绪"
-        client.request_with_discovery(service_id=0x10FA, method_id=0x0003, target_ip="172.16.64.79")
-        return "获取中..." # 需完善 SomeIP 通信机制
-
-    def _get_pnc_status(self, log_callback: Optional[Callable[[str], None]] = None) -> Dict[str, str]:
-        # 多个 Notifier，需要 Subscribe
-        return {
-            "power_wake_source": "Unknown",
-            "pnc": "Unknown",
-            "rt1_net": "Unknown"
-        }
-
-    # --- SSH Helpers ---
-    def _get_storage_info(self, log_callback: Optional[Callable[[str], None]] = None) -> str:
-        cmd = "df -h"
-        if log_callback: log_callback(f"发送 SSH 指令: {cmd}")
+        # 目标 Routine: 31 01 BE E8 (或者 B1 D1)
+        # 我们先尝试 BE E8
+        routine_id = bytes([0xBE, 0xE8])
+        routine_control_type = 0x01 # Start Routine
 
         try:
-            res = self._device_service.get_ssh_client().execute_command(cmd)
-            out = res
-            if isinstance(res, tuple):
-                 out = res[0]
+            # execute_secure_routine(routine_payload, sec_level)
+            # routine_payload 应该是完整的 RoutineControl 数据除 SID 之外的部分?
+            # 查看 DeviceService 定义，通常 payload 是 '01 FF FF ...' (Control Type + ID + Option)
+            # execute_secure_routine 会先做 27，然后发送 31 + payload
+
+            # 构造 payload: Control Type (1) + Routine ID (2) + OptionRecord (0)
+            payload = bytes([routine_control_type]) + routine_id
+
+            if log_callback: log_callback(f"尝试执行安全例程: 31 {payload.hex(' ').upper()} (Level 21)")
+
+            # 调用 DeviceService 的安全例程执行方法
+            # 注意：execute_secure_routine 返回的是 Response 完整数据 (71 ...)
+            rx = self._device_service.execute_secure_routine(payload, sec_level=0x21)
+
+            # 如果 BE E8 失败 (例如不支持)，尝试 B1 D1
+            if not rx or rx[0] == 0x7F: # 负响应
+                if log_callback: log_callback("Routine BEE8 失败，尝试 B1D1")
+                routine_id_alt = bytes([0xB1, 0xD1])
+                payload_alt = bytes([routine_control_type]) + routine_id_alt
+                rx = self._device_service.execute_secure_routine(payload_alt, sec_level=0x21)
+
+            if rx and rx[0] == 0x71: # 正响应 71 01 BE E8 ...
+                if log_callback: log_callback(f"Routine 执行成功: {rx.hex(' ').upper()}")
+                # 解析数据：去掉头部 (71 01 DID_H DID_L) 共4字节
+                if len(rx) > 4:
+                    raw_data = rx[4:]
+                    # 尝试解析，假设 DID 为 Routine ID 对应的标识
+                    # 这里传 hex string 形式的 ID 供 parse 查找
+                    did_str = routine_id.hex().upper()
+                    return self._parse_data(raw_data, did=did_str)
+                return "无返回数据"
+
+            error_msg = f"执行失败: {rx.hex(' ').upper() if rx else 'None'}"
+            if log_callback: log_callback(error_msg)
+            return error_msg
 
         except Exception as e:
-            return f"Error: {e}"
+             if log_callback: log_callback(f"证书信息读取异常: {e}")
+             return f"异常: {e}"
 
-        if out:
-            # 筛选以 /dev 开头的行
-            lines = [line for line in out.strip().splitlines() if line.strip().startswith('/dev')]
-            result = "\n".join(lines)
-            if log_callback: log_callback(f"SSH 指令成功: \n{result}")
-            return result
+    def _get_key_slot_status(self, log_callback: Optional[Callable[[str], None]] = None) -> str:
+        if log_callback: log_callback("-->读取密钥槽状态 (DID: BE2C)<--")
+        # 22 BE 2C
+        data = self._send_uds_read(0xBE, 0x2C, log_callback)
+        if data is not None:
+             return self._parse_data(data, did="BE2C")
+        return "读取失败"
 
-        if log_callback: log_callback(f"SSH 指令失败 or Empty")
-        return "Error: Empty response"
+    def _get_cms_env(self, log_callback: Optional[Callable[[str], None]] = None) -> str:
+        if log_callback: log_callback("-->读取CMS环境 (DID: BE2D/BE37)<--")
+        # 尝试 22 BE 2D
+        data = self._send_uds_read(0xBE, 0x2D, log_callback)
+        did_used = "BE2D"
 
-    def _get_version_info(self, log_callback: Optional[Callable[[str], None]] = None) -> str:
-        cmd = "get_ccu_all_version"
-        if log_callback: log_callback(f"发送 SSH 指令: {cmd}")
-        out = self._device_service.get_ssh_client().execute_command(cmd)
-        return out.strip()
+        if data is None:
+            if log_callback: log_callback("BE2D 读取失败，尝试 BE37")
+            # 尝试 22 BE 37
+            data = self._send_uds_read(0xBE, 0x37, log_callback)
+            did_used = "BE37"
 
-    # --- Network Diagnosis Helpers (Moved from Controller) ---
-
-    def execute_capture_routine(self, command: bytes, log_callback: Optional[Callable[[str], None]] = None) -> bool:
-        """执行抓包相关的 UDS 例程"""
-        if self._device_service is None:
-            if log_callback:
-                log_callback("DeviceService 未注入，无法执行抓包指令")
-            return False
-
-        # 定义内部日志函数，如果未提供 callback 则忽略
-        def _log(msg: str):
-            if log_callback:
-                log_callback(msg)
-
-        return self._device_service.execute_secure_routine(command, sec_level=0x01, log_callback=_log)
-
-    def capture_ccu_eth(self, log_callback: Optional[Callable[[str], None]] = None) -> bool:
-        """CCU ETH数据抓包"""
-        cmd = bytes.fromhex("31 01 BE E7 3E")
-        return self.execute_capture_routine(cmd, log_callback)
-
-    def capture_node_eth(self, log_callback: Optional[Callable[[str], None]] = None) -> bool:
-        """节点 ETH数据抓包"""
-        cmd = bytes.fromhex("31 01 BE E7 03")
-        return self.execute_capture_routine(cmd, log_callback)
-
-    def capture_vehicle_eth(self, log_callback: Optional[Callable[[str], None]] = None) -> bool:
-        """整车 ETH数据抓包"""
-        cmd = bytes.fromhex("31 01 BE E7 FF")
-        return self.execute_capture_routine(cmd, log_callback)
-
-    def get_tx_rx_count(self, log_callback: Optional[Callable[[str], None]] = None) -> Tuple[bool, str]:
-        """获取 TX/RX 计数"""
-        if self._device_service is None:
-            if log_callback: log_callback("服务不可用: DeviceService 未注入")
-            return False, "服务不可用"
-
-        ssh_client = self._device_service.get_ssh_client()
-        if not ssh_client or not ssh_client.is_connected():
-            if log_callback: log_callback("SSH未连接")
-            return False, "SSH未连接"
-
-        cmd = "Use -mib -all"
-        if log_callback: log_callback(f"发送 SSH 指令: {cmd}")
-        out = ssh_client.execute_command(cmd)
-
-        if log_callback:
-            if out:
-                log_callback(f"收到 SSH 响应: {out.strip()}")
-            else:
-                log_callback("SSH 指令执行无响应或失败")
-
-        # execute_command 返回 stdout (str) 或 None
-        if out is not None:
-            return True, out.strip().splitlines()[0] if out else "OK"
-        else:
-            return False, "执行失败"
-
-    def ping_ip(self, ip: str, log_callback: Optional[Callable[[str], None]] = None) -> bool:
-        """Ping 指定 IP"""
-        if self._device_service is None:
-            if log_callback: log_callback("服务不可用: DeviceService 未注入")
-            return False
-
-        ssh_client = self._device_service.get_ssh_client()
-        if not ssh_client or not ssh_client.is_connected():
-            if log_callback: log_callback("SSH未连接")
-            return False
-
-        cmd = f"ping -c 10 -i 0.1 {ip}"
-        if log_callback: log_callback(f"发送 SSH 指令: {cmd}")
-
-        out = ssh_client.execute_command(cmd)
-
-        if log_callback:
-            if out:
-                log_callback(f"收到 SSH 响应: {out.strip()}")
-            else:
-                log_callback("SSH 指令执行无响应或失败")
-
-        if not out:
-            return False
-
-        # 解析 ping 结果
-        if "100% packet loss" in out or "0 packets received" in out:
-            if log_callback: log_callback(f"Ping {ip} 结果: 不通 (丢包)")
-            return False
-
-        if "packets received" in out:
-             if log_callback: log_callback(f"Ping {ip} 结果: 通")
-             return True
-
-        return False
-
-    # -------------------- 模拟数据路径 --------------------
-    @staticmethod
-    def _build_dummy_snapshot() -> TopologySnapshot:
-        nodes = [
-            ("CCU主控制器", "🖥️", "正常", 0, 0),
-            ("CCU A-M核(RT1)", "⚡", "正常", -250, -150),
-            ("CCU A-M核(RT2)", "⚡", "离线", 250, -150),
-            ("IDC SoC", "🧠", "正常", -250, 150),
-            ("TBOX", "📡", "正常", 250, 150),
-            ("ADC SoC", "🎛️", "正常", -350, 0),
-            ("ADC MCU", "🔌", "正常", 350, 0),
-            ("激光雷达", "📡", "正常", 0, -200),
-        ]
-
-        vehicle_info = {
-            "vin": "LJ8A12345CCU67890",
-            "vehicle_mode": "测试模式",
-            "user_mode": "体验版",
-            "factory_mode": "关闭",
-            "voltage": "12.4 V",
-        }
-        service_status = {
-            "srv_id01": "在线",
-            "srv_id02": "运行中",
-            "srv_id03": "待命",
-        }
-        security_info = {
-            "cert_server": "cms.prod.internal",
-            "pki_status": "正常",
-            "cert_valid_date": "2026-05-30",
-            "key_slot_status": "Slot#2 / 正常",
-            "tls_switch": "已开启",
-            "secoc_switch": "启用",
-            "cms_env": "Production",
-        }
-        network_mgmt = {
-            "power_wake_source": "车钥匙+远程",
-            "pnc": "保持在线",
-            "rt1_net_source": "CCU A-M核",
-            "rt2_net_source": "CCU A-M核",
-            "rt1_ext_msg": "稳定",
-            "rt2_ext_msg": "低报文",
-            "a_core_net_req": "已授权",
-            "obd_can_net": "待机",
-        }
-        storage_info = {
-            "a_core_storage": "65% / 128GB",
-            "m_core_storage": "48% / 64GB",
-        }
-        return TopologySnapshot(
-            nodes=nodes,
-            vehicle_info=vehicle_info,
-            service_status=service_status,
-            security_info=security_info,
-            network_management=network_mgmt,
-            storage_info=storage_info,
-        )
+        if data is not None:
+            return self._parse_data(data, did=did_used)
+        return "读取失败"
 
     def fetch_can_lin_snapshot(self, log_callback: Optional[Callable[[str], None]] = None) -> List[Tuple[str, str, str, int, int]]:
         """
@@ -734,28 +530,4 @@ class TopologyService:
         nodes.append(("LLCE", "", "online", 0, 0))
 
         # 子节点
-        # 使用圆周布局或其他布局，这里暂时由 TopologyWidget 自动布局
-        # 此处只提供数据列表
-
-        # 按照用户提供的列表顺序或者逻辑顺序添加
-        ordered_nodes = [
-             "CCU_CANFD1", "CCU_CANFD2", "CCU_CANFD3", "CCU_CANFD4", "CCU_CANFD5", "CCU_CANFD6",
-             "CCU_CANFD7", "CCU_CANFD8", "CCU_CANFD9", "CCU_CANFD10", "CCU_CANFD11", "CCU_CANFD12", "CCU_CANFD13",
-             "Rollback1", "Rollback2", "OBD_CAN", "LIN1", "LIN2"
-        ]
-
-        for name in ordered_nodes:
-            status = node_status.get(name, "online")
-            nodes.append((name, "", status, 0, 0))
-
-        return nodes
-
-    def _build_dummy_can_lin_snapshot(self) -> List[Tuple[str, str, str, int, int]]:
-        """模拟 CAN/LIN 拓扑数据"""
-        nodes = [("LLCE", "", "online", 0, 0)]
-        for i in range(1, 14):
-            nodes.append((f"CANFD{i}", "", "online", 0, 0))
-        nodes.append(("LIN1", "", "online", 0, 0))
-        nodes.append(("LIN2", "", "online", 0, 0))
-        return nodes
-
+        # 使用圆周布局或其他布局，

@@ -24,9 +24,31 @@ def get_app_data_path():
 
     return base_path
 
+
+def get_device_config_path():
+    """
+    Get the directory for device configuration files like devices.json and common_config_settings.json.
+    Path: ...\OneBoxForGAC\DeviceConfig
+    """
+    path = os.path.join(get_app_data_path(), "DeviceConfig")
+    if not os.path.exists(path):
+        os.makedirs(path, exist_ok=True)
+    return path
+
+
+def get_app_config_path():
+    """
+    Get the directory for application configuration files like license.json.
+    Path: ...\OneBoxForGAC\APP
+    """
+    path = os.path.join(get_app_data_path(), "APP")
+    if not os.path.exists(path):
+        os.makedirs(path, exist_ok=True)
+    return path
+
+
 def get_logs_path():
     path = os.path.join(get_app_data_path(), "logs")
     if not os.path.exists(path):
         os.makedirs(path, exist_ok=True)
     return path
-

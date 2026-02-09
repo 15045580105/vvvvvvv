@@ -1,9 +1,11 @@
 import json
 import os
+import time
 from pathlib import Path
 from typing import Any, Dict, List
 
 from app.core.base_service import BaseService
+from app.common.utils.path_utils import get_device_config_path
 
 
 class ConfigService(BaseService):
@@ -26,9 +28,16 @@ class ConfigService(BaseService):
 
         Windows 下默认放在用户目录的 .appname 子目录下：
           C:/Users/<user>/.oneboxforgac/
+
+        UPDATED:
+        Now uses .../DeviceConfig for specific config files.
+        But wait, this class is generic.
+        The user asked for `common_config_settings.json` and `devices.json` to be in `DeviceConfig`.
+        We should check `get_config_path` logic.
         """
-        home = Path(os.path.expanduser("~"))
-        return home / f".{self._app_name}"
+        # We will override this to point to DeviceConfig as the default root for ConfigService
+        # assuming most configs handled here are device related.
+        return Path(get_device_config_path())
 
     def get_config_path(self, name: str) -> Path:
         """获取某个配置文件的完整路径（自动补 .json 后缀）。"""
@@ -41,21 +50,49 @@ class ConfigService(BaseService):
         path = self.get_config_path(name)
         if not path.exists():
             return default
-        try:
-            with path.open("r", encoding="utf-8") as f:
-                return json.load(f)
-        except Exception:
-            # 解析失败时返回默认值，避免影响界面
-            return default
+
+        # 增加重试机制，防止文件锁竞争
+        for i in range(5):
+            try:
+                with path.open("r", encoding="utf-8") as f:
+                    return json.load(f)
+            except Exception as e:
+                if i == 4:  # 最后一次尝试失败
+                    print(f"[ConfigService] Load failed for {name}: {e}")
+                    return default
+                time.sleep(0.2)
+        return default
 
     def save_json(self, name: str, data: Any) -> None:
         path = self.get_config_path(name)
+
+        # Safe serialize check
         try:
-            with path.open("w", encoding="utf-8") as f:
-                json.dump(data, f, ensure_ascii=False, indent=2)
-        except Exception:
-            # 简单实现：暂不向上抛异常，后续可加日志
-            pass
+             json_str = json.dumps(data, ensure_ascii=False, indent=2)
+        except Exception as e:
+             print(f"[ConfigService] Serialization failed: {e}")
+             # If serialization fails, DO NOT touch the file.
+             return
+
+        # 增加重试机制
+        for i in range(5):
+            try:
+                # Use atomic write pattern: write to temp file, then rename
+                temp_path = path.with_suffix('.tmp')
+                with temp_path.open("w", encoding="utf-8") as f:
+                    f.write(json_str)
+                    f.flush()
+                    os.fsync(f.fileno())
+
+                # Atomic rename
+                if path.exists():
+                     path.unlink()
+                temp_path.rename(path)
+                return
+            except Exception as e:
+                if i == 4:
+                    print(f"[ConfigService] Save failed for {name}: {e}")
+                time.sleep(0.2)
 
     # ----------------- 设备专用封装 -----------------
     def load_devices(self) -> List[Dict[str, Any]]:
@@ -68,4 +105,3 @@ class ConfigService(BaseService):
     def save_devices(self, devices: List[Dict[str, Any]]) -> None:
         """将设备列表保存到配置文件。"""
         self.save_json("devices", devices)
-

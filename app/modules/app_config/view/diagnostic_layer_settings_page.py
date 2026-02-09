@@ -282,14 +282,14 @@ class DiagnosticLayerSettingsPage(QWidget):
     def save_settings(self):
         """保存设置"""
         settings = {
-            "s3_client_time": self.s3_client_edit.text(),
-            "s3_server_time": self.s3_server_edit.text(),
-            "dll_path": self.dll_path_edit.text(),
-            "physical_addr": self.physical_addr_edit.text(),
-            "functional_addr": self.functional_addr_edit.text(),
-            "ecu_config_path": self.ecu_file_edit.text(),
-            "target_ecu_name": self.target_ecu_combo.currentText(),
-            "diag_addr_mode": self.addr_group.checkedId()
+            "s3_client_time": str(self.s3_client_edit.text()),
+            "s3_server_time": str(self.s3_server_edit.text()),
+            "dll_path": str(self.dll_path_edit.text()),
+            "physical_addr": str(self.physical_addr_edit.text()),
+            "functional_addr": str(self.functional_addr_edit.text()),
+            "ecu_config_path": str(self.ecu_file_edit.text()),
+            "target_ecu_name": str(self.target_ecu_combo.currentText()),
+            "diag_addr_mode": int(self.addr_group.checkedId())
         }
         self.save_signal.emit(settings)
 

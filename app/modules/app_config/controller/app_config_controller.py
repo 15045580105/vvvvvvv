@@ -33,6 +33,9 @@ class AppConfigController(BaseController):
         self.view.doip_page.save_signal.connect(self.save_doip_settings)
         self.view.doip_page.reset_signal.connect(self.reset_doip_settings)
 
+        self.view.someip_page.save_signal.connect(self.save_someip_settings)
+        self.view.someip_page.reset_signal.connect(self.reset_someip_settings)
+
         self.view.diag_layer_page.save_signal.connect(self.save_diag_layer_settings)
         self.view.diag_layer_page.reset_signal.connect(self.reset_diag_layer_settings)
         self.view.diag_layer_page.ecu_file_changed_signal.connect(self.on_ecu_file_changed)
@@ -42,6 +45,12 @@ class AppConfigController(BaseController):
 
         self.view.app_log_page.save_signal.connect(self.save_app_log_settings)
         self.view.app_log_page.reset_signal.connect(self.reset_app_log_settings)
+
+        # Connect batch save signals
+        self.view.save_started.connect(self.start_batch_save)
+        self.view.save_finished.connect(self.finish_batch_save)
+
+        self.view.window_shown.connect(self.on_model_changed)  # Refresh UI on show
 
         # Register status callback
         self.dpt_status_signal.connect(self.handle_dpt_status)
@@ -62,7 +71,16 @@ class AppConfigController(BaseController):
 
     def on_model_changed(self):
         """Update view when model changes"""
+        # Ensure config service is loaded before updating UI
+        self._ensure_config_service()
+
+        # Force reload settings from disk to ensure data consistency
+        # This fixes the issue where settings appear lost if they weren't synced to disk properly
+        if self.model._config_service:
+            self.model._config_service._settings = self.model._config_service._load_settings()
+
         self.view.doip_page.update_ui(self.model.doip_settings)
+        self.view.someip_page.load_settings(self.model.someip_settings)
 
         # Load ECU config if path exists
         ecu_config_path = self.model.diag_layer_settings.get("ecu_config_path")
@@ -92,6 +110,12 @@ class AppConfigController(BaseController):
     def reset_doip_settings(self):
         self.model.reset_doip_defaults()
 
+    def save_someip_settings(self, settings):
+        self.model.save_someip_settings(settings)
+
+    def reset_someip_settings(self):
+        self.model.reset_someip_defaults()
+
     def save_diag_layer_settings(self, settings):
         self.model.save_diag_layer_settings(settings)
 
@@ -110,13 +134,49 @@ class AppConfigController(BaseController):
     def reset_app_log_settings(self):
         self.model.reset_app_log_settings()
 
+    def start_batch_save(self):
+        """Handle start of batch save process"""
+        # Enable batch save to ensure atomic file write
+        self._ensure_config_service()
+        if self.model._config_service:
+            self.model._config_service.suspend_save()
+
+    def finish_batch_save(self):
+        """Handle end of batch save process"""
+        self._ensure_config_service()
+        if not self.model._config_service:
+            return
+
+        # Persist only once, using the aggregated settings from the view
+        pending = getattr(self.view, "_pending_all_settings", None)
+        if isinstance(pending, dict) and pending:
+            try:
+                self.model._config_service.update_all_settings(pending)
+                # Reload in-memory settings so other parts of the app can immediately use them
+                self.model._config_service.reload()
+            except Exception as e:
+                print(f"[AppConfigController] Failed to persist settings: {e}")
+        else:
+            # Fallback: just ensure current in-memory settings are flushed
+            self.model._config_service.resume_save()
+
+        # clear
+        if hasattr(self.view, "_pending_all_settings"):
+            self.view._pending_all_settings = None
+
+    def _ensure_config_service(self):
+        """Helper to ensure config service is available"""
+        if not self.model._config_service:
+            from app.services.configuration.config_service import AppConfigurationService
+            self.model._config_service = di_container.resolve(AppConfigurationService)
+
     def on_ecu_file_changed(self, file_path):
         if file_path and os.path.exists(file_path):
             self.load_ecu_config(file_path)
-            # Save path to settings
-            settings = self.model.diag_layer_settings
-            settings["ecu_config_path"] = file_path
-            self.model.save_diag_layer_settings(settings)
+            # DO NOT save here.
+            # If we save here, we overwrite the current model settings with the current state of the model.
+            # But the user might have changed other fields (like DLL path) in the UI which haven't been saved to model yet.
+            # When the user clicks OK, `save_settings` will be called and will include the ECU path (since the view updates it).
 
     def load_ecu_config(self, file_path):
         threading.Thread(target=self._load_ecu_config_worker, args=(file_path,), daemon=True).start()

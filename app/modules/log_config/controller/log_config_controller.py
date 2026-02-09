@@ -1,9 +1,11 @@
-from PyQt5 import QtCore
+from PyQt5 import QtCore, QtWidgets
+from PyQt5.QtWidgets import QInputDialog
 
+from app.common.utils.worker import Worker  # 引入 Worker
 from app.core.base_controller import BaseController
 from app.core.dependency_injection import di_container
 from app.modules.log_config.model.log_config_model import LogConfigModel
-from app.modules.log_config.view.log_config_view import LogConfigView
+from app.modules.log_config.view.log_config_view import LogConfigView, LogConfigEditDialog
 from app.services.configuration.log_config_service import LogConfigService
 from app.services.device_manage.device_service import DeviceService
 
@@ -27,7 +29,9 @@ class LogConfigController(BaseController):
         self._workers = []
 
         self._bind_signals()
-        self.on_model_changed()
+
+        # 进入界面后自动触发一次全量刷新，避免下拉框为空
+        QtCore.QTimer.singleShot(100, self._on_app_refresh)
 
     def _bind_signals(self):
         # ECU Config
@@ -43,9 +47,7 @@ class LogConfigController(BaseController):
         self.view.page_size_combo.currentTextChanged.connect(self._on_page_size_changed)
 
         # App Config - Log Operations
-        self.view.export_logs_btn.clicked.connect(self._on_export_logs)
-        self.view.delete_selected_btn.clicked.connect(self._on_delete_selected)
-        self.view.refresh_logs_btn.clicked.connect(self._on_refresh_logs)
+        self.view.batch_modify_btn.clicked.connect(self._on_batch_modify_clicked)
 
         # Restore Config
         self.view.restore_btn.clicked.connect(self._on_restore_config)
@@ -79,11 +81,14 @@ class LogConfigController(BaseController):
 
         # 检查设备是否连接
         if not self.log_config_service._device_service or not self.log_config_service._device_service.get_doip_client():
-             self.view.show_message("设备未连接 (DoIP)，无法执行配置", "error")
+             # 尝试恢复 Toast 提示
+             from app.common.ui.modern_widgets import MessageToast
+             MessageToast(self.view).show_toast("设备未连接 (DoIP)，无法执行配置", 2)
+             # self.view.show_message("设备未连接 (DoIP)，无法执行配置", "error")
              return
 
         # 使用 Worker 在后台线程执行，避免阻塞 UI
-        from app.common.utils.worker import Worker
+        # from app.common.utils.worker import Worker # 已移至顶部导入
         def task(log_callback):
             return self.log_config_service.set_ecu_log_level(selected_ecus, log_level, log_callback)
 
@@ -104,73 +109,185 @@ class LogConfigController(BaseController):
         worker.finished.connect(lambda: self._workers.remove(worker) if worker in self._workers else None)
 
     def _on_app_search(self):
+        # 0. 检查是否已导入配置文件
+        if not self.log_config_service._map_file_path:
+             from app.common.ui.modern_widgets import MessageToast
+             MessageToast(self.view).show_toast("请先导入 process_log_config_map.json 配置文件", 1) # 1=warning/error style
+             return
+
+        # 1. 获取 UI 参数（必须在主线程完成）
         ecu_id = self.view.app_filter_ecu_combo.currentText()
         app_id = self.view.app_filter_appid_combo.currentText()
         log_level = self.view.app_filter_loglevel_combo.currentText()
 
-        apps = self.log_config_service.get_apps(ecu_id, app_id, log_level)
-        # Update model
-        self.model.apps = [
-            (app["app_id"], app["ecu_id"], app["log_level"], app["file_no"], app["file_size"], app["total_size"])
-            for app in apps
-        ]
-        self.on_model_changed()
+        # 将 "全部" 转换为空字符串，以便 Service 层识别为不筛选
+        if ecu_id == "全部": ecu_id = ""
+        if app_id == "全部": app_id = ""
+        if log_level == "全部": log_level = ""
+
+        # 在 Controller 里增加一个标志位，防止重复点击，而不是禁用按钮
+        if getattr(self, '_is_searching', False):
+             self.view.show_message("正在执行搜索中，请稍候...", "info")
+             return
+        self._is_searching = True
+
+        self.view.append_log("正在获取配置...")
+
+        # 2. 定义后台任务
+        def search_task(log_callback):
+            # log_callback 可以用来向界面打印进度日志
+            return self.log_config_service.get_apps(ecu_id, app_id, log_level)
+
+        # 3. 定义完成回调
+        def on_search_finished(result):
+            # 任务结束，释放标志位
+            self._is_searching = False
+
+            # 按钮之前被禁用了吗？没有，所以不需要恢复。
+            # self.view.app_search_btn.setEnabled(True)
+            # self.view.app_refresh_btn.setEnabled(True)
+
+            if result is None:
+                self.view.show_message("获取配置失败，请检查连接", "error")
+                return
+
+            all_apps = result
+            # 将数据交给 Model 处理
+            self.model.set_data(all_apps)
+
+            # 如果是全量搜索（或者下拉框为空），则更新筛选项
+            is_full_search = (not ecu_id and not app_id and not log_level)
+            combo_is_empty = (self.view.app_filter_ecu_combo.count() <= 1)
+
+            if (is_full_search or combo_is_empty):
+                # 无论是否有数据，都尝试更新下拉框（如果没有数据则清空）
+                self._update_filter_options(all_apps)
+
+            # 刷新 UI 状态
+            self.on_model_changed()
+            self.view.show_message(f"加载完成，共 {len(all_apps)} 个应用", "info")
+
+        # 4. 启动 Worker
+        worker = Worker(search_task)
+        worker.result_signal.connect(on_search_finished)
+        worker.start()
+
+        # 保持引用以防止 GC (垃圾回收)
+        self._workers.append(worker)
+        worker.finished.connect(lambda: self._workers.remove(worker) if worker in self._workers else None)
+
+    def _update_filter_options(self, apps):
+        """根据当前应用列表更新筛选下拉框的选项"""
+        # 提取并去重
+        ecu_ids = sorted(list(set(app["ecu_id"] for app in apps if app.get("ecu_id"))))
+        app_ids = sorted(list(set(app["app_id"] for app in apps if app.get("app_id"))))
+
+        # 更新 View
+        self.view.update_filter_combos(ecu_ids, app_ids)
 
     def _on_app_refresh(self):
+        # 刷新时清空筛选条件，进行全量查询
+        # self.view.app_filter_ecu_combo.setCurrentIndex(0)
+        # self.view.app_filter_appid_combo.setCurrentIndex(0)
+        # self.view.app_filter_loglevel_combo.setCurrentIndex(0)
+        # 刷新时不用清空筛选条件，直接用现有条件查询
         self._on_app_search()
 
     def _on_prev_page(self):
-        print("Previous Page")
-        # TODO: Update pagination
+        if self.model.prev_page():
+            self.on_model_changed()
 
     def _on_next_page(self):
-        print("Next Page")
-        # TODO: Update pagination
+        if self.model.next_page():
+            self.on_model_changed()
 
     def _on_page_size_changed(self, text):
-        print(f"Page Size Changed: {text}")
-        # TODO: Update pagination size
+        try:
+            import re
+            match = re.search(r'\d+', text)
+            size = int(match.group()) if match else 10
+            self.model.set_page_size(size)
+            self.on_model_changed()
+        except:
+             pass
 
-    def _on_export_logs(self):
-        selected_rows = []
-        for i in range(self.view.app_table.rowCount()):
-            item = self.view.app_table.item(i, 0)
-            if item.checkState() == QtCore.Qt.CheckState.Checked:
-                selected_rows.append(i)
 
-        if not selected_rows:
-            self.view.show_message("请先选择要导出的日志", "warning")
+    def _on_batch_modify_clicked(self):
+        """批量修改选中的 CCUA APP"""
+        # 1. 获取选中项
+        selected_apps = self.view.get_selected_apps()
+        if not selected_apps:
+            self.view.show_message("请至少选择一个APP", "warning")
             return
 
-        app_ids = [self.model.apps[i][0] for i in selected_rows]
-        # TODO: Open file dialog to get destination
-        destination = "logs_export"
+        # 2. 校验 (仅允许 CCUA)
+        ccua_apps_ids = []
+        for app in selected_apps:
+            if app['ecu_id'] != 'CCUA':
+                self.view.show_message("当前选区包含非CCUA的应用。请取消勾选它们后再试。", "warning")
+                return
+            ccua_apps_ids.append(app['app_id'])
 
-        success = self.log_config_service.export_logs(app_ids, destination)
-        if success:
-             self.view.show_message("日志导出成功", "success")
-
-    def _on_delete_selected(self):
-        selected_rows = []
-        for i in range(self.view.app_table.rowCount()):
-            item = self.view.app_table.item(i, 0)
-            if item.checkState() == QtCore.Qt.CheckState.Checked:
-                selected_rows.append(i)
-
-        if not selected_rows:
-            self.view.show_message("请先选择要删除的日志", "warning")
+        # 3. 询问目标日志等级
+        # 弹窗询问
+        levels = ["OFF", "FATAL", "ERROR", "WARN", "INFO", "DEBUG", "VERBOSE"]
+        target_level, ok = QInputDialog.getItem(self.view, "批量修改配置",
+                                                f"即将修改 {len(ccua_apps_ids)} 个应用的日志等级\n请选择目标等级:",
+                                                levels, 4, False) # Default to INFO index 4
+        if not ok:
             return
 
-        app_ids = [self.model.apps[i][0] for i in selected_rows]
+        # 4. 执行 Worker: Batch Update
+        self.view.show_message(f"开始批量修改，目标等级: {target_level}...", "info")
+        self.view.append_log(f"用户发起批量修改: {ccua_apps_ids} -> {target_level}")
 
-        if self.view.show_confirm(f"确定要删除选中的 {len(app_ids)} 个日志吗？"):
-            success = self.log_config_service.delete_logs(app_ids)
+        def update_task(log_callback):
+            return self.log_config_service.batch_update_ccua_apps(ccua_apps_ids, target_level, log_callback)
+
+        def on_update_finished(success):
             if success:
-                self.view.show_message("日志删除成功", "success")
-                self._on_app_refresh()
+                self.view.show_message("批量配置修改完成！", "success")
 
-    def _on_refresh_logs(self):
-        self._on_app_refresh()
+                # 5. 询问重启 - 修改为使用 self.view.show_confirm 统一风格
+                msg = "配置已更新并落盘。是否立即重启 CCU 以使配置生效？"
+                if self.view.show_confirm(msg):
+                   self._do_restart_ccu()
+                else:
+                    self.view.append_log("用户选择暂不重启。")
+            else:
+                self.view.show_message("批量修改过程中出现错误，请检查日志", "error")
+
+        worker = Worker(update_task)
+        worker.log_signal.connect(self.view.append_log)
+        worker.result_signal.connect(on_update_finished)
+        worker.start()
+        self._workers.append(worker)
+        worker.finished.connect(lambda: self._workers.remove(worker) if worker in self._workers else None)
+
+    def _do_restart_ccu(self):
+        """执行 CCU 重启"""
+        self.view.append_log("正在请求重启 CCU...")
+
+        def restart_task(log_callback):
+            return self.log_config_service.restart_ccu(ecu="CCUA", log_callback=log_callback)
+
+        def on_restart_finished(success):
+            if success:
+                self.view.show_message("重启指令已发送", "success")
+            else:
+                self.view.show_message("重启失败", "error")
+
+        worker = Worker(restart_task)
+        # restart_ccu 内部用 print，这里可能需要 service 改成支持 log_callback，或者这里不需要 worker log_signal
+        # Service 代码现在 print，尚未全改成 log callback，不过 worker 会捕获 stdout 吗？
+        # Worker 实现通常不捕获 stdout。
+        # Service 里的 restart_ccu目前只是 print。
+        # 我们稍微修改一下 Service 的 restart_ccu 以支持 log_callback 吧？不改也没事，反正 UI 会提示。
+        worker.result_signal.connect(on_restart_finished)
+        worker.start()
+        self._workers.append(worker)
+        worker.finished.connect(lambda: self._workers.remove(worker) if worker in self._workers else None)
+
 
     def _on_restore_config(self):
         restore_ccua = self.view.restore_ccua.isChecked()
@@ -270,13 +387,82 @@ class LogConfigController(BaseController):
         worker.finished.connect(lambda: self._workers.remove(worker) if worker in self._workers else None)
 
     def _on_modify_requested(self, row_index):
+        if row_index < 0 or row_index >= len(self.model.apps):
+            return
+
         app_info = self.model.apps[row_index]
-        app_id = app_info[0]
-        print(f"Modify requested for row {row_index}, App: {app_id}")
-        # TODO: Show dialog to modify app config
+        ecu_id = app_info[1]
+
+        # 限制：仅支持修改 CCUA 的应用日志等级
+        if ecu_id != "CCUA":
+            # 使用 Toast 而不是弹窗，体验更好
+            from app.common.ui.modern_widgets import MessageToast
+            MessageToast(self.view).show_toast("目前只支持修改 CCUA 的应用日志等级", 1)
+            # self.view.show_message("目前只支持修改 CCUA 的应用日志等级", "warning")
+            return
+
+        # 使用自定义的 LogConfigEditDialog 替代简单的 QInputDialog
+        dialog = LogConfigEditDialog(self.view, app_info)
+        if dialog.exec_() == QtWidgets.QDialog.Accepted:
+            new_level = dialog.get_new_level()
+            app_id = app_info[0] # Re-extract just in case
+            if new_level and new_level != app_info[2]: # Only update if changed
+                self._handle_ccua_modification(app_id, new_level)
+            else:
+                self.view.append_log(f"{app_id}日志等级未变更")
+
+    def _handle_ccua_modification(self, app_id, new_level):
+        """处理 CCUA 专用的修改流程：Worker异步写入 -> 重启确认"""
+
+        # 2. 定义后台任务
+        def task(log_callback):
+            return self.log_config_service.update_ccua_app_config(app_id, new_level, log_callback)
+
+        worker = Worker(task)
+        # 将进度日志输出到界面
+        worker.log_signal.connect(self.view.append_log)
+
+        # 3. 定义完成回调
+        def on_finished(success):
+            if success:
+                # 更新 Model 显示
+                self.model.update_app_level(app_id, "CCUA", new_level)
+                self.on_model_changed()
+
+                # 刷新 UI，确保用户先看到表格变化
+                QtWidgets.QApplication.processEvents()
+
+                # 弹出重启询问
+                msg = f"应用 {app_id} 的日志等级已修改为 {new_level}。\n\n注意：该修改需要重启 CCU 才能生效。\n是否立即重启 CCU？"
+                if self.view.show_confirm(msg):
+                    # 执行重启
+                    self.view.show_message("正在重启 CCUA，请稍候...", "warning")
+                    self.log_config_service.restart_ccu("CCUA")
+                else:
+                    self.view.show_message("配置已保存，请择机重启设备以生效", "success")
+            else:
+                self.view.show_message("修改配置失败，请查看操作日志", "error")
+
+        worker.result_signal.connect(on_finished)
+        worker.start()
+
+        self._workers.append(worker)
+        worker.finished.connect(lambda: self._workers.remove(worker) if worker in self._workers else None)
 
     def on_model_changed(self):
-        self.view.populate(self.model.apps)
+        # 1. 更新表格内容
+        start_index = (self.model.current_page - 1) * self.model.page_size + 1
+        self.view.populate(self.model.apps, start_index=start_index)
+
+        # 2. 更新分页 UI 状态
+        current = self.model.current_page
+        total = self.model.total_pages
+
+        self.view.prev_page_btn.setEnabled(current > 1)
+        self.view.next_page_btn.setEnabled(current < total)
+
+        if hasattr(self.view, 'page_info_label'):
+             self.view.page_info_label.setText(f"第 {current} / {total} 页")
 
     def get_view(self):
         return self.view

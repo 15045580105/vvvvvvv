@@ -78,7 +78,6 @@ class SomeIPClient:
              raise RuntimeError("Scapy library is missing.")
 
         self.local_ip = local_ip
-
         self.local_port = local_port
         self.client_id = client_id
         self.multicast_ip = multicast_ip
@@ -696,23 +695,20 @@ class SomeIPClient:
         # 2. 定义业务回调
         def on_response(pkt):
             # 过滤：确保是针对我们请求的 Service/Method
-            # 严格模式：只接受 Response (0x80) 或 Error (0x81)
-            # 避免把广播的 Notification 当作回复
+            # 放宽检查：兼容 Response (0x80), Error (0x81) 以及 Notification (0x02) 等所有类型
             if pkt.srv_id == service_id and pkt.sub_id == method_id:
-                if pkt.msg_type in [0x80, 0x81]:
-                    if hasattr(pkt.payload, 'load'):
-                        result_container['payload'] = pkt.payload.load
-                    else:
-                        result_container['payload'] = b''
+                # 兼容性修复：使用 bytes(pkt.payload) 获取内容
+                result_container['payload'] = bytes(pkt.payload)
 
-                    logger.info(f"[AutoReq] 收到回复 (Type=0x{pkt.msg_type:02X})")
-                    try:
-                        pkt.show()
-                        logger.info(f"Payload (Hex): {result_container['payload'].hex()}")
-                    except:
-                        pass
+                logger.info(f"[AutoReq] 收到回复 (Type=0x{pkt.msg_type:02X})")
+                try:
+                    # pkg.show() 可能产生大量日志，仅在调试时开启或简略打印
+                    # pkt.show()
+                    logger.info(f"Payload (Hex): {result_container['payload'].hex()}")
+                except:
+                    pass
 
-                    response_event.set()
+                response_event.set()
 
         # 注册回调
         self.register_sd_callback(on_sd_offer)
@@ -822,8 +818,8 @@ class TestRunner:
         VLAN_ID = 4  # 设置 VLAN ID
 
         # 必须确保这两个 ID 和控制器数据库(ARXML)一致
-        SERVICE_ID = 0x700D
-        METHOD_ID = 0x0001
+        SERVICE_ID = 0x1055
+        METHOD_ID = 0x9001
 
         # 盲测时的默认端口 (通常是 30500, 30501, 30491 等)
         BLIND_PORT = 30490
@@ -876,6 +872,8 @@ class TestRunner:
             # 兼容性修复：使用 bytes(pkt.payload) 获取内容，即使它不是 Raw 层
             payload = bytes(pkt.payload)
             print(f"Payload (Hex): {payload.hex()}")
+            self.received.set()
+
         client.register_callback(SERVICE_ID, METHOD_ID, on_msg)
 
         try:
