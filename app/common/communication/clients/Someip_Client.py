@@ -36,6 +36,7 @@ try:
         SDOption_IP4_EndPoint
     )
     SCAPY_AVAILABLE = True
+
 except ImportError:
     SCAPY_AVAILABLE = False
     # Dummy defines to prevent linter errors in standard Python envs
@@ -67,7 +68,7 @@ class SomeIPClient:
     def __init__(self,
                  local_ip: str,
                  local_port: int = 30813,
-                 client_id: int = 30813,
+                 client_id: int = 30800,
                  multicast_ip: str = DEFAULT_SD_MULTICAST_IP,
                  multicast_port: int = DEFAULT_SD_MULTICAST_PORT,
                  vlan_id: int = None,
@@ -651,31 +652,120 @@ class SomeIPClient:
         except Exception as e:
             logger.error(f"发送 FindService 失败: {e}")
 
+    def subscribe_eventgroup(self, service_id, eventgroup_id, instance_id=0xFFFF, major_version=0xFF, minor_version=0xFFFFFFFF, ttl=3, target_ip=None, target_port=None):
+        """发送订阅 EventGroup 请求"""
+        # 1. 构建 Option: 告诉服务端 事件发到我的 UDP 端口
+        option = SDOption_IP4_EndPoint(
+            type=0x04,
+            addr=self.local_ip,
+            l4_proto=0x11, # UDP
+            port=self.local_port
+        )
+
+        safe_major = int(major_version) if major_version is not None else 0xFF
+
+        # 2. 构建 Entry (type=0x06 SubscribeEventGroup)
+        # 标准 SD 订阅，不使用扩展的 minor_version 字段
+        entry = SDEntry_EventGroup(
+            type=0x06,
+            srv_id=service_id,
+            inst_id=instance_id,
+            major_ver=safe_major,
+            ttl=ttl,
+            cnt=0,
+            eventgroup_id=eventgroup_id
+        )
+
+        # 3. 手动关联 index (Entry -> Option)
+        # Entry 是第0个，Option 是第0个
+        # Scapy 的 SDEntry_EventGroup 可能不接受构造函数传参 index_1，因此手动赋值
+        entry.index_1 = 0
+        entry.index_1st_opts = 0  # 兼容旧版字段名
+        entry.n_opt_1 = 1
+        entry.number_1st_opts = 1
+
+        sd = SOMEIP_SD(flags=0x80, entry_array=[entry], option_array=[option])
+
+        pkt = SOMEIP(srv_id=0xFFFF, sub_id=0x8100, client_id=self.client_id,
+                     session_id=self._get_next_session_id(), msg_type=0x02) / sd
+
+        # 发送逻辑 (优先使用 target_ip 单播，否则组播)
+        dest_ip = target_ip if target_ip else self.multicast_ip
+        # 订阅报文应该发往 SD 端口 (通常 30490)，但有些实现可能在其他端口监听 SD
+        # 这里的 target_port 参数如果传入，应该是服务发现 Offer 中声明的端口，或者是标准的 SD 端口
+        # 注意: SOME/IP SD 协议通常规定 SD 消息交互都在 30490 端口，除非配置了非标准 SD 端口。
+        # 如果用户意图是发给服务的通信端口 (e.g. 30506)，那通常是不对的，除非服务端在 30506 同时也监听 SD。
+        # 但既然用户明确要求使用发现的端口，这里我们支持传入。
+        # 默认回退到组播端口
+        dest_port = target_port if target_port else self.multicast_port
+
+        if self.vlan_id is not None and self.iface:
+            try:
+                if dest_ip == self.multicast_ip:
+                     dst_mac = "01:00:5e:47:00:02"
+                else:
+                     dst_mac = self._resolve_mac(dest_ip)
+                     if not dst_mac: dst_mac = "ff:ff:ff:ff:ff:ff"
+
+                full_pkt = Ether(src=self.mac, dst=dst_mac) / \
+                           Dot1Q(vlan=self.vlan_id) / \
+                           IP(src=self.local_ip, dst=dest_ip) / \
+                           UDP(sport=self.local_port, dport=dest_port) / \
+                           pkt
+                sendp(full_pkt, iface=self.iface, verbose=False)
+                logger.info(f"发送 VLAN {self.vlan_id} SubscribeEventGroup(ID={eventgroup_id}) -> {dest_ip}:{dest_port}")
+                return
+            except Exception as e:
+                logger.error(f"VLAN 发送订阅失败: {e}")
+
+        try:
+            self.udp_socket.sendto(bytes(pkt), (dest_ip, dest_port))
+            logger.info(f"发送 SubscribeEventGroup(ID={eventgroup_id}) -> {dest_ip}:{dest_port}")
+        except Exception as e:
+             logger.error(f"发送订阅失败: {e}")
+
     def request_with_discovery(self, service_id: int, method_id: int, payload: bytes = b'',
-                               target_ip: str = None, target_port: int = 30500, timeout: float = 3.0) -> Optional[bytes]:
+                               target_ip: str = None, target_port: int = 30500, timeout: float = 3.0,
+                               event_group_id: int = 0x0001) -> Optional[bytes]:
         """
-        自动服务发现并发送请求 (集成 UDP/TCP 自动切换与重试)
-        :param service_id: 服务 ID
-        :param method_id: 方法 ID
-        :param payload: 请求负载
-        :param target_ip: (可选) 指定目标 IP，用于单播发现或盲测
-        :param target_port: (可选) 指定目标端口
-        :param timeout: 等待回复的超时时间
-        :return: 收到回复的 Payload 或 None
+        自动根据 Method ID 判断是一个 RPC 请求还是 Event 订阅。
+        - Method ID < 0x8000: 视为 Method，执行 Request/Response 流程。
+        - Method ID >= 0x8000: 视为 Event，执行 Subscribe/Notification 流程。
         """
-        found_event = threading.Event()
-        response_event = threading.Event()
+        # 0. 自动判断模式
+        is_event = (method_id & 0x8000) != 0
+        mode_str = "Event Subscription" if is_event else "RPC Request"
+        logger.info(f"[AutoFlow] 检测到 ID=0x{method_id:04X} -> 模式: {mode_str}")
+
+        found_offer_event = threading.Event()  # 收到 Offer
+        sub_ack_event = threading.Event()      # 收到 Subscribe Ack
+        response_event = threading.Event()     # 收到 RPC Response 或 Event Notification
+
         result_container: Dict[str, Optional[bytes]] = {'payload': None}
 
-        # 存储发现的所有端点
         discovered_eps = {'tcp': [], 'udp': []}
+        discovered_info = {'instance_id': 0xFFFF, 'major_version': 0xFF, 'minor_version': 0}
 
-        # 1. 定义 SD 回调
-        def on_sd_offer(entries, options):
+        # 1. 定义 SD 回调 (通用)
+        def on_sd_packet(entries, options):
             for entry in entries:
-                if entry.type == 0x01 and entry.srv_id == service_id:  # OfferService
-                    tcp_list, udp_list = self._extract_endpoints(entry, options)
+                # Type 0x01: Offer Service
+                if entry.type == 0x01 and entry.srv_id == service_id:
+                    # 捕获服务实例和版本信息
+                    if hasattr(entry, 'inst_id'):
+                        discovered_info['instance_id'] = entry.inst_id
+                    if hasattr(entry, 'major_ver'):
+                        # 用户指出 version 可能为浮点型 (e.g. 1.2)，不要强制转换 int 导致精度丧失
+                        # 如果底层库支持 (或这就是用户期望的)，直接使用原始值
+                        discovered_info['major_version'] = entry.major_ver
+                    if hasattr(entry, 'minor_ver'):
+                        discovered_info['minor_version'] = entry.minor_ver
 
+                    # Log observed version
+                    v_str = f"{discovered_info['major_version']} (Type: {type(discovered_info['major_version']).__name__})"
+                    logger.debug(f"[AutoFlow] 发现服务版本: {v_str}")
+
+                    tcp_list, udp_list = self._extract_endpoints(entry, options)
                     found_new = False
                     if tcp_list:
                         for ep in tcp_list:
@@ -687,10 +777,30 @@ class SomeIPClient:
                             if ep not in discovered_eps['udp']:
                                 discovered_eps['udp'].append(ep)
                                 found_new = True
-
                     if found_new:
-                        logger.info(f"[AutoReq] 收到 Offer: UDP={udp_list} TCP={tcp_list}")
-                        found_event.set()
+                        logger.info(f"[AutoFlow] 收到 Offer: UDP={udp_list} TCP={tcp_list}")
+                        found_offer_event.set()
+
+                # Type 0x07: SubscribeEventGroupAck
+                # 增加诊断日志：只要是 Type 0x07 就打印，方便排查问题
+                if is_event and entry.type == 0x07:
+                    current_srv_id = entry.srv_id
+                    # 尝试多种方式获取 EventGroup ID
+                    eg_id = getattr(entry, 'eventgroup_id', getattr(entry, 'reserved', 0)) # 有些旧版本可能解析不准
+
+                    logger.info(f"[SD-Diag] 捕获 ACK/NACK (Type=0x07) | Srv=0x{current_srv_id:04X} | Group=0x{eg_id:04X} | TTL={entry.ttl}")
+
+                    if current_srv_id == service_id:
+                         # 进一步宽松匹配: 有些实现可能即使 Group ID 不匹配也回 NACK? 通常不会。
+                         # 这里严格匹配 Group ID
+                         if eg_id == event_group_id:
+                            if entry.ttl > 0:
+                                logger.info(f"[AutoFlow] => 订阅成功 (ACK 匹配)")
+                                sub_ack_event.set()
+                            else:
+                                logger.warning(f"[AutoFlow] => 订阅被拒绝 (NACK, TTL=0)")
+                         else:
+                             logger.debug(f"[AutoFlow] Group ID 不匹配 (预期 0x{event_group_id:04X})")
 
         # 2. 定义业务回调
         def on_response(pkt):
@@ -700,7 +810,7 @@ class SomeIPClient:
                 # 兼容性修复：使用 bytes(pkt.payload) 获取内容
                 result_container['payload'] = bytes(pkt.payload)
 
-                logger.info(f"[AutoReq] 收到回复 (Type=0x{pkt.msg_type:02X})")
+                logger.info(f"[AutoFlow] 收到数据 (Type=0x{pkt.msg_type:02X})")
                 try:
                     # pkg.show() 可能产生大量日志，仅在调试时开启或简略打印
                     # pkt.show()
@@ -711,78 +821,128 @@ class SomeIPClient:
                 response_event.set()
 
         # 注册回调
-        self.register_sd_callback(on_sd_offer)
+        self.register_sd_callback(on_sd_packet)
         self.register_callback(service_id, method_id, on_response)
 
         try:
-            # === 阶段 1: 服务发现 ===
-            logger.info(f"[AutoReq] 开始服务发现 Service=0x{service_id:04X}...")
+            # === 阶段 1: 服务发现 (通用) ===
+            logger.info(f"[AutoFlow] 开始服务发现 Service=0x{service_id:04X}...")
 
             # 策略 A: 组播 Find
             self.find_service(service_id)
 
             # 等待 Offer (1.5秒)
-            # 如果控制器已经在周期性广播 Offer，这里应该能马上收到
-            if not found_event.wait(timeout=1.5):
+            if not found_offer_event.wait(timeout=1.5):
                 # 策略 B: 单播 Find
                 if target_ip:
-                    logger.info(f"[AutoReq] 组播未响应，尝试单播 Find -> {target_ip}")
+                    logger.info(f"[AutoFlow] 组播未响应，尝试单播 Find -> {target_ip}")
                     self.find_service(service_id, override_ip=target_ip)
-                    found_event.wait(timeout=1.5)
+                    found_offer_event.wait(timeout=1.5)
 
-            # 如果还是没找到，检查是否可以利用默认参数盲测
+            # 如果还是没找到，检查是否可以利用默认参数
             if not discovered_eps['udp'] and not discovered_eps['tcp']:
                 if target_ip:
-                    logger.warning("[AutoReq] 未发现服务，将尝试使用给定的目标参数进行盲发")
-                    # 默认假设是 UDP
+                    logger.warning("[AutoFlow] 未发现服务，将使用给定的目标参数尝试盲操作")
                     discovered_eps['udp'].append((target_ip, target_port))
                 else:
-                    logger.error("[AutoReq] 无法继续: 未发现服务且未提供目标 IP")
+                    logger.error("[AutoFlow] 无法继续: 未发现服务且未提供目标 IP")
                     return None
 
-            # === 阶段 2: 尝试请求 (优先 UDP，失败转 TCP) ===
+            # === 阶段 2: 根据模式分流执行 ===
 
-            # 2.1 尝试 UDP
-            for ep in discovered_eps['udp']:
-                ip, port = ep
-                logger.info(f"[AutoReq] [UDP] 尝试请求 -> {ip}:{port}")
+            if is_event:
+                 # === Event 流程: Subscribe -> Wait ACK -> Wait Event ===
+                 # 确定订阅目标 IP 和 Port
+                 # 优先使用 UDP 发现的端点，如果没有则 TCP，最后才用 target_ip
+                 sub_target_ip = None
+                 sub_target_port = None
 
-                response_event.clear()
-                self.send_request(service_id, method_id, payload, target_ip=ip, target_port=port)
+                 if discovered_eps['udp']:
+                     sub_target_ip = discovered_eps['udp'][0][0]
+                     sub_target_port = discovered_eps['udp'][0][1]
+                 elif discovered_eps['tcp']:
+                     sub_target_ip = discovered_eps['tcp'][0][0]
+                     sub_target_port = discovered_eps['tcp'][0][1]
+                 elif target_ip:
+                     sub_target_ip = target_ip
+                     # 如果只能用 target_ip，端口默认为 target_port (通常为 30500) 或 SD (30490)
+                     # 为了兼容性，这里如果不确切知道，最好还是发给 30490，但既然没发现，我们可能没有更好的选择。
+                     # 但通常 subscribe 是发给 SD 端口的。
+                     # 如果用户明确指定了 port 参数，这里就会传递它。
+                     if target_port and target_port != 30500: # 假设 30500 是盲发缺省值
+                         sub_target_port = target_port
 
-                if response_event.wait(timeout=timeout):
-                    logger.info("[AutoReq] [UDP] 请求成功")
+                 if not sub_target_ip: return None
+
+                 logger.info(f"[AutoFlow] [Event] 发送订阅请求 (Grp=0x{event_group_id:04X}) -> {sub_target_ip}:{sub_target_port if sub_target_port else 'Default(30490)'}")
+                 sub_ack_event.clear()
+                 self.subscribe_eventgroup(
+                    service_id=service_id,
+                    eventgroup_id=event_group_id,
+                    instance_id=discovered_info['instance_id'],
+                    major_version=discovered_info['major_version'],
+                    minor_version=discovered_info['minor_version'],
+                    target_ip=sub_target_ip,
+                    target_port=sub_target_port # 传入发现的端口
+                 )
+
+                 # 2.1 等待订阅确认 (ACK)
+                 # 这是一个关键步骤，确认服务端同意了我们的订阅
+                 if not sub_ack_event.wait(timeout=3.0):
+                     logger.warning("[AutoFlow] [Event] 未收到订阅确认 (Subscribe ACK)！")
+                     logger.warning("  可能原因: 1. EventGroup ID 错误  2. 权限不足  3. 服务端忙  4. 链路单通")
+                     logger.warning("  -> 将尝试继续等待事件，但成功率极低...")
+                 else:
+                     logger.info("[AutoFlow] [Event] 订阅成功 (ACK Received).")
+
+                 # 2.2 等待事件
+                 logger.info(f"[AutoFlow] [Event] 等待事件推送...")
+                 if response_event.wait(timeout=timeout):
+                    logger.info("[AutoFlow] [Event] 成功收到事件")
                     return result_container['payload']
-                else:
-                    logger.warning(f"[AutoReq] [UDP] 请求超时 ({ip}:{port})")
+                 else:
+                    logger.warning(f"[AutoFlow] [Event] 等待事件超时 (已确认订阅成功但无推送? 或订阅失败)")
+                    return None
 
-            # 2.2 尝试 TCP (如果 UDP 失败或无 UDP)
-            for ep in discovered_eps['tcp']:
-                ip, port = ep
-                logger.info(f"[AutoReq] [TCP] 尝试建立连接并请求 -> {ip}:{port}")
+            else:
+                # === RPC 流程: Request -> Response ===
 
-                response_event.clear()
+                # 2.1 尝试 UDP
+                for ep in discovered_eps['udp']:
+                    ip, port = ep
+                    logger.info(f"[AutoFlow] [RPC-UDP] 尝试请求 -> {ip}:{port}")
+                    response_event.clear()
+                    self.send_request(service_id, method_id, payload, target_ip=ip, target_port=port)
 
-                # 建立 TCP 连接
-                self.connect_tcp(ip, port)
-                if not self.tcp_socket:
-                    logger.warning(f"[AutoReq] [TCP] 连接失败 ({ip}:{port})")
-                    continue
+                    if response_event.wait(timeout=timeout):
+                        logger.info("[AutoFlow] [RPC-UDP] 请求成功")
+                        return result_container['payload']
+                    else:
+                        logger.warning(f"[AutoFlow] [RPC-UDP] 请求超时 ({ip}:{port})")
 
-                self.send_request(service_id, method_id, payload)
+                # 2.2 尝试 TCP (如果 UDP 失败或无 UDP)
+                for ep in discovered_eps['tcp']:
+                    ip, port = ep
+                    logger.info(f"[AutoFlow] [RPC-TCP] 尝试建立连接并请求 -> {ip}:{port}")
+                    response_event.clear()
+                    self.connect_tcp(ip, port)
+                    if not self.tcp_socket:
+                        logger.warning(f"[AutoFlow] [RPC-TCP] 连接失败 ({ip}:{port})")
+                        continue
+                    self.send_request(service_id, method_id, payload)
 
-                if response_event.wait(timeout=timeout):
-                    logger.info("[AutoReq] [TCP] 请求成功")
-                    return result_container['payload']
-                else:
-                    logger.warning(f"[AutoReq] [TCP] 请求超时 ({ip}:{port})")
+                    if response_event.wait(timeout=timeout):
+                        logger.info("[AutoFlow] [RPC-TCP] 请求成功")
+                        return result_container['payload']
+                    else:
+                        logger.warning(f"[AutoFlow] [RPC-TCP] 请求超时 ({ip}:{port})")
 
-            logger.error("[AutoReq] 所有尝试均失败")
-            return None
+                logger.error("[AutoFlow] 所有尝试均失败")
+                return None
 
         finally:
             # 清理回调
-            self.unregister_sd_callback(on_sd_offer)
+            self.unregister_sd_callback(on_sd_packet)
             self.unregister_callback(service_id, method_id)
 
 
@@ -790,158 +950,53 @@ class SomeIPClient:
 # 测试流程
 # ==========================================
 class TestRunner:
-    def __init__(self):
-        self.found = threading.Event()
-        self.received = threading.Event()
-        self.target_udp = None
-        self.target_tcp = None
-
     def run(self):
-        # JSON payload as hex byte array
-        test_payload = None
-
-        print("\n=== 启动测试 (三步策略) ===")
+        print("\n=== 启动测试 (自动判定模式) ===")
 
         # --- 配置 ---
-        # MAC地址将自动使用本机网卡MAC
-        # 请确保网卡已配置 VLAN 4
         CLIENT_IP = "172.16.64.47"
-        CLIENT_MAC = "20:7B:D5:20:25:B6"
+        ECU_UNICAST_IP = "172.16.66.79"
+        # ECU_MAC = "02:47:00:00:02:4F"
 
-        # 目标控制器配置
-        ECU_UNICAST_IP = "172.16.66.79"  # 控制器 IP
-        # 如果 Ping 不通，必须手动填入控制器的 MAC 地址！否则发出的包要么 ARP 失败，要么是广播 MAC 可能被丢弃
-        # 请填入嗅探器抓到的包里的源 MAC 地址，例如:
-        ECU_MAC = "02:47:00:00:02:4F" # "00:01:02:03:04:05"
-
-        STD_MCAST_IP = "239.71.0.2"  # 标准组播 IP
-        VLAN_ID = 4  # 设置 VLAN ID
-
-        # 必须确保这两个 ID 和控制器数据库(ARXML)一致
+        # 你的测试参数
         SERVICE_ID = 0x1055
+
+        # METHOD_ID:
+        # 输入 < 0x8000 (如 0x0001) 将自动走 RPC Request (UDP/TCP)
+        # 输入 >= 0x8000 (如 0x9001) 将自动走 Event 订阅
         METHOD_ID = 0x9001
 
-        # 盲测时的默认端口 (通常是 30500, 30501, 30491 等)
-        BLIND_PORT = 30490
-        # ------------
+        # Event Group ID (Event模式下需要)
+        EVENT_GROUP_ID = 0x0001
 
-        print(f"配置: 本机 {CLIENT_IP} -> 目标 {ECU_UNICAST_IP} (VLAN {VLAN_ID})")
-        if not ECU_MAC:
-            print("注意: 未配置 ECU_MAC。如果 ARP 不通，单播通信可能会失败。")
+        # Payload (RPC模式下需要，Event模式忽略)
+        #PAYLOAD = None
+        PAYLOAD = b'\x00'
 
-        # 测试时也使用固定 client_id 30813
-        client = SomeIPClient(local_ip=CLIENT_IP, client_id=30813,
-                              multicast_ip=STD_MCAST_IP, vlan_id=VLAN_ID,
-                              client_mac=CLIENT_MAC, target_mac=ECU_MAC)
+        print(f"配置: Service=0x{SERVICE_ID:04X}, Method/Event=0x{METHOD_ID:04X}")
+
+        client = SomeIPClient(local_ip=CLIENT_IP, client_id=1, vlan_id=4)
         if not client.start(): return
 
-        # 1. 注册 SD 回调
-        def on_sd(entries, options):
-            for entry in entries:
-                if entry.type == 0x01 and entry.srv_id == SERVICE_ID:  # OfferService
-                    if self.found.is_set(): return
-
-                    tcp_list, udp_list = client._extract_endpoints(entry, options)
-
-                    if tcp_list:
-                        ep = tcp_list[0]
-                        self.target_tcp = {'ip': ep[0], 'port': ep[1]}
-                        print(f"\n[SD] 发现 TCP Endpoint: {ep[0]}:{ep[1]}")
-
-                    if udp_list:
-                        ep = udp_list[0]
-                        self.target_udp = {'ip': ep[0], 'port': ep[1]}
-                        print(f"\n[SD] 发现 UDP Endpoint: {ep[0]}:{ep[1]}")
-
-
-                    # 只要发现任意一个端点，就认为成功
-                    if self.target_udp or self.target_tcp:
-                        self.found.set()
-
-        client.register_sd_callback(on_sd)
-
-        # 2. 注册业务回调
-        def on_msg(pkt):
-            print("\n[SUCCESS] 收到业务回复!")
-            print(">>> 完整报文详情:")
-            try:
-                pkt.show()
-            except:
-                pass
-            print("-------------------")
-            # 兼容性修复：使用 bytes(pkt.payload) 获取内容，即使它不是 Raw 层
-            payload = bytes(pkt.payload)
-            print(f"Payload (Hex): {payload.hex()}")
-            self.received.set()
-
-        client.register_callback(SERVICE_ID, METHOD_ID, on_msg)
-
         try:
-            # --- 策略 A: 组播 FindService ---
-            print(f"策略 A: 发送标准组播 FindService ({STD_MCAST_IP})...")
-            client.find_service(SERVICE_ID)
+            # 只需要调用这一个通用接口，内部会自动处理
+            # 1. 发现服务
+            # 2. 如果是 9001 -> 订阅 -> 等待 Notification
+            # 3. 如果是 0001 -> 请求 -> 等待 Response
 
-            # --- 策略 B: 单播 FindService (如果 A 超时) ---
-            if not self.found.wait(timeout=3):
-                print(f"策略 B: 超时未收到 Offer，尝试发送单播 FindService ({ECU_UNICAST_IP})...")
-                client.find_service(SERVICE_ID, override_ip=ECU_UNICAST_IP)
+            result = client.request_with_discovery(
+                service_id=SERVICE_ID,
+                method_id=METHOD_ID,
+                payload=PAYLOAD,
+                target_ip=ECU_UNICAST_IP,
+                event_group_id=EVENT_GROUP_ID, # 如果是 RPC 这里的参数会被忽略
+                timeout=10 # 等待时间
+            )
 
-            # 等待结果
-
-            if self.found.wait(timeout=10):
-                print(f"--> [SD成功] 服务已就绪，准备发送请求...")
+            if result is not None:
+                print(f"\n[测试成功] 收到结果 (Hex): {result.hex()}")
             else:
-                print("测试失败: 未收到服务端的 Offer 回复，停止后续操作。")
-                print("请检查: 1.链路连接 2.VLAN ID配置 3.服务端状态")
-                return
-
-            # ====== 执行发送测试 ======
-
-            # 1. 尝试 UDP
-            # 用户要求: 先尝试 UDP
-            # 注意: 如果只发现了 TCP 端点，这里 target_udp 为空，会自动跳过。
-            # 如果发现两者，都会尝试。
-
-            if self.target_udp:
-                print(f"\n[Step 1] 尝试 UDP 发送 -> {self.target_udp['ip']}:{self.target_udp['port']}")
-                client.send_request(
-                    service_id=SERVICE_ID,
-                    method_id=METHOD_ID,
-                    payload=test_payload,
-                    target_ip=self.target_udp['ip'],
-                    target_port=self.target_udp['port']
-                )
-
-                # 等待回复
-                if self.received.wait(timeout=3):
-                    print("测试通过！(UDP 收到业务回复)")
-                    return
-                else:
-                    print("UDP 请求超时，未收到回复。")
-
-            # 2. 尝试 TCP (如果 UDP 失败或被跳过)
-            if self.target_tcp:
-                # 只有当还没有收到回复时才尝试
-                if not self.received.is_set():
-                    print(f"\n[Step 2] 尝试 TCP 建立连接并发送 -> {self.target_tcp['ip']}:{self.target_tcp['port']}")
-
-                    # 连接 TCP
-                    client.connect_tcp(self.target_tcp['ip'], self.target_tcp['port'])
-
-                    # TCP 模式下 send_request 使用 socket
-                    client.send_request(
-                        service_id=SERVICE_ID,
-                        method_id=METHOD_ID,
-                        payload=test_payload
-                    )
-
-                    if self.received.wait(timeout=5):
-                         print("测试通过！(TCP 收到业务回复)")
-                    else:
-                         print("TCP 请求超时，未收到回复。")
-
-            if not self.received.is_set():
-                print("测试结束: 未收到业务回复。")
+                print(f"\n[测试失败] 未收到预期回复 (RPC Response 或 Event Notification)")
 
         except KeyboardInterrupt:
             print("停止")
