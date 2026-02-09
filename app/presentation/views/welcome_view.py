@@ -18,8 +18,24 @@ class WelcomeWidget(QtWidgets.QWidget):
             }
         """)
 
-        # Main layout
-        main_layout = QtWidgets.QVBoxLayout(self)
+        # Outer layout for the widget itself
+        outer_layout = QtWidgets.QVBoxLayout(self)
+        outer_layout.setContentsMargins(0, 0, 0, 0)
+
+        # Scroll Area for responsiveness
+        scroll_area = QtWidgets.QScrollArea()
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setFrameShape(QtWidgets.QFrame.NoFrame)
+        scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+
+        # The content widget inside scroll area
+        scroll_content = QtWidgets.QWidget()
+        scroll_content.setObjectName("ScrollContent")
+        scroll_content.setStyleSheet("#ScrollContent { background-color: #F9FAFB; }")
+
+        # Main layout inside scroll content
+        main_layout = QtWidgets.QVBoxLayout(scroll_content)
         main_layout.setContentsMargins(0, 0, 0, 0)
 
         content_wrapper = QtWidgets.QWidget()
@@ -36,7 +52,7 @@ class WelcomeWidget(QtWidgets.QWidget):
         title = QtWidgets.QLabel("OneBox For GAC")
         title.setStyleSheet("""
             font-family: "Segoe UI", "Microsoft YaHei UI";
-            font-size: 48px;
+            font-size: 36pt; 
             font-weight: 800;
             color: #111827;
         """)
@@ -45,7 +61,7 @@ class WelcomeWidget(QtWidgets.QWidget):
         subtitle = QtWidgets.QLabel("车载诊断工具平台")
         subtitle.setStyleSheet("""
             font-family: "Microsoft YaHei UI";
-            font-size: 20px;
+            font-size: 15pt;
             color: #6B7280;
             letter-spacing: 4px;
         """)
@@ -83,6 +99,9 @@ class WelcomeWidget(QtWidgets.QWidget):
         main_layout.addStretch()
         main_layout.addWidget(content_wrapper)
         main_layout.addStretch()
+
+        scroll_area.setWidget(scroll_content)
+        outer_layout.addWidget(scroll_area)
 
     def _create_card(self, page_text, title_text, desc_text, color, bg_color):
         parts = page_text.split(' ', 1)
@@ -147,7 +166,7 @@ class WelcomeWidget(QtWidgets.QWidget):
         desc_label.setWordWrap(True)
         desc_label.setStyleSheet("""
             font-family: "Microsoft YaHei UI";
-            font-size: 14px;
+            font-size: 10.5pt;
             color: #6B7280;
             background: transparent;
             border: none;

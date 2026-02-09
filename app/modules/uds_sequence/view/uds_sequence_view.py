@@ -646,7 +646,7 @@ class UDSSequenceView(QtWidgets.QWidget):
                 border: none;
                 border-radius: 6px;
                 padding: 0px;
-                font-size: 14px;
+                font-size: 10.5pt;
                 min-width: 32px;
                 min-height: 32px;
             }}

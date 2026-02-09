@@ -63,9 +63,9 @@ class DataFormatConverterView(BaseView):
         header_layout = QHBoxLayout()
         title_label = QLabel("数据格式转换")
         title_label.setObjectName("pageTitle")
-        title_label.setStyleSheet("font-size: 16px; font-weight: 600; color: #111827;")
+        title_label.setStyleSheet("font-size: 12pt; font-weight: 600; color: #111827;")
         subtitle_label = QLabel("拖拽日志或总线数据文件，选择输出格式后一键转换")
-        subtitle_label.setStyleSheet("font-size: 11px; color: #6B7280; padding-left: 8px;")
+        subtitle_label.setStyleSheet("font-size: 8.5pt; color: #6B7280; padding-left: 8px;")
         header_layout.addWidget(title_label)
         header_layout.addWidget(subtitle_label)
         header_layout.addStretch(1)
@@ -111,11 +111,11 @@ class DataFormatConverterView(BaseView):
 
         self.drop_icon_label = QLabel("📂")
         self.drop_icon_label.setAlignment(Qt.AlignCenter)
-        self.drop_icon_label.setStyleSheet("font-size: 36px; color: #9CA3AF;")
+        self.drop_icon_label.setStyleSheet("font-size: 27pt; color: #9CA3AF;")
 
         self.drop_text_label = QLabel("拖拽文件到此处或点击选择")
         self.drop_text_label.setAlignment(Qt.AlignCenter)
-        self.drop_text_label.setStyleSheet("font-size: 13px; color: #4B5563;")
+        self.drop_text_label.setStyleSheet("font-size: 10pt; color: #4B5563;")
 
         self.select_file_btn = QPushButton("选择文件")
         self.select_file_btn.setObjectName("secondaryButton")

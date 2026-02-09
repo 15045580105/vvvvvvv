@@ -352,7 +352,7 @@ class PerformanceView(QtWidgets.QWidget):
         right_layout.setContentsMargins(0, 0, 0, 0)
 
         self.chart_title = QtWidgets.QLabel("CPU Usage (%)")
-        self.chart_title.setStyleSheet("font-size: 18px; font-weight: bold; color: #333; margin-bottom: 10px;")
+        self.chart_title.setStyleSheet("font-size: 13.5pt; font-weight: bold; color: #333; margin-bottom: 10px;")
         right_layout.addWidget(self.chart_title)
 
         self.init_chart()

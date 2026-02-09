@@ -181,7 +181,7 @@ class DPTConvertDialog(QtWidgets.QDialog):
         btn_layout.setSpacing(12)
 
         self.status_label = QtWidgets.QLabel("")
-        self.status_label.setStyleSheet("color: #6B7280; font-size: 12px;")
+        self.status_label.setStyleSheet("color: #6B7280; font-size: 9pt;")
         btn_layout.addWidget(self.status_label)
 
         btn_layout.addStretch()

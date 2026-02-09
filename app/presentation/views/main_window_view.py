@@ -16,7 +16,8 @@ class MainView(QtWidgets.QMainWindow):
 
     def setup_ui(self):
         self.setWindowTitle("车载诊断工具平台 v1.0 ")
-        self.setMinimumSize(1400, 900)
+        # 调整最小尺寸以适应 1080p @ 150% 缩放 (有效分辨率 1280x720)
+        self.setMinimumSize(1024, 680)
 
 
         self.toolbar = QtWidgets.QToolBar("快速操作")
@@ -84,6 +85,8 @@ class MainView(QtWidgets.QMainWindow):
         # self.toolbar.addWidget(self.auth_label)
         self.nav_dock = QtWidgets.QDockWidget("功能导航", self)
         self.nav_dock.setFeatures(QtWidgets.QDockWidget.DockWidgetMovable | QtWidgets.QDockWidget.DockWidgetFloatable)
+        # 初始化最小宽度，防止过小
+        self.nav_dock.setMinimumWidth(220)
         self.nav_tree = QtWidgets.QTreeWidget()
         self.nav_tree.setHeaderHidden(True)
         self.nav_tree.setRootIsDecorated(True)
@@ -191,3 +194,25 @@ class MainView(QtWidgets.QMainWindow):
         self.guide_overlay.add_step(self.settings_btn, "系统设置", "在这里可以配置软件的各项参数，包括连接设置、主题偏好等。")
 
         self.guide_overlay.start()
+
+    def resizeEvent(self, event):
+        """
+        窗口调整大小时触发，用于自适应调整布局比例
+        """
+        super().resizeEvent(event) # 调用父类处理
+
+        if hasattr(self, 'nav_dock'):
+            window_width = self.width()
+
+            # 设置导航栏宽度的动态约束
+            # 最小宽度：220px (保证文字可读)
+            # 最大宽度：窗口宽度的 30% (保证内容区域至少占 70%)
+            min_width = 220
+            max_width = int(window_width * 0.3)
+
+            # 边界保护：确保 max >= min
+            if max_width < min_width:
+                max_width = min_width
+
+            self.nav_dock.setMinimumWidth(min_width)
+            self.nav_dock.setMaximumWidth(max_width)

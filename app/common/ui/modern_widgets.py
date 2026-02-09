@@ -93,10 +93,10 @@ class MessageToast(QWidget):
         cl.setContentsMargins(20, 10, 20, 10)
 
         self.icon_lbl = QLabel()
-        self.icon_lbl.setStyleSheet("font-size: 18px; background: transparent; border: none;")
+        self.icon_lbl.setStyleSheet("font-size: 13.5pt; background: transparent; border: none;")
         self.msg_lbl = QLabel()
         self.msg_lbl.setStyleSheet(
-            "color: white; font-weight: bold; font-size: 14px; background: transparent; border: none; margin-left: 5px;")
+            "color: white; font-weight: bold; font-size: 10.5pt; background: transparent; border: none; margin-left: 5px;")
 
         cl.addWidget(self.icon_lbl)
         cl.addWidget(self.msg_lbl)

@@ -2,7 +2,7 @@ import ctypes
 import sys
 import os
 
-from PyQt5 import QtWidgets, QtCore
+from PyQt5 import QtWidgets, QtCore, QtGui
 from PyQt5.QtGui import QIcon
 
 from app.common.log.app_log import SystemLog
@@ -12,12 +12,30 @@ from app.presentation.controller.main_window_controller import MainController
 
 
 if __name__ == "__main__":
+    # 启用高DPI缩放支持 (High DPI Scaling)
+    # 1. 开启自动屏幕缩放因子
+    os.environ["QT_AUTO_SCREEN_SCALE_FACTOR"] = "1"
+
+    # 2. 设置DPI缩放舍入策略为 PassThrough (Qt 5.14+)
+    #    这能解决 125%, 150% 缩放被强制进位到 200% 导致界面过大的问题
+    if hasattr(QtCore.Qt, 'HighDpiScaleFactorRoundingPolicy'):
+        QtWidgets.QApplication.setHighDpiScaleFactorRoundingPolicy(
+            QtCore.Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)
+
     SystemLog().initialize()
 
+    # 3. 启用高DPI缩放属性
     QtWidgets.QApplication.setAttribute(QtCore.Qt.AA_EnableHighDpiScaling)
     QtWidgets.QApplication.setAttribute(QtCore.Qt.AA_UseHighDpiPixmaps)
+
     ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("myappid")
     app = QtWidgets.QApplication(sys.argv)
+
+    # 设置全局默认字体 (Global Font)
+    font = QtGui.QFont("Segoe UI", 9)
+    font.setHintingPreference(QtGui.QFont.PreferFullHinting)
+    app.setFont(font)
+
     app.setApplicationName("车载诊断工具")
     app.setOrganizationName("Automotive Diagnostics")
     app.setApplicationDisplayName("车载诊断工具平台 v1.0")
