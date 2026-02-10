@@ -296,7 +296,7 @@ class DeviceService(QObject):
         else:
              self.log_signal.emit(f"警告: SomeIP 本地 IP 未配置")
              LOCAL_CLIENT_IP = "172.16.64.47"
-
+        LOCAL_CLIENT_IP = "172.16.64.47"
         LOCAL_CLIENT_MAC = self._get_mac_address(LOCAL_CLIENT_IP)
         if not LOCAL_CLIENT_MAC:
              # Fallback MAC if look up fails

@@ -58,11 +58,9 @@ class TopologyController(BaseController):
         def on_finished(result):
             if not result:
                 return
-
             type_key, info = result
             if not info:
                 return
-
             if type_key == "vehicle_info":
                 self.view.update_vehicle_info(info)
             elif type_key == "service_status":
@@ -339,13 +337,6 @@ class TopologyController(BaseController):
                 # 强制更新拓扑图节点
                 if hasattr(self.view, 'topology_widget'):
                     self.view.topology_widget.init_nodes(snapshot.nodes)
-
-                # 更新其他面板信息 (根据用户需求暂时注释掉，只更新拓扑图)
-                # self.view.update_vehicle_info(snapshot.vehicle_info)
-                # self.view.update_service_status_info(snapshot.service_status)
-                # self.view.update_security_info(snapshot.security_info)
-                # self.view.update_network_mgmt(snapshot.network_management)
-                # self.view.update_storage_info(snapshot.storage_info)
 
                 self.view.append_log("以太网拓扑刷新完成")
             else:

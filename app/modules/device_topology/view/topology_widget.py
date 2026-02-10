@@ -1,13 +1,13 @@
 import sys
-
 from PyQt5 import QtGui, QtWidgets
 from PyQt5.QtCore import Qt, QSize, QPointF, QPropertyAnimation, QEasingCurve, QRectF, QPoint, pyqtSignal
 from PyQt5.QtGui import QPainter, QPen, QBrush, QColor, QFont, QFontMetrics
 from PyQt5.QtWidgets import (
     QWidget, QApplication, QVBoxLayout, QGraphicsView, QGraphicsScene,
     QGraphicsItem, QHBoxLayout, QPushButton, QLabel, QFrame, QScrollArea,
-    QGridLayout, QFormLayout
+    QGridLayout, QFormLayout, QTextEdit, QFileDialog, QMessageBox
 )
+import json
 
 from app.modules.device_topology.view.network_status import NetworkStatusPanel
 
@@ -287,6 +287,7 @@ class TopologyWidget(QGraphicsView):
 
             for key, label_text in rows:
                 val_label = create_styled_label("—", is_value=True)
+                val_label.setWordWrap(True) # 允许长文本换行
                 labels_dict[key] = val_label
                 layout.addRow(create_styled_label(label_text), val_label)
 
@@ -303,12 +304,53 @@ class TopologyWidget(QGraphicsView):
 
         # 2. 服务状态信息
         self.service_status_widget = QWidget()
-        self.status_labels = {}
-        setup_form_layout(self.service_status_widget, self.status_labels, [
-            ("srv_id01", "SrvID01："),
-            ("srv_id02", "SrvID02："),
-            ("srv_id03", "SrvID03：")
-        ])
+        # 使用 QScrollArea 来支持长内容
+
+        layout = QVBoxLayout(self.service_status_widget)
+        # 移除默认的外边距，因为外层 FloatingPanel 已经有了
+        layout.setContentsMargins(0, 0, 0, 0)
+
+        self.status_labels = {} # 保持字典结构兼容，虽然我们这里用 QTextEdit
+
+        # 详细文本区域
+        self.service_status_text = QTextEdit()
+        self.service_status_text.setReadOnly(True)
+        self.service_status_text.setStyleSheet("""
+            QTextEdit {
+                border: 1px solid #E5E7EB;
+                border-radius: 6px;
+                background-color: #F9FAFB;
+                padding: 4px;
+                font-family: "Consolas", "Courier New", monospace;
+                font-size: 9pt;
+            }
+        """)
+        layout.addWidget(self.service_status_text)
+        self.status_labels["service_status_info"] = self.service_status_text # 映射到 key
+
+        # 下载按钮区域
+        download_layout = QHBoxLayout()
+        download_layout.addStretch()
+
+        self.download_btn = QPushButton("💾 下载数据(TXT)")
+        self.download_btn.setCursor(Qt.PointingHandCursor)
+        self.download_btn.setStyleSheet("""
+            QPushButton {
+                padding: 6px 12px;
+                background-color: #EFF6FF;
+                color: #2563EB;
+                border: 1px solid #BFDBFE;
+                border-radius: 6px;
+                font-weight: 600;
+            }
+            QPushButton:hover {
+                background-color: #DBEAFE;
+            }
+        """)
+        self.download_btn.clicked.connect(self._on_download_service_status)
+        download_layout.addWidget(self.download_btn)
+
+        layout.addLayout(download_layout)
 
         # 3. 证书信息
         self.security_info_widget = QWidget()
@@ -350,6 +392,40 @@ class TopologyWidget(QGraphicsView):
 
         # 7. 以太网网络诊断
         self.network_diag_widget = NetworkStatusPanel()
+
+    def _on_download_service_status(self):
+        """处理服务状态数据下载"""
+        if not hasattr(self, 'service_status_text'):
+            return
+
+        text_content = self.service_status_text.toPlainText()
+        if not text_content or text_content.strip() == "":
+            return
+
+        # 弹出保存文件对话框
+        file_path, _ = QFileDialog.getSaveFileName(
+            self,
+            "保存服务状态数据",
+            "service_status.txt",
+            "Text Files (*.txt);;All Files (*)"
+        )
+
+        if file_path:
+            try:
+                # 尝试解析并重新格式化为漂亮的 JSON
+                try:
+                    parsed_json = json.loads(text_content)
+                    save_content = json.dumps(parsed_json, indent=4, ensure_ascii=False)
+                except Exception:
+                    # 如果不是有效的 JSON，则按原样保存
+                    save_content = text_content
+
+                with open(file_path, 'w', encoding='utf-8') as f:
+                    f.write(save_content)
+                QMessageBox.information(self, "下载成功", f"数据已保存到:\n{file_path}")
+
+            except Exception as e:
+                QMessageBox.critical(self, "下载失败", f"保存文件时出错:\n{str(e)}")
 
     def _add_tool_button(self, text, layout, content_widget=None, initial_size=None):
         """添加透明工具按钮"""
@@ -406,9 +482,36 @@ class TopologyWidget(QGraphicsView):
         self.vehicle_labels["voltage"].setText(info.get("voltage", "—"))
 
     def update_service_status_info(self, info: dict):
-        self.status_labels["srv_id01"].setText(info.get("srv_id01", "—"))
-        self.status_labels["srv_id02"].setText(info.get("srv_id02", "—"))
-        self.status_labels["srv_id03"].setText(info.get("srv_id03", "—"))
+        """
+        更新服务状态信息显示。
+        info 字典中 key='status_summary' 是从 topology_service 返回的 JSON 字符串。
+        """
+        raw_data = info.get("status_summary", "")
+        if not raw_data:
+            self.status_labels["service_status_info"].clear()
+            return
+
+        display_text = ""
+
+        if isinstance(raw_data, str):
+            try:
+                # 如果是 JSON 字符串，尝试解析以便美化或提取统计信息
+                parsed = json.loads(raw_data)
+                # 重新美化格式化 JSON，使用4空格缩进
+                display_text = json.dumps(parsed, indent=4, ensure_ascii=False)
+            except Exception:
+                # 解析失败，就是普通字符串
+                display_text = raw_data
+        elif isinstance(raw_data, (dict, list)):
+            # 如果已经是对象，直接格式化
+            try:
+                display_text = json.dumps(raw_data, indent=4, ensure_ascii=False)
+            except Exception:
+                display_text = str(raw_data)
+        else:
+            display_text = str(raw_data)
+
+        self.status_labels["service_status_info"].setText(display_text)
 
     def update_security_info(self, info: dict):
         self.sec_labels["cert_info"].setText(info.get("cert_info", "—"))
@@ -870,7 +973,8 @@ class FloatingPanel(QWidget):
     def add_panel_content(self, layout):
         """添加面板内容"""
         if self.custom_content:
-            layout.addWidget(self.custom_content)
+            # 设置 stretch=1 让自定义内容（如文本框）随面板伸缩
+            layout.addWidget(self.custom_content, 1)
         else:
             label = QLabel(
                 f"这里是 {self.title} 的详细内容。\n\n您可以在此添加：\n• 设备详细信息\n• 实时状态监控\n• 配置参数\n• 统计数据\n• 操作按钮等")
@@ -893,7 +997,7 @@ class FloatingPanel(QWidget):
                 grid_layout.addWidget(value_label, i, 1)
 
             layout.addLayout(grid_layout)
-        layout.addStretch()
+            layout.addStretch()
 
     def _get_edge(self, pos):
         edge = self.EDGE_NONE
