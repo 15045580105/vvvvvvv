@@ -52,3 +52,14 @@ def get_logs_path():
     if not os.path.exists(path):
         os.makedirs(path, exist_ok=True)
     return path
+
+
+def get_performance_export_path():
+    """
+    Get the directory for performance export files.
+    Path: .../OneBoxForGAC/Performance
+    """
+    path = os.path.join(get_app_data_path(), "Performance")
+    if not os.path.exists(path):
+        os.makedirs(path, exist_ok=True)
+    return path

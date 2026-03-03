@@ -1,14 +1,17 @@
 import sys
+import openpyxl
+from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from PyQt5 import QtGui, QtWidgets
 from PyQt5.QtCore import Qt, QSize, QPointF, QPropertyAnimation, QEasingCurve, QRectF, QPoint, pyqtSignal
 from PyQt5.QtGui import QPainter, QPen, QBrush, QColor, QFont, QFontMetrics
 from PyQt5.QtWidgets import (
     QWidget, QApplication, QVBoxLayout, QGraphicsView, QGraphicsScene,
     QGraphicsItem, QHBoxLayout, QPushButton, QLabel, QFrame, QScrollArea,
-    QGridLayout, QFormLayout, QTextEdit, QFileDialog, QMessageBox
+    QGridLayout, QFormLayout, QTextEdit, QFileDialog, QMessageBox, QLineEdit
 )
 import json
 
+from app.common.ui.widgets import ModernButton
 from app.modules.device_topology.view.network_status import NetworkStatusPanel
 
 
@@ -310,6 +313,58 @@ class TopologyWidget(QGraphicsView):
         # 移除默认的外边距，因为外层 FloatingPanel 已经有了
         layout.setContentsMargins(0, 0, 0, 0)
 
+        # ---------------------
+        # 新增 Search Bar
+        # ---------------------
+        search_widget = QWidget()
+        search_layout = QHBoxLayout(search_widget)
+        search_layout.setContentsMargins(0, 0, 0, 4)
+        search_layout.setSpacing(6)
+
+        self.status_search_input = QLineEdit()
+        self.status_search_input.setPlaceholderText("查找内容...")
+        self.status_search_input.setStyleSheet("""
+            QLineEdit {
+                border: 1px solid #D1D5DB;
+                border-radius: 4px;
+                padding: 4px 8px;
+                background-color: #FFFFFF;
+                color: #374151;
+            }
+            QLineEdit:focus {
+                border: 1px solid #3B82F6;
+            }
+        """)
+        self.status_search_input.textChanged.connect(self._on_service_status_search)
+
+        self.status_search_label = QLabel("0/0")
+        self.status_search_label.setStyleSheet("color: #6B7280; font-size: 12px;")
+        self.status_search_label.setFixedWidth(50)
+        self.status_search_label.setAlignment(Qt.AlignCenter)
+
+        # 查找上一个
+        btn_prev = QPushButton("▲")
+        btn_prev.setFixedSize(24, 24)
+        btn_prev.setCursor(Qt.PointingHandCursor)
+        btn_prev.setToolTip("查找上一个")
+        btn_prev.clicked.connect(lambda: self._find_service_status_text(backwards=True))
+        btn_prev.setStyleSheet("QPushButton { border: 1px solid #E5E7EB; border-radius: 4px; color: #4B5563; } QPushButton:hover { background-color: #F3F4F6; }")
+
+        # 查找下一个
+        btn_next = QPushButton("▼")
+        btn_next.setFixedSize(24, 24)
+        btn_next.setCursor(Qt.PointingHandCursor)
+        btn_next.setToolTip("查找下一个")
+        btn_next.clicked.connect(lambda: self._find_service_status_text(backwards=False))
+        btn_next.setStyleSheet("QPushButton { border: 1px solid #E5E7EB; border-radius: 4px; color: #4B5563; } QPushButton:hover { background-color: #F3F4F6; }")
+
+        search_layout.addWidget(self.status_search_input)
+        search_layout.addWidget(self.status_search_label)
+        search_layout.addWidget(btn_prev)
+        search_layout.addWidget(btn_next)
+
+        layout.addWidget(search_widget)
+
         self.status_labels = {} # 保持字典结构兼容，虽然我们这里用 QTextEdit
 
         # 详细文本区域
@@ -332,21 +387,21 @@ class TopologyWidget(QGraphicsView):
         download_layout = QHBoxLayout()
         download_layout.addStretch()
 
-        self.download_btn = QPushButton("💾 下载数据(TXT)")
+        self.download_btn = QPushButton("💾 下载数据(Excel)")
         self.download_btn.setCursor(Qt.PointingHandCursor)
         self.download_btn.setStyleSheet("""
-            QPushButton {
-                padding: 6px 12px;
-                background-color: #EFF6FF;
-                color: #2563EB;
-                border: 1px solid #BFDBFE;
-                border-radius: 6px;
-                font-weight: 600;
-            }
-            QPushButton:hover {
-                background-color: #DBEAFE;
-            }
-        """)
+                  QPushButton {
+                      padding: 6px 12px;
+                      background-color: #EFF6FF;
+                      color: #2563EB;
+                      border: 1px solid #BFDBFE;
+                      border-radius: 6px;
+                      font-weight: 600;
+                  }
+                  QPushButton:hover {
+                      background-color: #DBEAFE;
+                  }
+              """)
         self.download_btn.clicked.connect(self._on_download_service_status)
         download_layout.addWidget(self.download_btn)
 
@@ -402,30 +457,117 @@ class TopologyWidget(QGraphicsView):
         if not text_content or text_content.strip() == "":
             return
 
+        # 尝试提取 JSON 部分
+        json_str = text_content
+        prefix = "解析格式: "
+        if prefix in text_content:
+             parts = text_content.split(prefix)
+             if len(parts) > 1:
+                 json_str = parts[1]
+
+        parsed_data = None
+        try:
+            parsed_data = json.loads(json_str)
+        except json.JSONDecodeError:
+            QMessageBox.critical(self, "错误", "无法解析数据格式，只能导出为 TXT")
+            return
+
+        if not isinstance(parsed_data, dict) or "services" not in parsed_data:
+             QMessageBox.warning(self, "提示", "数据中未找到服务列表")
+             return
+
+        services = parsed_data["services"]
+        if not services:
+             QMessageBox.warning(self, "提示", "服务列表为空")
+             return
+
         # 弹出保存文件对话框
         file_path, _ = QFileDialog.getSaveFileName(
             self,
             "保存服务状态数据",
-            "service_status.txt",
-            "Text Files (*.txt);;All Files (*)"
+            "service_status.xlsx",
+            "Excel Files (*.xlsx);;All Files (*)"
         )
 
-        if file_path:
-            try:
-                # 尝试解析并重新格式化为漂亮的 JSON
-                try:
-                    parsed_json = json.loads(text_content)
-                    save_content = json.dumps(parsed_json, indent=4, ensure_ascii=False)
-                except Exception:
-                    # 如果不是有效的 JSON，则按原样保存
-                    save_content = text_content
+        if not file_path:
+            return
 
-                with open(file_path, 'w', encoding='utf-8') as f:
-                    f.write(save_content)
-                QMessageBox.information(self, "下载成功", f"数据已保存到:\n{file_path}")
+        try:
+            wb = openpyxl.Workbook()
+            ws = wb.active
+            ws.title = "Service Status"
 
-            except Exception as e:
-                QMessageBox.critical(self, "下载失败", f"保存文件时出错:\n{str(e)}")
+            # Headers
+            headers = [
+                "state_time", "service_ip", "ttl", "cycle_time", "service_id",
+                "instance_id", "minor_version", "major_version",
+                "phase", "reliable_flag", "unreliable_flag", "tcp_port", "udp_port", "eventgroup_ids"
+            ]
+            ws.append(headers)
+
+            # --- Styling Headers ---
+            # 1. 字体加粗，大小12，颜色白色(配合蓝色背景)
+            header_font = Font(name='Arial', bold=True, size=12, color="FFFFFF")
+            # 2. 蓝色填充 (使用标准蓝色，如 4472C4)
+            header_fill = PatternFill(start_color="4472C4", end_color="4472C4", fill_type="solid")
+            # 居中对齐
+            header_align = Alignment(horizontal="center", vertical="center", wrap_text=True)
+
+            # 3. 表头高度占两行 (约30)
+            ws.row_dimensions[1].height = 30
+
+            thin_border = Border(left=Side(style='thin'), right=Side(style='thin'), top=Side(style='thin'), bottom=Side(style='thin'))
+
+            for cell in ws[1]:
+                cell.font = header_font
+                cell.fill = header_fill
+                cell.alignment = header_align
+                cell.border = thin_border
+
+            # 初始化列宽字典 (基于表头长度)
+            col_widths = {i: len(str(header)) + 4 for i, header in enumerate(headers, 1)}
+
+            # Rows
+            for service in services:
+                row = []
+                for idx, header in enumerate(headers, 1):
+                    val = service.get(header, "")
+                    # Convert list/dict to string if necessary
+                    if isinstance(val, (list, dict)):
+                        val = str(val)
+                    row.append(val)
+
+                    # 计算列宽：考虑中文字符可能占更宽，这里简单按长度估算
+                    # 限制最大宽度以免过宽
+                    length = len(str(val))
+                    if length > col_widths[idx]:
+                        col_widths[idx] = length
+
+                ws.append(row)
+
+                # Apply borders and alignment for the newly added row
+                current_row = ws.max_row
+                for col_idx in range(1, len(headers) + 1):
+                    cell = ws.cell(row=current_row, column=col_idx)
+                    cell.border = thin_border
+                    # 除了最后一列靠左，其他居中
+                    if col_idx == len(headers):
+                        cell.alignment = Alignment(horizontal='left', vertical='center', wrap_text=True)
+                    else:
+                        cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
+
+            # 设置列宽 (自动调整)
+            from openpyxl.utils import get_column_letter
+            for col_idx, width in col_widths.items():
+                # 限制最大宽度 50，最小宽度 10
+                adjusted_width = min(max(width * 1.2, 10), 60)
+                ws.column_dimensions[get_column_letter(col_idx)].width = adjusted_width
+
+            wb.save(file_path)
+            QMessageBox.information(self, "下载成功", f"数据已保存到:\n{file_path}")
+
+        except Exception as e:
+            QMessageBox.critical(self, "下载失败", f"保存文件时出错:\n{str(e)}")
 
     def _add_tool_button(self, text, layout, content_widget=None, initial_size=None):
         """添加透明工具按钮"""
@@ -474,12 +616,110 @@ class TopologyWidget(QGraphicsView):
         self.request_info_update.emit(text)
         self._show_panel(button)
 
+    def _on_service_status_search(self):
+        """服务状态信息搜索"""
+        text = self.status_search_input.text()
+
+        # 清除现有高亮
+        cursor = self.service_status_text.textCursor()
+        cursor.clearSelection()
+        self.service_status_text.setTextCursor(cursor)
+
+        # 重置额外选择
+        self.service_status_text.setExtraSelections([])
+
+        if not text:
+            self.status_search_label.setText("0/0")
+            return
+
+        # 查找所有匹配
+        extra_selections = []
+        doc = self.service_status_text.document()
+        highlight_cursor = QTextEdit.ExtraSelection()
+        highlight_cursor.format.setBackground(QColor("#FFFF00"))
+        # highlight_cursor.format.setForeground(QColor("#000000"))
+
+        search_cursor = doc.find(text)
+        count = 0
+        while not search_cursor.isNull():
+            count += 1
+            highlight_selection = QTextEdit.ExtraSelection()
+            highlight_selection.format.setBackground(QColor("#FFFF00"))
+            highlight_selection.cursor = search_cursor
+            extra_selections.append(highlight_selection)
+
+            search_cursor = doc.find(text, search_cursor)
+
+        self.service_status_text.setExtraSelections(extra_selections)
+        self.status_search_label.setText(f"0/{count}")
+
+    def _find_service_status_text(self, backwards=False):
+        """查找下一个/上一个"""
+        text = self.status_search_input.text()
+        if not text:
+            return
+
+        # 设置查找标志
+        flags = QtGui.QTextDocument.FindFlags()
+        if backwards:
+            flags |= QtGui.QTextDocument.FindBackward
+
+        found = self.service_status_text.find(text, flags)
+
+        # 如果没找到，尝试从头/尾开始循环查找
+        if not found:
+            cursor = self.service_status_text.textCursor()
+            if backwards:
+                cursor.movePosition(QtGui.QTextCursor.End)
+            else:
+                cursor.movePosition(QtGui.QTextCursor.Start)
+            self.service_status_text.setTextCursor(cursor)
+            found = self.service_status_text.find(text, flags)
+
+        if found:
+            # 更新计数显示逻辑需要知道当前是第几个
+            # 这是一个优化的点，简单起见我们只更新总数，或者重新遍历计算索引
+            self._update_search_index_display(text)
+
+    def _update_search_index_display(self, text):
+        """更新当前选中的索引显示"""
+        if not text:
+            return
+
+        current_cursor = self.service_status_text.textCursor()
+        current_pos = current_cursor.position()
+
+        # 重新遍历计算当前是第几个
+        doc = self.service_status_text.document()
+        search_cursor = doc.find(text)
+        index = 0
+        total = 0
+
+        while not search_cursor.isNull():
+            total += 1
+            # 判断 current_cursor 是否就在 search_cursor 的范围内
+            # search_cursor.position() 是匹配文本的末尾
+            if search_cursor.position() == current_pos:
+                index = total
+            search_cursor = doc.find(text, search_cursor)
+
+        self.status_search_label.setText(f"{index}/{total}")
+
     def update_vehicle_info(self, info: dict):
-        self.vehicle_labels["vin"].setText(info.get("vin", "—"))
-        self.vehicle_labels["vehicle_mode"].setText(info.get("vehicle_mode", "—"))
-        self.vehicle_labels["user_mode"].setText(info.get("user_mode", "—"))
-        self.vehicle_labels["factory_mode"].setText(info.get("factory_mode", "—"))
-        self.vehicle_labels["voltage"].setText(info.get("voltage", "—"))
+        """
+        更新车辆信息。
+        支持增量更新：只更新 info 中存在的字段，保留其他字段。
+        """
+        if "vin" in info:
+            self.vehicle_labels["vin"].setText(info.get("vin", "—"))
+        if "vehicle_mode" in info:
+            self.vehicle_labels["vehicle_mode"].setText(info.get("vehicle_mode", "—"))
+        if "user_mode" in info:
+            self.vehicle_labels["user_mode"].setText(info.get("user_mode", "—"))
+        if "factory_mode" in info:
+            self.vehicle_labels["factory_mode"].setText(info.get("factory_mode", "—"))
+        if "voltage" in info:
+            self.vehicle_labels["voltage"].setText(info.get("voltage", "—"))
 
     def update_service_status_info(self, info: dict):
         """
@@ -577,7 +817,6 @@ class TopologyWidget(QGraphicsView):
 
         if not node_data:
             return
-
         # 解析节点数据
         # 假设第一个节点是中心节点 (ETH Switch)
         main_node_data = node_data[0]

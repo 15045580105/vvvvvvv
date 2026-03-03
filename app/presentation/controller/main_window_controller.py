@@ -82,8 +82,9 @@ class MainController(BaseController):
         self._search_timer.setInterval(self.SEARCH_DEBOUNCE_MS)
         self._search_timer.timeout.connect(self._do_search)
         app = QtWidgets.QApplication.instance()
-        if app:
-            app.focusChanged.connect(self.on_focus_changed)
+        # 强制类型断言或检查，让IDE知道这是QApplication
+        if isinstance(app, QtWidgets.QApplication):
+             app.focusChanged.connect(self.on_focus_changed)
 
     # ----------------- 导航相关初始化 -----------------
     def _init_navigation(self) -> None:
@@ -230,7 +231,9 @@ class MainController(BaseController):
         controller = self._get_or_create_controller(reg_key) if reg_key else None
         if reg_key in self._dialog_keys and controller is not None:
             try:
-                controller.show_dialog()
+                # 使用 getattr 避免类型提示错误，因为Controller类型不确定
+                if hasattr(controller, 'show_dialog'):
+                    controller.show_dialog()
             except Exception:
                 logger.exception(f"Show dialog failed: {reg_key}")
             return
@@ -369,6 +372,7 @@ class MainController(BaseController):
     def _refresh_performance(self) -> None:
         if self._performance_timer is None:
             return
+        # Use singleShot to run immediately but decoupled from current stack in case of blocking
         QtCore.QTimer.singleShot(0, self._async_collect_performance)
 
     def _async_collect_performance(self) -> None:
@@ -399,7 +403,6 @@ class MainController(BaseController):
                     controller.on_close()
                 except Exception:
                     logger.exception(f"Controller on_close failed: {key}")
-
         # 等待所有后台任务结束（可选）
         QtCore.QThreadPool.globalInstance().waitForDone(1000)
 

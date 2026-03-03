@@ -69,6 +69,10 @@ class FileTransferService(BaseService):
     def is_connected(self):
         return SSHClient().is_connected()
 
+    def list_remote_files(self, path: str):
+        """获取远程文件列表 (Alias for get_remote_file_list)"""
+        return self.get_remote_file_list(path)
+
     def get_remote_file_list(self, path: str):
         """获取远程目录内容，返回 View 所需的结构列表"""
         client = SSHClient().get_client()

@@ -1,24 +1,31 @@
+import logging
 from PyQt5 import QtWidgets
-from PyQt5.QtCore import QThread, pyqtSignal
+from PyQt5.QtCore import QThread, pyqtSignal, QTimer
 
 from app.common.ui.modern_widgets import MessageToast, ModernConfirmDialog
 from app.core.base_controller import BaseController
 from app.core.dependency_injection import di_container
 from app.core.event_bus import event_bus
-from app.modules.device_management.models.device_model import DeviceModel, OFFLINE, ONLINE, DISCONNECTED, CONNECT_FAILED
+from app.modules.device_management.models.device_model import DeviceModel, OFFLINE, DISCONNECTED, CONNECT_FAILED
 from app.modules.device_management.views.device_management_view import DeviceView
 from app.services.device_manage.device_service import DeviceService
 from app.services.system.config_service import ConfigService
 
 
+# 配置日志
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
+
+
 class ConnectWorker(QThread):
-    def __init__(self, service, device):
+    def __init__(self, service, device, log_signal=None):
         super().__init__()
         self.service = service
         self.device = device
+        self.log_signal = log_signal
 
     def run(self):
-        self.service.connect_device(self.device)
+        self.service.connect_device(self.device, log_signal=self.log_signal)
 
 
 class DeviceController(BaseController):
@@ -52,7 +59,66 @@ class DeviceController(BaseController):
         self.device_service.log_signal.connect(self.update_log)
         # 协议状态变更信号，用于刷新三行状态和详情
         self.device_service.protocol_status_changed_signal.connect(self._on_protocol_status_changed)
+        # 重连请求信号
+        self.device_service.reconnect_requested_signal.connect(self._on_reconnect_requested)
 
+    def _on_reconnect_requested(self, device_info: dict, custom_log_signal=None):
+        """处理来自 DeviceService 的重连请求"""
+        target_ip = device_info.get("ip")
+        target_port = int(device_info.get("port", 22))
+
+        # 确定日志输出方式
+        # custom_log_signal 是 LogConfigService.log_signal (PyQtBoundSignal)
+        # 它有 emit 方法，可以用 log_signal.emit(msg)
+        # 或者直接 connect(slot)
+        log_func = None
+
+        if custom_log_signal:
+             if hasattr(custom_log_signal, 'emit'):
+                 log_func = custom_log_signal.emit
+             elif callable(custom_log_signal):
+                 log_func = custom_log_signal
+
+        if not log_func:
+             # Fallback
+             log_func = self.view.append_log
+             # IMPORTANT: If custom_log_signal was invalid/None, ensure we don't pass garbage downstream
+             custom_log_signal = None
+        else:
+             # Debug log to verify we are using custom signal
+             # log_func(f"[DEBUG] Reconnect using custom log signal: {custom_log_signal}")
+             pass
+
+        # 查找设备索引
+        index = -1
+        for i, d in enumerate(self.model.devices):
+            if d.get("ip") == target_ip and int(d.get("port", 22)) == target_port:
+                index = i
+                break
+        if index == -1:
+            log_func(f"重连未找到设备: {target_ip}:{target_port}")
+            return
+
+        log_func(f"收到重连请求，正在执行断开和重连流程: {self._device_repr(index)}")
+
+        # 1. 执行断开逻辑
+        # 注意: _do_disconnect 内部仅调用 service.disconnect_device 和 写日志
+        # 我们暂时手动执行 service 断开，以便控制日志去向
+        device = self.model.devices[index]
+        self.device_service.disconnect_device(device, log_signal=custom_log_signal)
+        log_func(f"断开连接 -> {self._device_repr(index)}")
+
+        # 2. 强制清理客户端 (确保干净的重连环境)
+        self.device_service.reset_connection_clients()
+        log_func(f"正在执行重连: {self._device_repr(index)}，请等候30秒左右......")
+
+        # 3. 延迟执行连接
+        QTimer.singleShot(30000, lambda: self._do_connect(index, log_signal=custom_log_signal))
+
+
+    def _safe_disconnect_log(self, custom_signal):
+        # Deprecated: No longer needed as we pass log_signal explicitly
+        pass
 
     def _on_protocol_status_changed(self, device: dict):
         """当 DeviceService 报告协议状态变化时，更新模型中的对应设备并刷新界面与配置文件。
@@ -221,7 +287,6 @@ class DeviceController(BaseController):
         client_port_edit = QtWidgets.QLineEdit(str(device.get("client_port", "30813")))
         client_id_edit = QtWidgets.QLineEdit(str(device.get("client_id", "30813")))
 
-
         form.addRow("设备名:", name_edit)
         form.addRow("IP地址:", ip_edit)
         form.addRow("SSH端口:", port_edit)
@@ -280,8 +345,9 @@ class DeviceController(BaseController):
         return f"{d.get('name')} {d.get('ip')}:{d.get('port')}"
 
     # -------------------------------------连接/断开/删除等操作 -------------------------------------------------------------
-    def _do_connect(self, index):
-        self.view.append_log(f"开始连接 -> {self._device_repr(index)}")
+    def _do_connect(self, index, log_signal=None):
+        _log = log_signal.emit if log_signal else self.view.append_log
+        _log(f"开始连接 -> {self._device_repr(index)}")
         device = self.model.devices[index]
         ssh_status = str(device.get("ssh_connect_status", OFFLINE))
         doip_status = str(device.get("doip_connect_status", OFFLINE))
@@ -290,13 +356,16 @@ class DeviceController(BaseController):
         # FIX: Also allow if connection previously failed
         allowed = (OFFLINE, DISCONNECTED, CONNECT_FAILED, "连接失败")
         if ssh_status not in allowed or doip_status not in allowed or someip_status not in allowed:
-            MessageToast(self.view).show_toast("仅在所有协议均为离线/已断链状态下可建立连接", 1)
+            # If redirected log, just log it. If GUI interaction, maybe toast is still ok or log it.
+            _log("仅在所有协议均为离线/已断链状态下可建立连接")
+            if not log_signal:
+                 MessageToast(self.view).show_toast("仅在所有协议均为离线/已断链状态下可建立连接", 1)
             return
         # 使用副本进行连接，避免多线程直接修改模型数据（虽然 Service 会发信号回来更新）
         device_copy = device.copy()
 
         # 启动后台线程进行连接，避免阻塞 UI 导致 Loading 动画卡顿
-        worker = ConnectWorker(self.device_service, device_copy)
+        worker = ConnectWorker(self.device_service, device_copy, log_signal=log_signal)
         worker.finished.connect(lambda: self._cleanup_worker(worker))
         self._workers.append(worker)
         worker.start()
@@ -308,11 +377,6 @@ class DeviceController(BaseController):
 
     def _do_disconnect(self, index):
         device = self.model.devices[index]
-        # ssh_status = str(device.get("ssh_connect_status", OFFLINE))
-        # # 只有 SSH 在线时才有必要断开
-        # if ssh_status != ONLINE:
-        #     QtWidgets.QMessageBox.information(self.view, "提示", "当前 SSH 未在线，无需断开")
-        #     return
 
         # 调用 DeviceService.disconnect_device，内部处理三种协议断开并发出协议状态信号
         self.device_service.disconnect_device(device)
@@ -408,3 +472,4 @@ class DeviceController(BaseController):
 
     def update_log(self, message):
         self.view.append_log(message)
+        logger.info(message)

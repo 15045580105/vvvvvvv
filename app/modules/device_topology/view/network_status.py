@@ -151,11 +151,11 @@ class NetworkStatusPanel(QtWidgets.QWidget):
             return widget
 
         ping_nodes = [
-            ("ADC", "adc"),
             ("IDC", "idc"),
+            ("ADC_SOC", "adc_soc"),
+            ("ADC_MCU", "adc_mcu"),
             ("TBOX", "tbox"),
             ("FL", "fl"),
-            ("IFC", "ifc"),
             ("RT1", "rt1"),
             ("RT2", "rt2"),
         ]

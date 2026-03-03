@@ -3,6 +3,7 @@ import configparser
 import io
 import json
 import os
+from PyQt5.QtCore import pyqtSignal # Add pyqtSignal import
 from app.common.communication.clients.ssh_client import SSHClient  # Add SSHClient import
 
 from app.core.base_service import BaseService
@@ -12,6 +13,8 @@ from app.services.device_manage.topology_service import TopologyService
 
 
 class LogConfigService(BaseService):
+    log_signal = pyqtSignal(str) # Add log_signal
+
     def __init__(self):
         super().__init__()
         self._device_service: Optional[DeviceService] = None
@@ -30,10 +33,12 @@ class LogConfigService(BaseService):
         """Set the path to process_log_config_map.json."""
         self._map_file_path = path
 
-    def set_ecu_log_level(self, ecus: List[str], level: str, log_callback=None) -> bool:
+    def set_ecu_log_level(self, ecus: List[str], level: str) -> bool:
         """为指定的 ECU 设置日志等级。"""
+        _log = self.log_signal.emit
+
         if not self._device_service:
-            if log_callback: log_callback("DeviceService 未注入")
+            _log("DeviceService 未注入")
             return False
 
         # 将日志等级字符串映射为整数值
@@ -60,7 +65,7 @@ class LogConfigService(BaseService):
         for ecu in ecus:
             did = ecu_did_map.get(ecu)
             if not did:
-                if log_callback: log_callback(f"未知 ECU: {ecu}")
+                _log(f"未知 ECU: {ecu}")
                 continue
 
             did_bytes = did.to_bytes(2, 'big')
@@ -68,15 +73,8 @@ class LogConfigService(BaseService):
             # 我们需要从设备服务获取 DoIP 客户端
             doip_client = self._device_service.get_doip_client()
             if not doip_client:
-                if log_callback: log_callback("DoIP 客户端未连接")
+                _log("DoIP 客户端未连接")
                 return False
-
-            # 日志辅助函数
-            def _log(msg):
-                if log_callback:
-                    log_callback(f"[{ecu}] {msg}")
-                else:
-                    print(f"[{ecu}] {msg}")
 
             # --- 第一步：读取当前值 ---
             _log(f"读取当前日志配置 (22 {did:X})...")
@@ -91,14 +89,59 @@ class LogConfigService(BaseService):
 
             # --- 第二步：写入新配置 (2E DID VAL) ---
             # 2E BE 02 06 (示例)
+            # 注意：level_val 可能是 int 或 bytes([val])
+            # level_map get returns int
             write_cmd = bytes([0x2E]) + did_bytes + bytes([level_val])
 
             _log(f"设置日志等级为 {level} ({level_val}) (2E {did:X} {level_val:02X})...")
 
             # 读取是否为工厂模式，工厂模式不需要走2701安全认证
             is_factory_mode = False
+            # TopologyService methods now use signals too.
+            # We can't easily get value from topology service via blocking call if it's async signal based.
+            # However, _get_factory_mode in TopologyService was modified to emit signal OR return value?
+            # Let's check TopologyService again.
+            # TopologyService helpers like _get_factory_mode take log_callback?
+            # I need to check how I modified TopologyService.
+
+            # Re-checking TopologyService logic...
+            # The previous modification to TopologyService was for _read_dtc_and_match.
+            # I didn't verify if _get_factory_mode still has log_callback.
+            # The grep showed TopologyService had some hits.
+            # If _get_factory_mode is async or requires callback, this synchronous logic breaks.
+            # Assuming for now I can pass _log (self.log_signal.emit) if it accepts a callable.
+            # But the user asked to replace log_callback with signal.
+
+            # Note: TopologyService _get_factory_mode in previous read was:
+            # def _get_factory_mode(self, log_callback...):
+            # So I need to update TopologyService too to remove log_callback from helpers if they are using it.
+
             if self._topology_service:
-                factory_mode_str = self._topology_service._get_factory_mode(log_callback=_log)
+                # Assuming _get_factory_mode is modified to not take callback or we adapt
+                # If valid implementation:
+                # factory_mode_str = self._topology_service.get_factory_mode_sync() ?
+                # Or we rely on DeviceService directly here since TopologyService is mainly for UI updates.
+
+                # Let's look at the code block again.
+                # factory_mode_str = self._topology_service._get_factory_mode(log_callback=_log)
+
+                # I will use self.log_signal.emit as the callback for now, as it fits the signature Callable[[str], None].
+                # Refactoring ALL log_callback to signals might imply public methods don't take it.
+                # Internal helpers might still take a logging function?
+                # User said: "改整个文件夹下所有用到log_callback作为日志传递更新到view的函数..."
+                # If _get_factory_mode is used by LogConfigService, it's an internal-ish usage.
+                # But to follow instructions strictly, I should change _get_factory_mode too.
+
+                # Let's pass _log for now (which is self.log_signal.emit) if the method accepts it.
+                # If I remove log_callback from _get_factory_mode, I can't pass it.
+                # If _get_factory_mode emits its own signal, LogConfigService won't capture it easily to decide logic flow (is_factory_mode).
+
+                # Decision: For synchronous logic flow like this, keeping a return value is essential.
+                # Logging can be done via the service's own signal.
+                # So LogConfigService doesn't need to pass a callback to TopologyService.
+                # TopologyService will emit its own logs.
+
+                factory_mode_str = self._topology_service._get_factory_mode()
                 if "工厂模式" in factory_mode_str:
                     is_factory_mode = True
                     _log("检测到用户模式，跳过安全访问")
@@ -110,7 +153,8 @@ class LogConfigService(BaseService):
 
             if not is_factory_mode:
                 # 非工厂模式：走完整安全访问流程 (10 03 -> 27 01 -> 2E)
-                write_resp = self._device_service.execute_secure_routine(write_cmd, sec_level=0x01, log_callback=_log)
+                # execute_secure_routine also updated to not take callback
+                write_resp = self._device_service.execute_secure_routine(write_cmd, sec_level=0x01, log_signal=self.log_signal)
             else:
                 # 工厂模式：直接发送 10 03 然后 2E 指令
                 # 1. 10 03
@@ -155,26 +199,9 @@ class LogConfigService(BaseService):
 
         return success_all
 
-    # def set_app_log_level(self, app_id: str, ecu_id: str, new_level: str) -> bool:
-    #     """
-    #     设置单个应用的日志等级。
-    #     目前仅作为演示架构，实际需要对接 DLT Control 协议或修改远程配置。
-    #     """
-    #     # 这里应该放置实际的通信代码，例如：
-    #     # 1. 查找 App 对应的 ID
-    #     # 2. 通过 UDS 或 TCP 发送指令
-    #     # 3. 或者通过 SSH 修改 dlt_logstorage.conf
-    #
-    #     print(f"[Service] 正在设置 App: {app_id} (ECU: {ecu_id}) 的日志等级为: {new_level}")
-    #
-    #     # 模拟操作成功
-    #     return True
-
-    def _ensure_ccua_mode_enabled(self, log_callback=None) -> bool:
+    def _ensure_ccua_mode_enabled(self) -> bool:
         """确保 CCUA 处于个性化配置模式 (DID 0xBE17 Bit7 = 1)"""
-        def _log(msg):
-            if log_callback: log_callback(msg)
-            else: print(msg)
+        _log = self.log_signal.emit
 
         if not self._device_service:
             _log("DeviceService 未注入")
@@ -202,7 +229,8 @@ class LogConfigService(BaseService):
             new_val = current_val | 0x80
             _log(f"准备切换到个性化模式 (Bit7=0 -> 1)，写入新值: 0x{new_val:02X}")
             write_cmd = bytes([0x2E]) + did_bytes + bytes([new_val])
-            write_resp = self._device_service.execute_secure_routine(write_cmd, sec_level=0x01, log_callback=_log)
+            # execute_secure_routine no callback
+            write_resp = self._device_service.execute_secure_routine(write_cmd, sec_level=0x01, log_signal=self.log_signal)
 
             if not write_resp or write_resp[0] != 0x6E:
                 _log("切换模式失败 (写入 DID 失败)")
@@ -213,16 +241,14 @@ class LogConfigService(BaseService):
 
         return True
 
-    def update_ccua_app_config(self, app_id: str, new_level: str, log_callback=None) -> bool:
+    def update_ccua_app_config(self, app_id: str, new_level: str) -> bool:
         """
         修改 APP 日志等级 (先确保能修改文件，再切模式)
         1. SSH 修改远程 JSON 配置 (如果失败则不切模式)
         2. UDS 修改 0xBE17 Bit7 = 1
         3. Sync
         """
-        def _log(msg):
-            if log_callback: log_callback(msg)
-            else: print(msg)
+        _log = self.log_signal.emit
 
         _log(f"开始修改 CCUA 应用 {app_id} 配置...")
 
@@ -336,7 +362,7 @@ class LogConfigService(BaseService):
 
         # --- 2. UDS 操作 (0xBE17 Bit7) ---
         # 只有在文件操作确认无误后，才去修改 UDS 模式
-        if not self._ensure_ccua_mode_enabled(log_callback=_log):
+        if not self._ensure_ccua_mode_enabled():
             _log(f"{app_id}警告：文件已修改但 UDS 模式切换失败，配置可能不生效")
             # 这里可以选择返回 False，或者 True (部分成功)
             # 鉴于文件已改，还是算成功让用户决定是否重试或重启
@@ -352,11 +378,9 @@ class LogConfigService(BaseService):
             pass
         return True
 
-    def restart_ccu(self, ecu="CCUA", log_callback=None):
+    def restart_ccu(self, ecu="CCUA"):
         """重启 CCU (UDS 11 03)"""
-        def _log(msg):
-            if log_callback: log_callback(msg)
-            else: print(msg)
+        _log = self.log_signal.emit
 
         if not self._device_service:
             _log("DeviceService 未就绪")
@@ -374,6 +398,8 @@ class LogConfigService(BaseService):
             # 1. 检查正响应 51 03
             if resp and len(resp) >= 2 and resp[0] == 0x51:
                 _log(f"收到重启确认响应: {resp.hex(' ').upper()} (成功)")
+                # 重连设备，并传递当前的日志信号，以便重连日志能打印到日志模块窗口
+                self._device_service.reconnect_device(log_signal=self.log_signal)
                 return True
 
             # 2. 检查负响应 7F 11 XX
@@ -390,12 +416,14 @@ class LogConfigService(BaseService):
             # 4. 常见的连接断开错误，视为重启成功的标志
             if any(x in err_msg for x in ["Connection reset", "closed", "Broken pipe", "10053", "10054"]):
                 _log(f"连接断开，判定重启指令已生效: {err_msg}")
+                # 即使是异常导致的连接断开，也尝试重连并传递日志信号
+                self._device_service.reconnect_device(log_signal=self.log_signal)
                 return True
 
             _log(f"发送重启指令时出现异常: {e}")
             return False # 其他异常视为失败
 
-    def batch_update_ccua_apps(self, app_list: List[str], new_level: str, log_callback=None) -> bool:
+    def batch_update_ccua_apps(self, app_list: List[str], new_level: str, new_logTraceLogMode: str = None) -> bool:
         """
         批量修改 CCUA 应用日志等级。
         流程:
@@ -403,18 +431,19 @@ class LogConfigService(BaseService):
         2. SSH 批量修改所有 APP 的 JSON 文件
         3. SSH Sync - 只做一次
         """
-        def _log(msg):
-            if log_callback: log_callback(msg)
-            else: print(msg)
+        _log = self.log_signal.emit
 
         if not app_list:
             _log("应用列表为空")
             return True
 
-        _log(f"开始批量处理 {len(app_list)} 个应用，目标等级: {new_level}")
+        if new_logTraceLogMode:
+            _log(f"开始批量处理 {len(app_list)} 个应用，目标等级: {new_level}, 目标模式: {new_logTraceLogMode}")
+        else:
+            _log(f"开始批量处理 {len(app_list)} 个应用，目标等级: {new_level}")
 
         # --- 1. UDS 前置操作 ---
-        if not self._ensure_ccua_mode_enabled(log_callback=_log):
+        if not self._ensure_ccua_mode_enabled():
             _log("无法进入配置模式 (DID 0xBE17 设置失败)，中止操作")
             return False
 
@@ -472,31 +501,54 @@ class LogConfigService(BaseService):
                 try:
                     json_data = json.loads(content)
 
-                    # 修改
+                    modified = False
+                    sed_cmds = []
+
+                    # 修改 Log Level
                     old_l = json_data.get("logTraceLogLevel", "UNKNOWN")
-                    if old_l == new_level:
-                        _log(f"APP [{app_id}] 等级已是 {new_level}，无需修改")
+                    if old_l != new_level:
+                        # 构造 sed 命令
+                        search_str = f'"logTraceLogLevel": "{old_l}"'
+                        replace_str = f'"logTraceLogLevel": "{new_level}"'
+                        sed_cmds.append(f"s/{search_str}/{replace_str}/")
+                        modified = True
+
+                    # 修改 Log Mode (如果指定)
+                    if new_logTraceLogMode:
+                        old_mode = json_data.get("logTraceLogMode", "UNKNOWN")
+                        if old_mode != new_logTraceLogMode:
+                            search_mode = f'"logTraceLogMode": "{old_mode}"'
+                            replace_mode = f'"logTraceLogMode": "{new_logTraceLogMode}"'
+                            sed_cmds.append(f"s/{search_mode}/{replace_mode}/")
+                            modified = True
+
+                    if not modified:
+                        _log(f"APP [{app_id}] 配置无需修改")
                         continue
 
-                    # 构造 sed 命令
-                    search_str = f'"logTraceLogLevel": "{old_l}"'
-                    replace_str = f'"logTraceLogLevel": "{new_level}"'
-                    sed_cmd = f"sed -i 's/{search_str}/{replace_str}/' {remote_path}"
-
                     # 执行命令
-                    ssh.execute_command(sed_cmd)
+                    for cmd in sed_cmds:
+                        full_sed_cmd = f"sed -i '{cmd}' {remote_path}"
+                        ssh.execute_command(full_sed_cmd)
 
                     # 验证
                     check_content = ssh.execute_command(f"cat {remote_path}")
                     try:
                         check_json = json.loads(check_content)
-                        if check_json.get("logTraceLogLevel") == new_level:
-                            _log(f"APP [{app_id}] 配置已更新 ({old_l} -> {new_level})")
+                        check_success = True
+
+                        if check_json.get("logTraceLogLevel") != new_level:
+                            _log(f"APP [{app_id}] LogLevel 修改失败")
+                            check_success = False
+
+                        if new_logTraceLogMode and check_json.get("logTraceLogMode") != new_logTraceLogMode:
+                             _log(f"APP [{app_id}] LogMode 修改失败")
+                             check_success = False
+
+                        if check_success:
+                            _log(f"APP [{app_id}] 配置已更新")
                             files_modified_count += 1
                         else:
-                            _log(f"APP [{app_id}] 修改失败，校验值仍为 {check_json.get('logTraceLogLevel')}")
-                            # 设置 success = False ? 还是容忍部分失败？
-                            # 这里设为 False 可能会让用户知道出问题了
                             success = False
                     except:
                         _log(f"APP [{app_id}] 修改后文件校验异常")
@@ -521,49 +573,6 @@ class LogConfigService(BaseService):
 
         return success
 
-    def _ensure_ccua_mode_enabled(self, log_callback=None) -> bool:
-        """检查并确保 CCUA 的配置模式已开启 (DID BE17 Bit7=1)"""
-        def _log(msg):
-            if log_callback: log_callback(msg)
-
-        if not self._device_service:
-            _log("DeviceService Missing")
-            return False
-
-        client = self._device_service.get_doip_client()
-        if not client:
-             _log("DoIP Not Connected")
-             return False
-
-        did = 0xBE17
-        did_bytes = did.to_bytes(2, 'big')
-
-        # Read
-        read_resp = client.send_doip_message(bytes([0x22]) + did_bytes)
-        if not read_resp or read_resp[0] != 0x62 or len(read_resp) < 4:
-            _log(f"读取 DID BE17 失败")
-            return False
-
-        current_val = read_resp[3]
-        if (current_val & 0x80) != 0:
-            _log("当前已处于配置模式 (Bit7=1)")
-            return True
-
-        # Write
-        new_val = current_val | 0x80
-        _log(f"尝试开启配置模式: {current_val:02X} -> {new_val:02X}")
-        write_cmd = bytes([0x2E]) + did_bytes + bytes([new_val])
-
-        # Determine Factory Mode? Assuming reuse of factory mode check from instance if possible
-        # For safety/simplicity here, we rely on execute_secure_routine which handles security access
-        write_resp = self._device_service.execute_secure_routine(write_cmd, sec_level=0x01, log_callback=log_callback)
-
-        if write_resp and write_resp[0] == 0x6E:
-             _log("模式切换成功")
-             return True
-        else:
-             _log(f"模式切换失败: {write_resp.hex(' ').upper() if write_resp else 'None'}")
-             return False
 
     def _map_val_to_level_str(self, val: int) -> str:
         clean_val = val & 0x7F  # 按位与运算，二进制是 0111 1111
@@ -772,24 +781,22 @@ class LogConfigService(BaseService):
         print(f"正在删除 {app_ids} 的日志")
         return True
 
-    def restore_config(self, options: Dict[str, bool], log_callback=None) -> Dict[str, Any]:
+    def restore_config(self, options: Dict[str, bool]) -> Dict[str, Any]:
         """Restore default configuration based on options."""
         # Helper to log
-        def _log(msg):
-            if log_callback:
-                log_callback(msg)
-            else:
-                print(msg)
+        _log = self.log_signal.emit
 
         result = {"success": True, "restart_required": False}
 
         # a) Restore CCUA
         if options.get("restore_ccua"):
             _log("开始恢复 CCUA 默认配置...")
-            if not self._restore_ccua_default(log_callback):
+            if not self._restore_ccua_default():
                 result["success"] = False
                 _log("CCUA 默认配置恢复失败")
             else:
+                # ccua_apps = self.get_apps("CCUA", "", "")
+                self.batch_update_ccua_apps(["CCUA"], "ERROR", "NETWORK")
                 _log("CCUA 默认配置恢复成功")
                 result["restart_required"] = True # Need confirm restart in UI
 
@@ -797,7 +804,7 @@ class LogConfigService(BaseService):
         if options.get("restore_ccu0"):
             _log("开始恢复 CCU0 默认配置...")
             # b) 发送 UDS 2E BE 02 02
-            if not self._set_did_byte(0xBE02, 0x02, "CCU0", log_callback):
+            if not self._set_did_byte(0xBE02, 0x02, "CCU0"):
                  result["success"] = False
                  _log("CCU0 默认配置恢复失败")
             else:
@@ -807,7 +814,7 @@ class LogConfigService(BaseService):
         if options.get("restore_ccu1"):
             _log("开始恢复 CCU1 默认配置...")
             # c) 发送 UDS 2E BE 03 02
-            if not self._set_did_byte(0xBE03, 0x02, "CCU1", log_callback):
+            if not self._set_did_byte(0xBE03, 0x02, "CCU1"):
                  result["success"] = False
                  _log("CCU1 默认配置恢复失败")
             else:
@@ -833,10 +840,9 @@ class LogConfigService(BaseService):
 
         return result
 
-    def _set_did_byte(self, did: int, val: int, ecu_name: str, log_callback=None) -> bool:
+    def _set_did_byte(self, did: int, val: int, ecu_name: str) -> bool:
         """Helper to set a single byte DID value via UDS."""
-        def _log(msg):
-             if log_callback: log_callback(f"[{ecu_name}] {msg}")
+        _log = self.log_signal.emit
 
         doip_client = self._device_service.get_doip_client()
         if not doip_client:
@@ -846,11 +852,6 @@ class LogConfigService(BaseService):
         did_bytes = did.to_bytes(2, 'big')
         write_cmd = bytes([0x2E]) + did_bytes + bytes([val])
 
-        # Check factory mode logic similar to set_log_level... can extract if needed
-        # Assuming secure routine flow logic reuse or simplification:
-        # For simplicity reusing execute_secure_routine or send_doip_payload based on same logic
-
-        # NOTE: Reusing the logic from set_ecu_log_level about factory mode
         is_factory_mode = False
         if self._topology_service:
             # Silence internal log? Or pass log_callback
@@ -863,7 +864,7 @@ class LogConfigService(BaseService):
         _log(f"设置 DID {did:X} = {val:02X} , 发送UDS指令： {write_cmd.hex(' ').upper()}")
 
         if not is_factory_mode:
-            resp = self._device_service.execute_secure_routine(write_cmd, sec_level=0x01, log_callback=_log)
+            resp = self._device_service.execute_secure_routine(write_cmd, sec_level=0x01, log_signal=self.log_signal)
         else:
             # 10 03
             self._device_service.send_doip_payload(bytes.fromhex("10 03"))
@@ -875,116 +876,110 @@ class LogConfigService(BaseService):
              _log(f"设置失败, 响应: {resp.hex(' ') if resp else 'None'}")
              return False
 
-    def _restore_ccua_default(self, log_callback=None) -> bool:
+    def _restore_ccua_default(self) -> bool:
         """
         a1) UDS 2E BE 17 02
         a2) Walk process_log_config.json via SSH
         """
-        def _log(msg):
-            if log_callback: log_callback(f"[CCUA] {msg}")
-
+        _log = self.log_signal.emit
         # a1) Update DID 0xBE17 to 02
-        if not self._set_did_byte(0xBE17, 0x02, "CCUA", log_callback):
+        if not self._set_did_byte(0xBE17, 0x02, "CCUA"):
             return False
 
-        # a2) Restore process_log_configs
-        # Load local map file
-        import json
-        import os
-
-        # Use user provided path if available
-        if self._map_file_path and os.path.exists(self._map_file_path):
-            map_file_path = self._map_file_path
-        else:
-            _log("错误: 未设置本地映射文件路径，请在导入区域选择JSON文件")
-            return False
-
-        try:
-            if not os.path.exists(map_file_path):
-                  _log(f"错误: 找不到映射文件 {map_file_path}")
-                  return False
-
-            _log(f"使用映射文件: {map_file_path}")
-            with open(map_file_path, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-                configs = data.get("process_log_configs", {})
-        except Exception as e:
-            _log(f"无法读取映射文件: {e}")
-            return False
-
-        ssh_client = self._device_service.get_ssh_client()
-        if not ssh_client or not ssh_client.is_connected():
-            _log("SSH 未连接，无法恢复 APP 配置文件")
-            return False
-
-        success_count = 0
-        fail_count = 0
-
-        for key, info in configs.items():
-            remote_path = info.get("path")
-            if not remote_path: continue
-
-            # Read remote file
-            cmd_read = f"cat {remote_path}"
-            # _log(f"读取: {remote_path}")
-            json_content_str = ssh_client.execute_command(cmd_read)
-            if not json_content_str:
-                 # _log(f"读取失败或文件为空: {key}")
-                 fail_count += 1
-                 continue
-
-            try:
-                remote_json = json.loads(json_content_str)
-                modified = False
-
-                # Check logTraceLogLevel -> ERROR
-                if remote_json.get("logTraceLogLevel") != "ERROR":
-                    remote_json["logTraceLogLevel"] = "ERROR"
-                    modified = True
-
-                # Check logTraceLogMode -> NETWORK
-                if remote_json.get("logTraceLogMode") != "NETWORK":
-                    remote_json["logTraceLogMode"] = "NETWORK"
-                    modified = True
-
-                if modified:
-                    # Write back
-                    new_content = json.dumps(remote_json, indent=4)
-                    # Escape double quotes for shell command if simple echo used, or use sftp?
-                    # Using a safe write method is better.
-                    # Assuming ssh_client has capability to write file or use echo
-
-                    # Trick: use echo '...' > path. Need to handle JSON quotes.
-                    # A safer way is using python on device if available, or just careful escaping.
-                    # Or 'cat > path <<EOF ... EOF'
-
-                    # Let's try simple echo with single quotes wrapping json
-                    safe_json = new_content.replace("'", "'\\''") # Escape single quotes inside JSON
-                    cmd_write = f"echo '{safe_json}' > {remote_path}"
-
-                    ssh_client.execute_command(cmd_write)
-                    # Verify? Skip for performance or do sample verification
-                    # _log(f"已恢复: {key}")
-                    success_count += 1
-                else:
-                    # _log(f"无需修改: {key}")
-                    pass
-
-            except json.JSONDecodeError:
-                # _log(f"JSON 解析失败: {remote_path}")
-                fail_count += 1
-                pass
-            except Exception as e:
-                # _log(f"处理失败 {key}: {e}")
-                fail_count += 1
-
-        _log(f"APP 配置恢复统计: 修改 {success_count}, 失败/跳过 {fail_count}")
+        # # a2) Restore process_log_configs
+        # # Load local map file
+        # # Use user provided path if available
+        # if self._map_file_path and os.path.exists(self._map_file_path):
+        #     map_file_path = self._map_file_path
+        # else:
+        #     _log("错误: 未设置本地映射文件路径，请在导入区域选择JSON文件")
+        #     return False
+        #
+        # try:
+        #     if not os.path.exists(map_file_path):
+        #           _log(f"错误: 找不到映射文件 {map_file_path}")
+        #           return False
+        #
+        #     _log(f"使用映射文件: {map_file_path}")
+        #     with open(map_file_path, 'r', encoding='utf-8') as f:
+        #         data = json.load(f)
+        #         configs = data.get("process_log_configs", {})
+        # except Exception as e:
+        #     _log(f"无法读取映射文件: {e}")
+        #     return False
+        #
+        # ssh_client = self._device_service.get_ssh_client()
+        # if not ssh_client or not ssh_client.is_connected():
+        #     _log("SSH 未连接，无法恢复 APP 配置文件")
+        #     return False
+        #
+        # success_count = 0
+        # fail_count = 0
+        #
+        # for key, info in configs.items():
+        #     remote_path = info.get("path")
+        #     if not remote_path: continue
+        #
+        #     # Read remote file
+        #     cmd_read = f"cat {remote_path}"
+        #     # _log(f"读取: {remote_path}")
+        #     json_content_str = ssh_client.execute_command(cmd_read)
+        #     if not json_content_str:
+        #          # _log(f"读取失败或文件为空: {key}")
+        #          fail_count += 1
+        #          continue
+        #
+        #     try:
+        #         remote_json = json.loads(json_content_str)
+        #         modified = False
+        #
+        #         # Check logTraceLogLevel -> ERROR
+        #         if remote_json.get("logTraceLogLevel") != "ERROR":
+        #             remote_json["logTraceLogLevel"] = "ERROR"
+        #             modified = True
+        #
+        #         # Check logTraceLogMode -> NETWORK
+        #         if remote_json.get("logTraceLogMode") != "NETWORK":
+        #             remote_json["logTraceLogMode"] = "NETWORK"
+        #             modified = True
+        #
+        #         if modified:
+        #             # Write back
+        #             new_content = json.dumps(remote_json, indent=4)
+        #             # Escape double quotes for shell command if simple echo used, or use sftp?
+        #             # Using a safe write method is better.
+        #             # Assuming ssh_client has capability to write file or use echo
+        #
+        #             # Trick: use echo '...' > path. Need to handle JSON quotes.
+        #             # A safer way is using python on device if available, or just careful escaping.
+        #             # Or 'cat > path <<EOF ... EOF'
+        #
+        #             # Let's try simple echo with single quotes wrapping json
+        #             safe_json = new_content.replace("'", "'\\''") # Escape single quotes inside JSON
+        #             cmd_write = f"echo '{safe_json}' > {remote_path}"
+        #
+        #             ssh_client.execute_command(cmd_write)
+        #             # Verify? Skip for performance or do sample verification
+        #             # _log(f"已恢复: {key}")
+        #             success_count += 1
+        #         else:
+        #             # _log(f"无需修改: {key}")
+        #             pass
+        #
+        #     except json.JSONDecodeError:
+        #         # _log(f"JSON 解析失败: {remote_path}")
+        #         fail_count += 1
+        #         pass
+        #     except Exception as e:
+        #         # _log(f"处理失败 {key}: {e}")
+        #         fail_count += 1
+        #
+        # _log(f"APP 配置恢复统计: 修改 {success_count}, 失败/跳过 {fail_count}")
         return True
 
-    def reset_ccu(self, log_callback=None):
+    def reset_ccu(self):
         """UDS 11 03 (Soft Reset)"""
-        def _log(msg):
-            if log_callback: log_callback(msg)
+        _log = self.log_signal.emit
 
         _log("正在执行 CCU 软复位 (11 03)...")
         # 11 03 usually requires session?

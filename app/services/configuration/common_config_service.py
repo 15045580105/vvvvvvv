@@ -1,5 +1,7 @@
 import logging
 from typing import List, Dict, Any, Optional, Callable
+from PyQt5.QtCore import QObject, pyqtSignal
+
 from app.services.device_manage.device_service import DeviceService
 from app.services.system.config_service import ConfigService as SystemConfigService
 # Use new DPTManager to handle logic
@@ -10,8 +12,11 @@ import os
 
 logger = logging.getLogger(__name__)
 
-class CommonConfigService:
+class CommonConfigService(QObject):
+    log_signal = pyqtSignal(str)
+
     def __init__(self):
+        super().__init__()
         self._device_service: Optional[DeviceService] = None
         self._system_config_service = SystemConfigService()
         self._config_name = "common_config_settings"
@@ -21,27 +26,27 @@ class CommonConfigService:
         self._device_service = device_service
 
 
-    def read_param(self, did: str, log_callback: Optional[Callable[[str], None]] = None) -> Optional[str]:
+    def read_param(self, did: str) -> Optional[str]:
         """读取参数值"""
         if not self._device_service:
-            if log_callback: log_callback("设备服务未连接")
+            self.log_signal.emit("设备服务未连接")
             return None
 
         client = self._device_service.get_doip_client()
         if not client:
-            if log_callback: log_callback("DoIP客户端未连接")
+            self.log_signal.emit("DoIP客户端未连接")
             return None
 
         try:
             did_int = int(did, 16)
             did_bytes = did_int.to_bytes(2, 'big')
         except ValueError:
-            if log_callback: log_callback(f"无效的DID: {did}")
+            self.log_signal.emit(f"无效的DID: {did}")
             return None
 
         # 22 DID
         cmd = bytes([0x22]) + did_bytes
-        if log_callback: log_callback(f"发送读取指令: {cmd.hex(' ').upper()}")
+        self.log_signal.emit(f"发送读取指令: {cmd.hex(' ').upper()}")
 
         resp = client.send_doip_message(cmd)
         if resp and resp[0] == 0x62:
@@ -55,18 +60,18 @@ class CommonConfigService:
             except:
                 val_str = data.hex(' ').upper()
 
-            if log_callback: log_callback(f"读取成功: {val_str}")
+            self.log_signal.emit(f"读取成功: {val_str}")
             return val_str
         else:
             err = resp.hex(' ').upper() if resp else "无响应"
-            if log_callback: log_callback(f"读取失败: {err}")
+            self.log_signal.emit(f"读取失败: {err}")
             return None
 
 
-    def execute_routine(self, rid: str, log_callback: Optional[Callable[[str], None]] = None) -> bool:
+    def execute_routine(self, rid: str) -> bool:
         """执行例程"""
         if not self._device_service:
-            if log_callback: log_callback("设备服务未连接")
+            self.log_signal.emit("设备服务未连接")
             return False
 
         try:
@@ -82,41 +87,45 @@ class CommonConfigService:
                 rid_bytes = rid_int.to_bytes(2, 'big')
                 cmd = bytes([0x31, 0x01]) + rid_bytes
         except ValueError:
-            if log_callback: log_callback(f"无效的RID: {rid}")
+            self.log_signal.emit(f"无效的RID: {rid}")
             return False
 
         # 使用 execute_secure_routine 来处理安全访问（如果需要）
         # 这里假设常用例程可能需要安全访问
-        if log_callback: log_callback(f"发送执行指令: {cmd.hex(' ').upper()}")
+        self.log_signal.emit(f"发送执行指令: {cmd.hex(' ').upper()}")
 
         # 注意：execute_secure_routine 返回的是响应bytes或False
         # 这里我们假设 sec_level=0x01 (根据之前的代码)
-        resp = self._device_service.execute_secure_routine(cmd, sec_level=0x01, log_callback=log_callback)
+        # DeviceService 的 execute_secure_routine 已经被要求修改为不接受 log_callback，或者如果它还没被修改，我们需要修改它。
+        # 假设 DeviceService 已经或将要被修改为使用信号，或者我们需要传入一个适配器。
+        # 鉴于用户要求“全部更改”，DeviceService 也应该改。
+        # 这里暂时不传 log_callback，假设 DeviceService 会自己 log 或者我们不需要从它那里通过 callback 获取 log。
+        # 但要注意 execute_secure_routine 的定义。如果它强制要求 callback，并在内部调用，那我们得传点东西。
+        # 暂时传入 self.log_signal.emit 作为 callback？不，用户说“全部更改为日志通过信号转来发”。
+        # 如果 execute_secure_routine 也改成了信号，那这里不需要传。
+        resp = self._device_service.execute_secure_routine(cmd, sec_level=0x01, log_signal=self.log_signal)
 
         if resp:
             # 检查响应
             # 11服务响应是 51
             # 31服务响应是 71
             if cmd[0] == 0x11 and resp[0] == 0x51:
-                if log_callback: log_callback("执行成功")
+                self.log_signal.emit("执行成功")
                 return True
             elif cmd[0] == 0x31 and resp[0] == 0x71:
-                if log_callback: log_callback("执行成功")
+                self.log_signal.emit("执行成功")
                 return True
             else:
-                if log_callback: log_callback(f"执行失败，响应: {resp.hex(' ').upper()}")
+                self.log_signal.emit(f"执行失败，响应: {resp.hex(' ').upper()}")
                 return False
         else:
-            if log_callback: log_callback("执行失败")
+            self.log_signal.emit("执行失败")
             return False
 
-    def execute_2e_service(self, service_info, log_callback=None):
+    def execute_2e_service(self, service_info):
         """执行 2E 服务"""
-        def _log(msg):
-            if log_callback:
-                log_callback(msg)
-            else:
-                print(msg)
+        # 使用类内部的信号发射函数作为日志记录器
+        _log = self.log_signal.emit
 
         if not self._device_service:
             _log("设备服务未连接")
@@ -199,7 +208,6 @@ class CommonConfigService:
                      key_obj, # param_obj (Lookup Name)
                      val_obj, # param_state (Value)
                      service_info=service_info,
-                     log_callback=_log
                  )
 
                  # --- Process Param State Input ---
@@ -210,7 +218,6 @@ class CommonConfigService:
                          placeholder_state, # Lookup Name (e.g. "CMS Port")
                          param_state_val,   # Value (e.g. "5566")
                          service_info=service_info,
-                         log_callback=_log
                      )
 
                      # Merge res_1 and res_2
@@ -303,7 +310,7 @@ class CommonConfigService:
         _log(f"发送指令: {command.hex(' ').upper()}")
 
         # 执行 UDS (需要安全访问 27 01)
-        resp = self._device_service.execute_secure_routine(command, sec_level=0x01, log_callback=_log)
+        resp = self._device_service.execute_secure_routine(command, sec_level=0x01, log_signal=self.log_signal)
 
         if resp and resp[0] == 0x6E: # Positive Response for 2E is 6E
              _log("执行成功")
@@ -320,8 +327,9 @@ class CommonConfigService:
 
         self.dpt_file_path = path
 
-    def _calculate_byte_from_dpt(self, did_hex, param_obj_selected, param_state_selected, service_info=None, log_callback=None):
+    def _calculate_byte_from_dpt(self, did_hex, param_obj_selected, param_state_selected, service_info=None):
         """根据 DPT 文件定义计算 Byte 值"""
+        _log = self.log_signal.emit
         # Ensure we use the correct DPT path (Logic from existing code)
         dpt_path = None
         if hasattr(self, 'dpt_file_path_2e') and self.dpt_file_path_2e:
@@ -330,7 +338,7 @@ class CommonConfigService:
            dpt_path = self.dpt_file_path
 
         if not dpt_path:
-             if log_callback: log_callback("DPT 文件路径未设置")
+             _log("DPT 文件路径未设置")
              return None
 
 
@@ -369,7 +377,7 @@ class CommonConfigService:
                  obj_name = content_raw.strip()
 
              if obj_name:
-                 if log_callback: log_callback(f"参数对象为空/无效，使用 Content 名称: '{obj_name}' 进行计算")
+                 _log(f"参数对象为空/无效，使用 Content 名称: '{obj_name}' 进行计算")
                  local_param_obj = obj_name
         # --- 结束兼容处理 ---
 
@@ -386,7 +394,7 @@ class CommonConfigService:
 
         for obj in objects_to_process:
             # 遍历每一个选项，计算其在 byte 中的值
-            val = self._dpt_manager.calculate_byte_val(did_hex, obj, param_state_selected, log_callback)
+            val = self._dpt_manager.calculate_byte_val(did_hex, obj, param_state_selected, _log)
             if val is not None:
                 # 累加值 (使用按位或，因为通常是不同 bit 位)
                 val_int = int.from_bytes(val, 'big')
@@ -395,11 +403,10 @@ class CommonConfigService:
                 calculated_any = True
 
         if calculated_any:
-             if log_callback:
-                 log_callback(f"DPT计算成功: {final_val:02X}")
+             _log(f"DPT计算成功: {final_val:02X}")
              return final_val.to_bytes(target_len, 'big')
         else:
-             if log_callback: log_callback(f"DPT计算失败或未选中有效对象")
+             _log(f"DPT计算失败或未选中有效对象")
              return None
 
     def load_2e_config(self, file_path: str) -> List[Dict[str, Any]]:
@@ -463,7 +470,7 @@ class CommonConfigService:
             return settings.get("last_routine_config_path")
         return None
 
-    def execute_routine_service(self, service_info: Dict[str, Any], log_callback: Callable[[str], None] = None) -> bool:
+    def execute_routine_service(self, service_info: Dict[str, Any]) -> bool:
         """执行 $31 / $2F 服务 (适配 View 闭包调用)"""
         # 兼容旧代码，这里直接调用 execute_routine_v2
         # 注意：View 中传递的 service_info 已经包含了 paramObject_val 和 paramState_val (如果是 CheckableComboBox 动态绑定的)
@@ -473,19 +480,13 @@ class CommonConfigService:
         param_state_val = service_info.get("paramState_val", "---")
         routine_control_type_val = service_info.get("routineControlType_val", "---")
         
-        return self.execute_routine_v2(service_info, param_obj_val, param_state_val, routine_control_type_val, log_callback)
+        return self.execute_routine_v2(service_info, param_obj_val, param_state_val, routine_control_type_val)
 
-    def execute_routine_v2(self, service_info: Dict[str, Any], param_obj_val: str, param_state_val: str, routine_control_type_val: str,
-                        log_callback: Callable[[str], None] = None) -> bool:
+    def execute_routine_v2(self, service_info: Dict[str, Any], param_obj_val: str, param_state_val: str, routine_control_type_val: str) -> bool:
         """
         执行 $31 / $2F 服务 (New Logic)
         """
-        def _log(msg):
-            if log_callback:
-                log_callback(msg)
-            else:
-                 # Standard logging if no callback and signal not available
-                logger.info(msg)
+        _log = self.log_signal.emit
 
         if not self._device_service or not self._device_service.get_doip_client():
             _log("设备未连接 (DoIP)，无法执行服务")
@@ -742,7 +743,7 @@ class CommonConfigService:
 
             _log(f"发送 Routine 指令: {command.hex(' ').upper()}")
 
-            resp = self._device_service.execute_secure_routine(command, sec_level=0x01, log_callback=_log)
+            resp = self._device_service.execute_secure_routine(command, sec_level=0x01, log_signal=self.log_signal)
 
             expected_resp_sid = sid_bytes[0] + 0x40
             if resp and resp[0] == expected_resp_sid:

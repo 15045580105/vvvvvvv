@@ -18,6 +18,7 @@ class LogDownloadController(BaseController):
         self.view = LogDownloadView(parent)
         # 2. 初始化下载管理器
         self.manager = DownloadManager()
+        self.manager.log_signal.connect(self._on_worker_log)
         self.workers = [] # Keep references to prevent GC
         # 3. 初始化状态变量
         # 记录被用户请求取消的文件路径集合
@@ -72,10 +73,10 @@ class LogDownloadController(BaseController):
         worker.start()
         self.workers.append(worker)
 
-    def _do_fetch_paths_task(self, log_cb):
+    def _do_fetch_paths_task(self):
         """[子线程] 执行远程日志目录获取任务。"""
         # 1. 尝试从 /log 获取子目录结构
-        return self.manager.fetch_remote_path_options("/log", log_cb)
+        return self.manager.fetch_remote_path_options("/log")
 
     def _on_paths_fetched(self, result):
         """处理日志目录列表获取结果，更新界面下拉框。"""
@@ -188,6 +189,13 @@ class LogDownloadController(BaseController):
         criteria = self.view.get_filter_criteria()
         path_kw = (criteria.get("path_kw") or "").strip()
 
+        # 连接管理器信号
+        try:
+            self.manager.log_signal.disconnect()
+        except:
+            pass
+        self.manager.log_signal.connect(self._on_worker_log)
+
         # 2. 创建 Worker 执行刷新任务
         worker = Worker(self._do_refresh_task, path_kw)
         # 3. 连接结果信号，刷新完成后恢复状态
@@ -199,19 +207,19 @@ class LogDownloadController(BaseController):
         self.workers.append(worker)
         worker.start()
 
-    def _do_refresh_task(self, log_cb: Callable[[str], None], custom_path: str = None):
+    def _do_refresh_task(self, custom_path: str = None):
         """[子线程] 执行从设备获取日志文件列表的任务。"""
-        log_cb(f"开始执行刷新任务... 参数 custom_path={custom_path}")
+        # log_cb(f"开始执行刷新任务... 参数 custom_path={custom_path}")
 
         # 1. 检查设备连接状态
         if not self.manager.is_connected():
-            log_cb("⚠️ 设备未连接，无法获取文件列表。请先连接设备。")
+            # log_cb("⚠️ 设备未连接，无法获取文件列表。请先连接设备。")
             return None
 
         # 2. 调用 Manager 获取业务对象列表
-        log_cb("正在调用 Manager fetch_log_list...")
-        raw_list = self.manager.fetch_log_list(log_callback=log_cb, custom_path=custom_path)
-        log_cb(f"Manager 返回原始数据条数: {len(raw_list) if raw_list else 0}")
+        # log_cb("正在调用 Manager fetch_log_list...")
+        raw_list = self.manager.fetch_log_list(custom_path=custom_path)
+        # log_cb(f"Manager 返回原始数据条数: {len(raw_list) if raw_list else 0}")
 
         # 3. 在子线程中进行数据归一化
         if raw_list:
@@ -219,7 +227,7 @@ class LogDownloadController(BaseController):
             for item in raw_list:
                 # 使用 Model 的静态方法进行处理
                 normalized_list.append(LogDownloadModel.static_normalize(item))
-            log_cb(f"数据归一化完成. 第一条数据示例: {normalized_list[0].get('filename', 'Unknown')}")
+            # log_cb(f"数据归一化完成. 第一条数据示例: {normalized_list[0].get('filename', 'Unknown')}")
             return normalized_list
 
         return raw_list
@@ -311,18 +319,18 @@ class LogDownloadController(BaseController):
         self.workers.append(worker)
         worker.start()
 
-    def _do_download_items(self, log_cb, file_pairs, local_dir):
+    def _do_download_items(self, file_pairs, local_dir):
         """[子线程] 顺序执行文件下载任务。"""
-        log_cb(f"开始批量下载任务, 总数: {len(file_pairs)}")
+        # log_cb(f"开始批量下载任务, 总数: {len(file_pairs)}")
         results = []
         for index, (remote_path, filename) in enumerate(file_pairs):
-            log_cb(f"正在处理第 {index+1}/{len(file_pairs)} 个: {remote_path}")
+            # log_cb(f"正在处理第 {index+1}/{len(file_pairs)} 个: {remote_path}")
 
             # 1. 下载前检查是否取消
             if remote_path in self.cancelled_files:
                 self.model.update_file_status(remote_path, "已取消", 0)
                 results.append((remote_path, False, "User Cancelled"))
-                log_cb(f"文件已取消: {filename}")
+                # log_cb(f"文件已取消: {filename}")
                 continue
 
             # 2. 准备本地路径，处理重名

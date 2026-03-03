@@ -8,7 +8,7 @@ from app.common.utils.worker import Worker
 
 
 # Define task outside of class to avoid closure issues and ensure clean state
-def fetch_time_task(ssh_client, log_callback):
+def fetch_time_task(ssh_client):
     """独立的 SSH 任务函数，运行在 Worker 线程中"""
     if not ssh_client:
         return None
@@ -26,8 +26,7 @@ def fetch_time_task(ssh_client, log_callback):
             "uptime_full": uptime_out.strip() if uptime_out else ""
         }
     except Exception as e:
-        if log_callback:
-            log_callback(f"Fetch VM1 Time Error: {str(e)}")
+        print(f"Fetch VM1 Time Error: {str(e)}")
         return None
 
 
@@ -81,7 +80,7 @@ class ClockManagementController(BaseController):
             return
 
         # 创建 Worker
-        worker = Worker(lambda log_cb: fetch_time_task(ssh_client, log_cb))
+        worker = Worker(lambda: fetch_time_task(ssh_client))
 
         # 使用 lambda 绑定 clock_id
         worker.result_signal.connect(lambda res: self._on_time_fetched(clock_id, res))

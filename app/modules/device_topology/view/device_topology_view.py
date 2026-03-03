@@ -54,23 +54,35 @@ class TopologyView(BaseView):
         # 注意：现在它位于 topology_widget 的悬浮面板中
         self.network_status_panel = self.topology_widget.network_diag_widget
 
+    def update_single_vehicle_info(self, key: str, value: str):
+        """更新单个车辆信息"""
+        self.topology_widget.update_vehicle_info({key: value})
+
+    def update_single_service_status(self, key: str, value: str):
+        """更新单个服务状态信息"""
+        # TopologyWidget.update_service_status_info 期望 key='status_summary'
+        self.topology_widget.update_service_status_info({key: value})
+
+    def update_single_security_info(self, key: str, value: str):
+        """更新单个证书信息"""
+        self.topology_widget.update_security_info({key: value})
+
+    def update_single_network_info(self, key: str, value: str):
+        """更新单个网络管理信息"""
+        self.topology_widget.update_network_mgmt({key: value})
+
+    def update_single_storage_info(self, key: str, value: str):
+        """更新单个存储信息"""
+        self.topology_widget.update_storage_info({key: value})
+
+    def update_single_version_info(self, key: str, value: str):
+        """更新单个版本信息"""
+        # TopologyWidget 似乎把版本信息也当作 storage? 检查 TopologyWidget 代码
+        # 假设 update_version_info 存在
+        self.topology_widget.update_version_info({key: value})
+
     def update_vehicle_info(self, info: dict):
         self.topology_widget.update_vehicle_info(info)
-
-    def update_service_status_info(self, info: dict):
-        self.topology_widget.update_service_status_info(info)
-
-    def update_security_info(self, info: dict):
-        self.topology_widget.update_security_info(info)
-
-    def update_network_mgmt(self, info: dict):
-        self.topology_widget.update_network_mgmt(info)
-
-    def update_storage_info(self, info: dict):
-        self.topology_widget.update_storage_info(info)
-
-    def update_version_info(self, info: dict):
-        self.topology_widget.update_version_info(info)
 
     def set_loading(self, loading: bool):
         """设置加载状态"""
@@ -83,6 +95,7 @@ class TopologyView(BaseView):
         log_msg = f"[{timestamp}] {text}"
         self.log_view.append(log_msg)
         OperationLogManager.instance().append_log("设备拓扑", text)
+
 
 
 if __name__ == '__main__':

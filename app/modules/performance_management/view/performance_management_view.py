@@ -1,7 +1,9 @@
+import os
 from PyQt5 import QtWidgets, QtCore, QtGui
 from PyQt5.QtChart import QChart, QChartView, QLineSeries, QValueAxis, QAreaSeries
 from PyQt5.QtGui import QPainter, QColor, QLinearGradient, QGradient
 from app.common.ui.widgets import ModernButton
+from app.common.utils.path_utils import get_performance_export_path
 
 
 class MetricCard(QtWidgets.QFrame):
@@ -196,14 +198,18 @@ class PerformanceView(QtWidgets.QWidget):
         # --- Metrics Tab ---
         self.metrics_tab = QtWidgets.QWidget()
         metrics_layout = QtWidgets.QVBoxLayout(self.metrics_tab)
-        metrics_layout.addWidget(self._build_metrics_controls())
+        # Note: _build_metrics_content needs to be called after controls if it depends on them,
+        # but here controls are built first which sets up buttons.
+        metrics_controls = self._build_metrics_controls()
+        metrics_layout.addWidget(metrics_controls)
         metrics_layout.addWidget(self._build_metrics_content(), stretch=1)
         self.tabs.addTab(self.metrics_tab, "性能监控")
 
         # --- Process Tab ---
         self.process_tab = QtWidgets.QWidget()
         process_layout = QtWidgets.QVBoxLayout(self.process_tab)
-        process_layout.addWidget(self._build_process_controls())
+        process_controls = self._build_process_controls()
+        process_layout.addWidget(process_controls)
         process_layout.addWidget(self._build_process_group(), stretch=1)
         self.tabs.addTab(self.process_tab, "进程监控")
 
@@ -212,6 +218,13 @@ class PerformanceView(QtWidgets.QWidget):
         # Enable links in status labels
         self.metrics_status_label.setOpenExternalLinks(True)
         self.process_status_label.setOpenExternalLinks(True)
+
+    def _open_export_folder(self):
+        folder_path = get_performance_export_path()
+        if os.path.exists(folder_path):
+            QtGui.QDesktopServices.openUrl(QtCore.QUrl.fromLocalFile(folder_path))
+        else:
+            QtWidgets.QMessageBox.warning(self, "警告", f"目录不存在:\n{folder_path}")
 
     def _build_metrics_controls(self):
         group = QtWidgets.QGroupBox("性能监控设置")
@@ -228,10 +241,13 @@ class PerformanceView(QtWidgets.QWidget):
         self.metrics_stop_btn = ModernButton("结束", "#F59E0B", "⏹️")
         self.metrics_stop_btn.setEnabled(False)
         self.metrics_export_btn = ModernButton("导出数据", "#2563EB", "💾")
+        self.metrics_open_btn = ModernButton("打开导出文件路径", "#6366F1", "📂") # Add Button
+        self.metrics_open_btn.clicked.connect(self._open_export_folder)
 
         layout.addWidget(self.metrics_start_btn)
         layout.addWidget(self.metrics_stop_btn)
         layout.addWidget(self.metrics_export_btn)
+        layout.addWidget(self.metrics_open_btn) # Add to Layout
 
         self.metrics_status_label = QtWidgets.QLabel("未开始监控")
         self.metrics_status_label.setStyleSheet("color: #6B7280;")
@@ -256,10 +272,13 @@ class PerformanceView(QtWidgets.QWidget):
         self.process_stop_btn = ModernButton("结束", "#F59E0B", "⏹️")
         self.process_stop_btn.setEnabled(False)
         self.process_export_btn = ModernButton("导出数据", "#2563EB", "💾")
+        self.process_open_btn = ModernButton("打开导出文件路径", "#6366F1", "📂") # Add Button
+        self.process_open_btn.clicked.connect(self._open_export_folder)
 
         layout.addWidget(self.process_start_btn)
         layout.addWidget(self.process_stop_btn)
         layout.addWidget(self.process_export_btn)
+        layout.addWidget(self.process_open_btn) # Add to Layout
 
         self.process_status_label = QtWidgets.QLabel("未开始监控")
         self.process_status_label.setStyleSheet("color: #6B7280;")
@@ -429,7 +448,7 @@ class PerformanceView(QtWidgets.QWidget):
             # We need a baseline series (y=0) for the area
             # But QAreaSeries takes two line series. The lower one can be 0.
             # However, dynamically updating QAreaSeries is tricky because we need to update the underlying line series.
-            # A common trick is to have a "lower" series that always has y=0 for the same x points.
+            # A common trick is to have a "lower" series that mirrors the x values of the main series but y is always 0.
             # Let's try to implement this.
 
             # For simplicity in dynamic updates, we might just use the line series for now.

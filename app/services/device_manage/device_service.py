@@ -15,21 +15,15 @@ from app.core.dependency_injection import di_container
 from app.modules.device_management.models.device_model import CONNECTING, DISCONNECTED, CONNECT_FAILED
 from app.services.configuration.config_service import AppConfigurationService
 
-# Suppress the SIP/PyQt deprecation about sipPyTypeDict() which is raised from the
-# underlying extension module. This is a runtime DeprecationWarning originating
-# in PyQt/sip internals and safe to ignore in the short term. Long-term fix is to
-# upgrade PyQt/sip to versions that no longer use sipPyTypeDict.
-warnings.filterwarnings(
-    "ignore",
-    message=r".*sipPyTypeDict\(\) is deprecated.*",
-    category=DeprecationWarning,
-)
 
 class DeviceService(QObject):
     # 文本日志信号
     log_signal = pyqtSignal(str)
     # 协议状态变更信号：payload 为包含 ip/port 及各协议状态字段的 device dict
     protocol_status_changed_signal = pyqtSignal(dict)
+    # 新增: 申请重连信号，参数为设备信息, 日志信号
+    reconnect_requested_signal = pyqtSignal(dict, object)
+
     # 设备操作进度信号：payload 为文本描述
     """设备管理领域的 Service 层封装。"""
 
@@ -48,7 +42,7 @@ class DeviceService(QObject):
             self._config_service = AppConfigurationService()
             di_container.register_singleton(AppConfigurationService, self._config_service)
 
-    def connect_device(self, device: Dict[str, Any]) -> None:
+    def connect_device(self, device: Dict[str, Any], log_signal: Optional[pyqtSignal] = None) -> None:
         """连接单个设备：按 SSH/DoIP/SomeIP 三种协议尝试建链，并统一发出状态信号。
         """
         # 保存设备配置以便重连使用
@@ -65,38 +59,78 @@ class DeviceService(QObject):
 
         # 1. SomeIP 客户端准备
         time.sleep(1.0)
-        self._connect_someip(device)
+        self._connect_someip(device, log_signal)
         self._change_status(device)
 
         # 2. DoIP 连接
         # 模拟连接过程，避免瞬间完成导致看不到转圈
         time.sleep(1.0)
-        self._connect_doip(device)
+        self._connect_doip(device, log_signal)
         self._change_status(device)
 
-
-        # 3. SSH 连接：通过执行 ipconfig 验证链路
+        # 3. SSH 连接：通过执行激活DoIP激活命令，才能连接ssh服务
         time.sleep(0.5)
-        self.active_ssh_command()
-        self._connect_ssh(device)
+        self.active_ssh_command(log_signal)
+        self._connect_ssh(device, log_signal=log_signal)
         self._change_status(device)
+        if log_signal is not None:
+            log_signal.emit("设备连接成功")
+        else:
+            self.log_signal.emit("设备连接成功")
+
+    def reset_connection_clients(self) -> None:
+        """强制关闭并清理当前客户端实例，确保后续重连为全新连接。(公开版本，供Controller调用)"""
+        self._reset_connection_clients()
+
+    def _reset_connection_clients(self) -> None:
+        """强制关闭并清理当前客户端实例，确保后续重连为全新连接。"""
+        try:
+            if self._ssh_client is not None:
+                self._ssh_client.disconnect()
+        except Exception:
+            pass
+        try:
+            if self._someip_client is not None:
+                self._someip_client.stop()
+        except Exception:
+            pass
+        try:
+            if self._doip_handler is not None:
+                self._doip_handler.disconnect()
+        except Exception:
+            pass
+        self._ssh_client = None
+        self._someip_client = None
+        self._doip_handler = None
+
+    def reconnect_device(self, log_signal: Optional[pyqtSignal] = None) -> None:
+        """请求重连最后一次连接的设备。逻辑委托给 Controller 层处理。"""
+        if not self._last_connected_device:
+            self.log_signal.emit("无上次连接设备记录，无法重连")
+            return
+
+        # 发送重连请求信号，由 Controller 接收并执行 _do_disconnect / _do_connect
+        # 传递设备信息副本，供 Controller 查找对应索引
+        device = self._last_connected_device.copy()
+
+        # 发送信号，通知上层 UI 控制器执行重连流程
+        self.reconnect_requested_signal.emit(device, log_signal)
 
 
-    def disconnect_device(self, device: Dict[str, Any]) -> None:
+    def disconnect_device(self, device: Dict[str, Any], log_signal: Optional[pyqtSignal] = None) -> None:
         """断开设备三种协议连接，并发出状态信号。"""
         # 1. 主动关闭 DoIP 连接
-        self._disconnect_doip(device)
-
+        self._disconnect_doip(device, log_signal)
         # 2.停止 SOME/IP 客户端
-        self._disconnect_someip(device)
-
+        self._disconnect_someip(device, log_signal)
         # 3.断开ssh连接
-        self._disconnect_ssh(device)
+        self._disconnect_ssh(device, log_signal)
         self._change_status(device)
 
 
-    def _disconnect_ssh(self, device):
-        self.log_signal.emit("正在通过SSH断开设备...")
+    def _disconnect_ssh(self, device, log_signal: Optional[pyqtSignal] = None):
+        _log = log_signal.emit if log_signal else self.log_signal.emit
+        _log("正在通过SSH断开设备...")
         try:
             if not self._ssh_client is None and self._ssh_client.is_connected():
                 self._ssh_client.disconnect()
@@ -104,11 +138,12 @@ class DeviceService(QObject):
                 device["ssh_connect_info"] = "SSH已断链成功"
         except Exception as e:
             msg = f"SSH 断开异常: {e}"
-            self.log_signal.emit(msg)
+            _log(msg)
             device["ssh_connect_status"] = CONNECT_FAILED
             device["ssh_connect_info"] = msg
 
-    def _disconnect_someip(self, device):
+    def _disconnect_someip(self, device, log_signal: Optional[pyqtSignal] = None):
+        _log = log_signal.emit if log_signal else self.log_signal.emit
         if self._someip_client is not None:
             try:
                 self._someip_client.stop()
@@ -116,12 +151,13 @@ class DeviceService(QObject):
                 device["someip_connect_info"] = "SomeIP已断链成功"
             except Exception as e:
                 msg = f"SomeIP 断开异常: {e}"
-                self.log_signal.emit(msg)
+                _log(msg)
                 device["someip_connect_status"] = CONNECT_FAILED
                 device["someip_connect_info"] = msg
 
 
-    def _disconnect_doip(self, device):
+    def _disconnect_doip(self, device, log_signal: Optional[pyqtSignal] = None):
+        _log = log_signal.emit if log_signal else self.log_signal.emit
         if self._doip_handler is not None:
             try:
                 self._doip_handler.disconnect()
@@ -129,7 +165,7 @@ class DeviceService(QObject):
                 device["doip_connect_info"] = "DoIP已断链成功"
             except Exception as e:
                 msg = f"SomeIP 断开异常: {e}"
-                self.log_signal.emit(msg)
+                _log(msg)
                 device["doip_connect_status"] = CONNECT_FAILED
                 device["doip_connect_info"] = msg
 
@@ -141,12 +177,13 @@ class DeviceService(QObject):
             return False
         return self._ssh_client.is_connected()
 
-    def _connect_doip(self, device: Dict[str, Any]) -> None:
+    def _connect_doip(self, device: Dict[str, Any], log_signal: Optional[pyqtSignal] = None) -> None:
         """内部辅助：为当前设备建立 DoIP 连接，并在 device 上写入状态字段。
         约定使用字段：
           - doip_connect_status: 建链成功 / 连接失败 / 离线
           - doip_connect_info: 失败原因或成功提示
         """
+        _log = log_signal.emit if log_signal else self.log_signal.emit
         ip = device.get("ip") or ""
         # 默认使用经典 DoIP 端口 13400，如有特殊端口可后续通过 device 字段扩展
         tcp_port = int(device.get("doip_port", 13400))
@@ -178,7 +215,7 @@ class DeviceService(QObject):
             ecu_logical_address = int(doip_settings.get("target_phy_addr", "0x004F"), 16)
 
         # ECU 逻辑地址及本机逻辑地址可按需从 device 中扩展配置，这里使用 DoIPClientHandler 默认值
-        self.log_signal.emit(f"正在通过DoIP连接设备 {ip}:{tcp_port}...")
+        _log(f"正在通过DoIP连接设备 {ip}:{tcp_port}...")
         if not ip:
             device["doip_connect_status"] = "连接失败"
             device["doip_connect_info"] = "缺少 ECU IP"
@@ -212,7 +249,7 @@ class DeviceService(QObject):
                 client_logical_address=client_logical_address
             )
         except Exception as exc:  # 防御性捕获，避免影响 SSH
-            self.log_signal.emit(f"DoIP 连接异常: {exc}")
+            _log(f"DoIP 连接异常: {exc}")
             device["doip_connect_status"] = "连接失败"
             device["doip_connect_info"] = str(exc)
             return
@@ -224,8 +261,9 @@ class DeviceService(QObject):
             device["doip_connect_status"] = "连接失败"
             device["doip_connect_info"] = f"DoIP 连接 {ip}:{tcp_port} 失败"
 
-    def _get_mac_address(self, ip_address: str) -> str:
+    def _get_mac_address(self, ip_address: str, log_signal: Optional[pyqtSignal] = None) -> str:
         """获取指定 IP 地址对应的网卡 MAC 地址"""
+        _log = log_signal.emit if log_signal else self.log_signal.emit
         try:
             for interface, snics in psutil.net_if_addrs().items():
                 for snic in snics:
@@ -236,10 +274,10 @@ class DeviceService(QObject):
                             if snic_mac.family == psutil.AF_LINK:
                                 return snic_mac.address.replace("-", ":").upper()
         except Exception as e:
-            self.log_signal.emit(f"获取 MAC 地址失败: {e}")
+            _log(f"获取 MAC 地址失败: {e}")
         return ""
 
-    def _ensure_someip_client(self, device: Dict[str, Any]) -> SomeIPClient | None:
+    def _ensure_someip_client(self, device: Dict[str, Any], log_signal: Optional[pyqtSignal] = None) -> SomeIPClient | None:
         """内部辅助：创建并启动 SomeIPClient。
 
         使用设备配置中的参数进行连接：
@@ -249,6 +287,7 @@ class DeviceService(QObject):
         - vlan_id: VLAN ID
         - client_id: 客户端 ID (用于 SomeIP header)
         """
+        _log = log_signal.emit if log_signal else self.log_signal.emit
         if self._someip_client is not None:
             # TODO: 如果参数变化是否需要重启？目前假定单例
             return self._someip_client
@@ -294,32 +333,33 @@ class DeviceService(QObject):
         if config_local_ip:
             LOCAL_CLIENT_IP = config_local_ip
         else:
-             self.log_signal.emit(f"警告: SomeIP 本地 IP 未配置")
+             _log(f"警告: SomeIP 本地 IP 未配置")
              LOCAL_CLIENT_IP = "172.16.64.47"
         LOCAL_CLIENT_IP = "172.16.64.47"
-        LOCAL_CLIENT_MAC = self._get_mac_address(LOCAL_CLIENT_IP)
+        LOCAL_CLIENT_MAC = self._get_mac_address(LOCAL_CLIENT_IP, log_signal)
         if not LOCAL_CLIENT_MAC:
              # Fallback MAC if look up fails
              LOCAL_CLIENT_MAC = "00:00:00:00:00:00"
 
-        self.log_signal.emit(f"启动 SomeIPClient: Multi={multicast_ip}:{multicast_port}, LocalPort={local_port}, ClientID={hex(client_id)}, VLAN={vlan_id}, LocalIP={LOCAL_CLIENT_IP}, MAC={LOCAL_CLIENT_MAC}")
+        _log(f"启动 SomeIPClient: Multi={multicast_ip}:{multicast_port}, LocalPort={local_port}, ClientID={hex(client_id)}, VLAN={vlan_id}, LocalIP={LOCAL_CLIENT_IP}, MAC={LOCAL_CLIENT_MAC}")
 
         client = SomeIPClient(local_ip=LOCAL_CLIENT_IP, local_port=local_port, client_id=client_id,
                               multicast_ip=multicast_ip, multicast_port=multicast_port, vlan_id=vlan_id,
                               client_mac=LOCAL_CLIENT_MAC)
         started = client.start()
         if not started:
-            self.log_signal.emit(f"SomeIP 客户端启动失败，配置: IP={LOCAL_CLIENT_IP}")
+            _log(f"SomeIP 客户端启动失败，配置: IP={LOCAL_CLIENT_IP}")
             return None
         self._someip_client = client
         return self._someip_client
 
-    def _connect_someip(self, device: Dict[str, Any]) -> None:
-        self.log_signal.emit(f"正在通过SomeIP连接设备...")
+    def _connect_someip(self, device: Dict[str, Any], log_signal: Optional[pyqtSignal] = None) -> None:
+        _log = log_signal.emit if log_signal else self.log_signal.emit
+        _log(f"正在通过SomeIP连接设备...")
         """内部辅助：为当前设备准备 SOME/IP 通信客户端，并更新状态字段。
         注意：SOME/IP 多数场景是无连接 UDP，这里仅表示“本地客户端已就绪”。
         """
-        client = self._ensure_someip_client(device)
+        client = self._ensure_someip_client(device, log_signal)
         if client is None:
             device["someip_connect_status"] = "连接失败"
             device["someip_connect_info"] = "SomeIP 客户端启动失败"
@@ -345,7 +385,9 @@ class DeviceService(QObject):
         self,
         device: Dict[str, Any],
         timeout: int = 30,
+        log_signal: Optional[pyqtSignal] = None
     ) -> tuple[str, str, int] | None:
+        _log = log_signal.emit if log_signal else self.log_signal.emit
         host = device.get("ip")
         port = int(device.get("port", 22))
         username = device.get("user") or device.get("username") or "root"
@@ -361,22 +403,22 @@ class DeviceService(QObject):
                 return "", "SSH 认证失败", 255
             device["ssh_connect_status"] = "建链成功"
             device["ssh_connect_info"] = f"SSH 已连接到 {host}:{port}"
-            self.log_signal.emit(f"SSH 已连接到 {host}:{port}")
+            _log(f"SSH 已连接到 {host}:{port}")
         except AuthenticationException as e:
             msg = f"SSH认证失败: {e}"
-            self.log_signal.emit(msg)
+            _log(msg)
             device["ssh_connect_status"] = "连接失败"
             device["ssh_connect_info"] = msg
             return "", msg, 255
         except SSHException as e:
             msg = f"SSH错误: {e}"
-            self.log_signal.emit(msg)
+            _log(msg)
             device["ssh_connect_status"] = "连接失败"
             device["ssh_connect_info"] = msg
             return "", msg, 255
         except Exception as e:
             msg = f"SSH未知错误: {e}"
-            self.log_signal.emit(msg)
+            _log(msg)
             device["ssh_connect_status"] = "连接失败"
             device["ssh_connect_info"] = msg
             return "", msg, 255
@@ -407,19 +449,23 @@ class DeviceService(QObject):
 
 
     def close_device_connections(self):
-        self._ssh_client.disconnect()
-        self._someip_client.stop()
-        self._doip_handler.disconnect()
+        if self._ssh_client is not None:
+            self._ssh_client.disconnect()
+        if self._someip_client is not None:
+            self._someip_client.stop()
+        if self._doip_handler is not None:
+            self._doip_handler.disconnect()
 
 
-    def active_ssh_command(self):
+    def active_ssh_command(self, log_signal: Optional[pyqtSignal] = None):
         """
         发送 DoIP 指令激活 SSH (或其他功能)
         """
-        self.log_signal.emit("开始发送激活 SSH 指令...")
+        _log = log_signal.emit if log_signal else self.log_signal.emit
+        _log("开始发送激活 SSH 指令...")
         # 31 01 BE E9
         routine = bytes.fromhex("31 01 BE E9")
-        self.execute_secure_routine(routine, sec_level=0x21)
+        self.execute_secure_routine(routine, sec_level=0x21, log_signal=log_signal)
 
     def send_doip_payload(
             self,
@@ -455,7 +501,7 @@ class DeviceService(QObject):
                     self.log_signal.emit("重连失败，放弃发送")
                     return None
             else:
-                self.log_signal.emit("DoIP 未连接且无历史连接记录，无法自动重连")
+                # self.log_signal.emit("DoIP 未连接且无历史连接记录，无法自动重连")
                 return None
 
         # 3. 尝试发送
@@ -499,7 +545,7 @@ class DeviceService(QObject):
 
         return resp
 
-    def execute_secure_routine(self, routine_command: bytes, sec_level: int = 0x21, log_callback: Optional[Callable[[str], None]] = None, return_on_auth_fail: bool = False) -> bool | bytes:
+    def execute_secure_routine(self, routine_command: bytes, sec_level: int = 0x21, return_on_auth_fail: bool = False, log_signal: Optional[pyqtSignal] = None) -> bool | bytes:
         """
         执行带安全访问的 UDS 例程序列:
         1. 10 03 (Extended Session)
@@ -508,73 +554,69 @@ class DeviceService(QObject):
 
         :param routine_command: 例程指令 bytes
         :param sec_level: 安全访问级别
-        :param log_callback: 日志回调函数
         :param return_on_auth_fail: 安全访问失败是否退出
+        :param log_signal: 用于发送日志的信号，如果为None则使用self.log_signal
         :return: 成功返回 响应数据(bytes)，失败返回 False。
         """
-        # 定义内部日志函数
-        def _log(msg: str):
-            if log_callback:
-                log_callback(msg)
-            else:
-                self.log_signal.emit(msg)
+        # 确定使用的日志信号或emit函数
+        log_emit = log_signal.emit if log_signal else self.log_signal.emit
 
         client = self.get_doip_client()
         if not client:
-            _log("DoIP 未连接，无法发送指令")
+            log_emit("DoIP 未连接，无法发送指令")
             return False
 
         # 1. 诊断会话控制 (10 03)
         tx_session = bytes.fromhex("10 03")
-        _log(f"发送: {tx_session.hex(' ').upper()}")
+        log_emit(f"发送: {tx_session.hex(' ').upper()}")
         rx_session = client.send_doip_message(tx_session)
         if not rx_session or rx_session[0] != 0x50:
-            _log(f"会话控制失败: {rx_session.hex(' ').upper() if rx_session else '无响应'}")
+            log_emit(f"会话控制失败: {rx_session.hex(' ').upper() if rx_session else '无响应'}")
             return False
-        _log(f"会话控制成功: {rx_session.hex(' ').upper()}")
+        log_emit(f"会话控制成功: {rx_session.hex(' ').upper()}")
 
         # 2. 安全访问
         tx_seed = bytes([0x27, sec_level])
-        _log(f"请求种子: {tx_seed.hex(' ').upper()}")
+        log_emit(f"请求种子: {tx_seed.hex(' ').upper()}")
         rx_seed = client.send_doip_message(tx_seed)
 
         if not rx_seed or rx_seed[0] != 0x67:
-            _log(f"请求种子失败: {rx_seed.hex(' ').upper() if rx_seed else '无响应'}")
+            log_emit(f"请求种子失败: {rx_seed.hex(' ').upper() if rx_seed else '无响应'}")
             return False
-        _log(f"收到种子: {rx_seed.hex(' ').upper()}")
+        log_emit(f"收到种子: {rx_seed.hex(' ').upper()}")
 
         # 计算密钥
         if len(rx_seed) < 3:
-            _log("种子响应长度不足")
+            log_emit("种子响应长度不足")
             return False
 
         seed = rx_seed[2:]
         key, error_msg = SecurityAccessHelper.calculate_key(sec_level, seed)
 
         if not key:
-            _log(f"密钥计算失败: {error_msg}")
+            log_emit(f"密钥计算失败: {error_msg}")
             return False
 
         # 发送密钥
         tx_key = bytes([0x27, sec_level + 1]) + key
-        _log(f"发送密钥: {tx_key.hex(' ').upper()}")
+        log_emit(f"发送密钥: {tx_key.hex(' ').upper()}")
         rx_key = client.send_doip_message(tx_key)
 
         if not rx_key or rx_key[0] != 0x67:
-            _log(f"安全访问失败: {rx_key.hex(' ').upper() if rx_key else '无响应'}")
+            log_emit(f"安全访问失败: {rx_key.hex(' ').upper() if rx_key else '无响应'}")
             if return_on_auth_fail:
                 return False
         else:
-            _log(f"安全访问成功: {rx_key.hex(' ').upper()}")
+            log_emit(f"安全访问成功: {rx_key.hex(' ').upper()}")
 
         # 3. 例程控制
-        _log(f"发送例程: {routine_command.hex(' ').upper()}")
+        log_emit(f"发送例程: {routine_command.hex(' ').upper()}")
         rx_routine = client.send_doip_message(routine_command)
 
         # 检查响应是否为肯定响应 (Request Service ID + 0x40)
         expected_response_sid = routine_command[0] + 0x40
         if not rx_routine or rx_routine[0] != expected_response_sid:
-            _log(f"例程控制失败: {rx_routine.hex(' ').upper() if rx_routine else '无响应'}")
+            log_emit(f"例程控制失败: {rx_routine.hex(' ').upper() if rx_routine else '无响应'}")
             return False
-        _log(f"例程控制成功: {rx_routine.hex(' ').upper()}")
+        log_emit(f"例程控制成功: {rx_routine.hex(' ').upper()}")
         return rx_routine

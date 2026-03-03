@@ -1,5 +1,4 @@
 from PyQt5 import QtCore, QtWidgets
-from PyQt5.QtWidgets import QInputDialog
 
 from app.common.utils.worker import Worker  # 引入 Worker
 from app.core.base_controller import BaseController
@@ -8,6 +7,7 @@ from app.modules.log_config.model.log_config_model import LogConfigModel
 from app.modules.log_config.view.log_config_view import LogConfigView, LogConfigEditDialog
 from app.services.configuration.log_config_service import LogConfigService
 from app.services.device_manage.device_service import DeviceService
+from app.common.utils.config_center import ConfigCenter  # Add ConfigCenter import
 
 
 class LogConfigController(BaseController):
@@ -26,7 +26,16 @@ class LogConfigController(BaseController):
         if device_service:
             self.log_config_service.inject_device_service(device_service)
 
+        # Load persisted map path
+        saved_path = ConfigCenter.get_log_map_path()
+        if saved_path:
+            self.view.map_path_edit.setText(saved_path)
+            self.log_config_service.set_map_file_path(saved_path)
+            self.view.append_log(f"已恢复配置文件路径: {saved_path}")
+
         self._workers = []
+
+        self.log_config_service.log_signal.connect(self.view.append_log)
 
         self._bind_signals()
 
@@ -58,6 +67,9 @@ class LogConfigController(BaseController):
         # Import Map File
         self.view.import_map_btn.clicked.connect(self._on_import_map)
 
+        self.log_config_service.log_signal.connect(self.view.append_log)
+
+
     def _on_import_map(self):
         from PyQt5 import QtWidgets
         file_path, _ = QtWidgets.QFileDialog.getOpenFileName(
@@ -66,6 +78,8 @@ class LogConfigController(BaseController):
         if file_path:
             self.view.map_path_edit.setText(file_path)
             self.log_config_service.set_map_file_path(file_path)
+            # Save path to config center
+            ConfigCenter.set_log_map_path(file_path)
             self.view.show_message(f"已加载配置文件: {file_path}", "success")
             # 如果 APP tab 需要依赖此文件刷新，可以在这里调用刷新
             # self._on_app_refresh()
@@ -87,10 +101,17 @@ class LogConfigController(BaseController):
              # self.view.show_message("设备未连接 (DoIP)，无法执行配置", "error")
              return
 
+        # 临时连接 Service 信号到 View (安全地先断开以防重复)
+        try:
+            self.log_config_service.log_signal.disconnect()
+        except Exception:
+            pass
+
         # 使用 Worker 在后台线程执行，避免阻塞 UI
         # from app.common.utils.worker import Worker # 已移至顶部导入
         def task(log_callback):
-            return self.log_config_service.set_ecu_log_level(selected_ecus, log_level, log_callback)
+            # 忽略 log_callback，使用 Service 信号
+            return self.log_config_service.set_ecu_log_level(selected_ecus, log_level)
 
         worker = Worker(task)
         # 连接日志信号到 View 的 append_log
@@ -213,53 +234,68 @@ class LogConfigController(BaseController):
 
 
     def _on_batch_modify_clicked(self):
-        """批量修改选中的 CCUA APP"""
-        # 1. 获取选中项
-        selected_apps = self.view.get_selected_apps()
-        if not selected_apps:
-            self.view.show_message("请至少选择一个APP", "warning")
+        """批量修改日志配置 (Batch)"""
+        # 1. 弹出编辑框获取目标配置
+        info_mock = ["已选应用", "CCUA", "", ""] # Mock info just to reuse dialog layout
+
+        dialog = LogConfigEditDialog(self.view, info_mock)
+        if dialog.exec_() != QtWidgets.QDialog.Accepted:
             return
 
-        # 2. 校验 (仅允许 CCUA)
-        ccua_apps_ids = []
-        for app in selected_apps:
-            if app['ecu_id'] != 'CCUA':
-                self.view.show_message("当前选区包含非CCUA的应用。请取消勾选它们后再试。", "warning")
-                return
-            ccua_apps_ids.append(app['app_id'])
+        new_level = dialog.get_new_level()
+        new_mode = dialog.get_new_mode()
 
-        # 3. 询问目标日志等级
-        # 弹窗询问
-        levels = ["OFF", "FATAL", "ERROR", "WARN", "INFO", "DEBUG", "VERBOSE"]
-        target_level, ok = QInputDialog.getItem(self.view, "批量修改配置",
-                                                f"即将修改 {len(ccua_apps_ids)} 个应用的日志等级\n请选择目标等级:",
-                                                levels, 4, False) # Default to INFO index 4
-        if not ok:
+        if not new_level.strip():
             return
 
-        # 4. 执行 Worker: Batch Update
-        self.view.show_message(f"开始批量修改，目标等级: {target_level}...", "info")
-        self.view.append_log(f"用户发起批量修改: {ccua_apps_ids} -> {target_level}")
+        # 2. 获取当前筛选出的 App ID 列表
+        # 注意: 应该只修改筛选范围内的，还是全量？通常是筛选结果。
+        # self.model.apps 是当前展示的数据 (可能是筛选后的吗？不，Search 只是 Filter 内存数据？)
+        # Check get_apps: it returns filtered list.
+        # But controller self.model.apps stores what?
+        # Model stores whatever `load_apps` put there.
+        # Typically one modifies what is visible.
 
-        def update_task(log_callback):
-            return self.log_config_service.batch_update_ccua_apps(ccua_apps_ids, target_level, log_callback)
+        target_apps = [item[0] for item in self.model.apps if item[1] == "CCUA"]
 
-        def on_update_finished(success):
-            if success:
-                self.view.show_message("批量配置修改完成！", "success")
+        if not target_apps:
+            self.view.show_message("当前列表无 CCUA 应用可修改", "warning")
+            return
 
-                # 5. 询问重启 - 修改为使用 self.view.show_confirm 统一风格
-                msg = "配置已更新并落盘。是否立即重启 CCU 以使配置生效？"
-                if self.view.show_confirm(msg):
-                   self._do_restart_ccu()
-                else:
-                    self.view.append_log("用户选择暂不重启。")
-            else:
-                self.view.show_message("批量修改过程中出现错误，请检查日志", "error")
+        msg = f"即将批量修改 {len(target_apps)} 个 CCUA 应用的日志配置：\n\n等级 -> {new_level}"
+        if new_mode:
+            msg += f"\n模式 -> {new_mode}"
+        msg += "\n\n修改将在后台通过 SSH 执行，完成后需重启 CCU 生效。\n是否继续？"
 
-        worker = Worker(update_task)
+        if not self.view.show_confirm(msg):
+            return
+
+        # 连接信号
+        try:
+            self.log_config_service.log_signal.disconnect()
+        except Exception:
+            pass
+        self.log_config_service.log_signal.connect(self.view.append_log)
+
+        # 3. Worker 执行
+        def task(log_callback):
+            return self.log_config_service.batch_update_ccua_apps(target_apps, new_level, new_mode)
+
+        worker = Worker(task)
         worker.log_signal.connect(self.view.append_log)
-        worker.result_signal.connect(on_update_finished)
+
+        def on_complete(success):
+            if success:
+                # Refresh UI
+                if self.log_config_service.restart_ccu("CCUA"):
+                     self.view.show_message("批量修改完成，CCU正在重启...", "success")
+                else:
+                     self.view.show_message("批量修改完成，但重启命令发送异常，请手动重启", "warning")
+                # Reload (Wait a bit?) -> Actually reboot disconnects.
+            else:
+                self.view.show_message("批量修改部分失败，请检查日志", "error")
+
+        worker.result_signal.connect(on_complete)
         worker.start()
         self._workers.append(worker)
         worker.finished.connect(lambda: self._workers.remove(worker) if worker in self._workers else None)
@@ -268,8 +304,8 @@ class LogConfigController(BaseController):
         """执行 CCU 重启"""
         self.view.append_log("正在请求重启 CCU...")
 
-        def restart_task(log_callback):
-            return self.log_config_service.restart_ccu(ecu="CCUA", log_callback=log_callback)
+        def restart_task():
+            return self.log_config_service.restart_ccu(ecu="CCUA")
 
         def on_restart_finished(success):
             if success:
@@ -349,9 +385,17 @@ class LogConfigController(BaseController):
                  if not ssh_client or not ssh_client.is_connected():
                      self.view.show_message("设备未连接 (SSH)，无法执行删除日志操作", "error")
                      return
+
+             # 连接信号
+             try:
+                 self.log_config_service.log_signal.disconnect()
+             except Exception:
+                 pass
+             self.log_config_service.log_signal.connect(self.view.append_log)
+
              # 定义任务函数
              def task(log_callback):
-                 return self.log_config_service.restore_config(options, log_callback)
+                 return self.log_config_service.restore_config(options)
 
              worker = Worker(task)
              worker.log_signal.connect(self.view.append_log)
@@ -359,11 +403,12 @@ class LogConfigController(BaseController):
              def on_finished(result):
                  if hasattr(result, "get") and result.get("success", False): # Use safe access if result could be None or bool
                      if result.get("restart_required", False):
-                         if self.view.show_confirm("CCUA 默认配置恢复完成，需要重启 CCU 才能生效。\n是否立即重启 CCU？"):
-                             # 启动新的 worker 执行重启
-                             self._perform_ccu_reset()
-
-                     self.view.show_message("操作执行完成", "success")
+                         # 弹出重启询问
+                         msg = "CCUA 默认配置恢复完成，需要重启 CCU 才能生效。\n是否立即重启 CCU？"
+                         if self.view.show_confirm(msg):
+                             # 执行重启
+                             self.view.show_message("正在重启 CCUA，请稍候...", "warning")
+                             self.log_config_service.restart_ccu("CCUA")
                  elif isinstance(result, bool) and result:
                       self.view.show_message("操作执行完成", "success")
                  else:
@@ -375,16 +420,16 @@ class LogConfigController(BaseController):
              self._workers.append(worker)
              worker.finished.connect(lambda: self._workers.remove(worker) if worker in self._workers else None)
 
-    def _perform_ccu_reset(self):
-        from app.common.utils.worker import Worker
-        def reset_task(log_callback):
-            return self.log_config_service.reset_ccu(log_callback)
-
-        worker = Worker(reset_task)
-        worker.log_signal.connect(self.view.append_log)
-        worker.start()
-        self._workers.append(worker)
-        worker.finished.connect(lambda: self._workers.remove(worker) if worker in self._workers else None)
+    # def _perform_ccu_reset(self):
+    #     from app.common.utils.worker import Worker
+    #     def reset_task(log_callback):
+    #         return self.log_config_service.reset_ccu(log_callback)
+    #
+    #     worker = Worker(reset_task)
+    #     worker.log_signal.connect(self.view.append_log)
+    #     worker.start()
+    #     self._workers.append(worker)
+    #     worker.finished.connect(lambda: self._workers.remove(worker) if worker in self._workers else None)
 
     def _on_modify_requested(self, row_index):
         if row_index < 0 or row_index >= len(self.model.apps):
@@ -414,9 +459,16 @@ class LogConfigController(BaseController):
     def _handle_ccua_modification(self, app_id, new_level):
         """处理 CCUA 专用的修改流程：Worker异步写入 -> 重启确认"""
 
+        # 连接信号
+        try:
+            self.log_config_service.log_signal.disconnect()
+        except Exception:
+            pass
+        self.log_config_service.log_signal.connect(self.view.append_log)
+
         # 2. 定义后台任务
         def task(log_callback):
-            return self.log_config_service.update_ccua_app_config(app_id, new_level, log_callback)
+            return self.log_config_service.update_ccua_app_config(app_id, new_level)
 
         worker = Worker(task)
         # 将进度日志输出到界面

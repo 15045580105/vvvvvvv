@@ -16,7 +16,6 @@ from app.modules.bus_data_management.view.bus_data_download_view import BusDataD
 from app.services.file_manage.download_manager import DownloadManager
 from app.common.utils.worker import Worker
 from PyQt5 import QtWidgets
-from PyQt5.QtCore import Qt
 import os
 # 用于实现 ProgressAdapter（带信号，安全地从后台线程向主线程传递进度）
 from app.services.file_manage.progress.adapter import ProgressAdapter
@@ -30,6 +29,7 @@ class BusDataDownloadController(BaseController):
         self.table_model = BusDataTableModel(parent=parent)
         self.view = BusDataDownloadView(parent)
         self.manager = DownloadManager()
+        self.manager.log_signal.connect(self._on_worker_log)
 
         # 2. 初始化状态变量
         self.workers = []
@@ -86,9 +86,9 @@ class BusDataDownloadController(BaseController):
         self.workers.append(worker)
         worker.start()
 
-    def _do_fetch_tabs(self, log_cb: Callable):
+    def _do_fetch_tabs(self):
         """执行获取Tab列表的后台任务"""
-        return self.manager.fetch_bus_tabs(log_callback=log_cb)
+        return self.manager.fetch_bus_tabs()
 
     def _on_tabs_loaded(self, tabs):
         """Tab列表加载完成，更新UI"""
@@ -116,17 +116,17 @@ class BusDataDownloadController(BaseController):
         self.workers.append(worker)
         worker.start()
 
-    def _do_fetch_task(self, log_cb: Callable, tab_path: str, need_tabs: bool):
+    def _do_fetch_task(self, tab_path: str, need_tabs: bool):
         """后台任务：拉取Tab（可选）和文件列表"""
         if not self.manager.is_connected():
-            log_cb("⚠️ 设备未连接，无法获取文件列表。请先连接设备。")
+            # log_cb("⚠️ 设备未连接，无法获取文件列表。请先连接设备。")
             return None
 
         tabs = []
         if need_tabs:
-            tabs = self.manager.fetch_bus_tabs(log_callback=log_cb)
+            tabs = self.manager.fetch_bus_tabs()
 
-        files = self.manager.fetch_bus_file_list(log_callback=log_cb, tab_path=tab_path)
+        files = self.manager.fetch_bus_file_list(tab_path=tab_path)
         return (tabs, files)
 
     def _on_fetch_finished(self, result, from_refresh_btn):
@@ -272,7 +272,7 @@ class BusDataDownloadController(BaseController):
             worker = Worker(self._do_download_task, remote_path, local_path, adapter)
             self._start_download_worker(worker, remote_path)
 
-    def _do_download_task(self, log_cb, remote_path, local_path, adapter=None):
+    def _do_download_task(self, remote_path, local_path, adapter=None):
         """实际下载线程任务，支持取消与进度回调"""
         if remote_path in self.cancelled_files:
             self.model.update_file_status(remote_path, "已取消", 0)
@@ -489,3 +489,10 @@ class BusDataDownloadController(BaseController):
             self.view.show_toast("任务正在进行中，请稍候...", 2)
             return True
         return False
+
+    def _on_worker_log(self, message: str):
+        """处理来自 Worker 的日志消息"""
+        # 这里可以添加过滤或格式化逻辑
+        print(f"Worker Log: {message}")
+
+
