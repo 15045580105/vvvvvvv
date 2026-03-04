@@ -773,7 +773,7 @@ class SomeIPClient:
                     if hasattr(entry, 'inst_id'):
                         discovered_info['instance_id'] = entry.inst_id
                     if hasattr(entry, 'major_ver'):
-                        # 用户指出 version 可能为浮点型 (e.g. 1.2)，不要强制转换 int 导致精度丧失
+                        # version 可能为浮点型 (e.g. 1.2)，不要强制转换 int 导致精度丧失
                         # 如果底层库支持 (或这就是用户期望的)，直接使用原始值
                         discovered_info['major_version'] = entry.major_ver
                     if hasattr(entry, 'minor_ver'):

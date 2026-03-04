@@ -182,7 +182,7 @@ class DoIPSettingsPage(QWidget):
             self,
             "选择 DPT 文件",
             "",
-            "Excel 文件 (*.xlsx)"
+            "DPT 文件 (*.dat)"
         )
         if file_path:
             self.dpt_path_edit.setText(file_path)
