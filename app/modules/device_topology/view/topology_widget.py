@@ -754,23 +754,22 @@ class TopologyWidget(QGraphicsView):
         self.status_labels["service_status_info"].setText(display_text)
 
     def update_security_info(self, info: dict):
-        self.sec_labels["cert_info"].setText(info.get("cert_info", "—"))
-        self.sec_labels["key_slot_status"].setText(info.get("key_slot_status", "—"))
-        self.sec_labels["cms_env"].setText(info.get("cms_env", "—"))
+        """部分更新证书信息"""
+        for key, value in info.items():
+            if key in self.sec_labels:
+                self.sec_labels[key].setText(str(value))
 
     def update_network_mgmt(self, info: dict):
-        self.net_labels["power_wake_source"].setText(info.get("power_wake_source", "—"))
-        self.net_labels["pnc"].setText(info.get("pnc", "—"))
-        self.net_labels["rt1_net_source"].setText(info.get("rt1_net_source", "—"))
-        self.net_labels["rt2_net_source"].setText(info.get("rt2_net_source", "—"))
-        self.net_labels["rt1_ext_msg"].setText(info.get("rt1_ext_msg", "—"))
-        self.net_labels["rt2_ext_msg"].setText(info.get("rt2_ext_msg", "—"))
-        self.net_labels["a_core_net_req"].setText(info.get("a_core_net_req", "—"))
-        self.net_labels["obd_can_net"].setText(info.get("obd_can_net", "—"))
+        """部分更新网络管理信息"""
+        for key, value in info.items():
+            if key in self.net_labels:
+                self.net_labels[key].setText(str(value))
 
     def update_storage_info(self, info: dict):
-        self.storage_labels["a_core_storage"].setText(info.get("a_core_storage", "—"))
-        # self.storage_labels["m_core_storage"].setText(info.get("m_core_storage", "—"))
+        """部分更新存储信息"""
+        for key, value in info.items():
+            if key in self.storage_labels:
+                self.storage_labels[key].setText(str(value))
 
     def update_version_info(self, info: dict):
         """更新版本信息面板"""

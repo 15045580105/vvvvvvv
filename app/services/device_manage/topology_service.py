@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 import threading
 import math # Added math import
 import json
@@ -89,51 +88,9 @@ class TopologyService(QObject):
         self._workers = [] # 管理内部 Worker
         self._mutex = QMutex() # 互斥锁，保护 DoIP/UDS 访问
         self._dpt_ready = False
-        # 异步加载 DPT
-        # self._load_dpt_async()
         self._width = 600
         self._height = 500
 
-    # def _load_dpt_async(self):
-    #     """异步加载 DPT 配置"""
-    #     def load_task():
-    #         try:
-    #             # 尝试加载项目根目录下的 dpt_config.json，或者 Downloads 下的 dpt.json
-    #             # 优先使用相对路径
-    #             paths = [
-    #                 "dpt_config.json",
-    #                 r"D:\uidq9000\Downloads\dpt.json"
-    #             ]
-    #             loaded = False
-    #             for path in paths:
-    #                 try:
-    #                     if os.path.exists(path):
-    #                         self.log_signal.emit(f"正在加载 DPT 配置: {path}")
-    #                         self._dpt_service.load_from_file(path)
-    #                         loaded = True
-    #                         break
-    #                 except Exception as e:
-    #                     self.log_signal.emit(f"加载 {path} 失败: {e}")
-    #
-    #             return loaded
-    #         except Exception as e:
-    #             return False
-    #
-    #     def on_loaded(success):
-    #         self._dpt_ready = success
-    #         if success:
-    #             self.log_signal.emit("DPT 配置加载完成")  # type: ignore
-    #         else:
-    #             self.log_signal.emit("DPT 配置加载失败，部分功能可能不可用")  # type: ignore
-    #
-    #     # 使用 _start_worker_common (需稍微调整适应) 或直接用 Worker
-    #     # 这里手动创建 Worker 以避免依赖尚未初始化的部分
-    #     worker = Worker(load_task)
-    #     worker.log_signal.connect(self.log_signal.emit)  # type: ignore
-    #     worker.result_signal.connect(on_loaded)
-    #     worker.finished.connect(lambda: self._workers.remove(worker) if worker in self._workers else None)
-    #     self._workers.append(worker)
-    #     worker.start()
 
     def request_vehicle_info(self):
         """异步请求车辆信息"""
@@ -167,29 +124,57 @@ class TopologyService(QObject):
         self._execute_parallel_tasks(tasks)
 
     def request_security_info(self):
-        """异步请求证书信息"""
-        tasks = [
-            ("cert_info", self._get_cert_info, self.sig_cert_infos_updated),
-            ("key_slot_status", self._get_key_slot_status, self.sig_key_slot_status_updated),
-            ("cms_env", self._get_cms_env, self.sig_cms_env_updated)
-        ]
-        self._execute_parallel_tasks(tasks)
+        """异步请求证书信息（独立线程并发获取，互不影响）"""
+
+        # 1. 获取证书信息
+        self.sig_cert_infos_updated.emit("请求中...")
+        def task_cert():
+            self._mutex.lock()
+            try:
+                val = self._get_cert_info()
+            except Exception as e:
+                val = f"请求异常: {e}"
+            finally:
+                self._mutex.unlock()
+            self.sig_cert_infos_updated.emit(val)
+        self._start_worker(task_cert, None)
+
+        # 2. 获取密钥槽状态
+        self.sig_key_slot_status_updated.emit("请求中...")
+        def task_key():
+            self._mutex.lock()
+            try:
+                val = self._get_key_slot_status()
+            except Exception as e:
+                val = f"请求异常: {e}"
+            finally:
+                self._mutex.unlock()
+            self.sig_key_slot_status_updated.emit(val)
+        self._start_worker(task_key, None)
+
+        # 3. 获取CMS环境
+        self.sig_cms_env_updated.emit("请求中...")
+        def task_cms():
+            self._mutex.lock()
+            try:
+                val = self._get_cms_env()
+            except Exception as e:
+                val = f"请求异常: {e}"
+            finally:
+                self._mutex.unlock()
+            self.sig_cms_env_updated.emit(val)
+        self._start_worker(task_cms, None)
 
     def request_network_mgmt(self):
         """异步请求网络管理信息"""
-        # 拆分 pnc_status 字典为多个 granular updates
-        # 由于 _get_pnc_status 返回 dict，我们可以做一个 wrapper 或者 post-process
-        # 或者为了简单，我们定义 3个任务，分别取 dict 的不同值 (效率低但架构统一)
-        # 或者定义一个任务返回 dict，然后 helper 分发 emit (复杂)
-        # 最佳方案: 重写 _get_pnc_status 逻辑，或者定义 3 个 helper 获取单个值
-
+        pass
         # 既然 _get_pnc_status 只是 mock，我们定义 3 个 helper
-        tasks = [
-            ("power_wake_source", self._get_power_wake, self.sig_power_wake_updated),
-            ("pnc", self._get_pnc, self.sig_pnc_updated),
-            ("rt1_net_source", self._get_rt1_net, self.sig_rt1_net_updated)
-        ]
-        self._execute_parallel_tasks(tasks)
+        # tasks = [
+        #     ("power_wake_source", self._get_power_wake, self.sig_power_wake_updated),
+        #     ("pnc", self._get_pnc, self.sig_pnc_updated),
+        #     ("rt1_net_source", self._get_rt1_net, self.sig_rt1_net_updated)
+        # ]
+        # self._execute_parallel_tasks(tasks)
 
     def request_storage_info(self):
         """异步请求存储信息"""
@@ -237,23 +222,139 @@ class TopologyService(QObject):
     def _get_cert_info(self) -> str:
         self.log_signal.emit("-->读取证书信息<--")
         payload = bytes([0x31, 0x01, 0xBE, 0xE8])
-        routine = bytes.fromhex("31 01 BE E9")
-        data =self._device_service.execute_secure_routine(routine, sec_level=0x21, log_signal=self.log_signal)
+        data =self._device_service.execute_secure_routine(payload, sec_level=0x21, log_signal=self.log_signal)
+        self.log_signal.emit(f"data:{data}")
+
+        result: Dict[str, str] = {}
+
+        # 使用 DPTService 解析数据
+        if self._dpt_service.is_ready():
+            parsed_result = self._dpt_service.parse_bytes(data, did="BEE8")
+            if parsed_result:
+                self.log_signal.emit(f"DPT解析结果: {parsed_result.fields}")
+                for field in parsed_result.fields:
+                    if hasattr(field, 'name') and hasattr(field, 'parsed_value'):
+                        result[field.name] = str(field.parsed_value)
+            else:
+                self.log_signal.emit("DPT解析失败: 未找到匹配的解析规则")
+        else:
+            self.log_signal.emit("DPT服务未就绪，无法解析数据")
+
+
         if data: return data.hex()
-        # rx = self._device_service.send_doip_payload(payload, timeout=2.0)
         return "读取失败(可能需要解锁)"
 
     def _get_key_slot_status(self) -> str:
         self.log_signal.emit("-->读取密钥槽状态<--")
         data = self._send_uds_read(0xBE, 0x2C)
-        if data: return data.hex()
-        return "Unknown"
+        if not data:
+            return "读取失败"
+
+        # 使用 DPTService 解析数据
+        if self._dpt_service.is_ready():
+            parsed_result = self._dpt_service.parse_bytes(data, did="BE2C")
+            if parsed_result:
+                # self.log_signal.emit(f"DPT解析结果: {parsed_result.fields}")
+                groups = {}
+                for field in parsed_result.fields:
+                    if hasattr(field, 'name') and hasattr(field, 'parsed_value'):
+                        name = field.name
+                        # Skip Reserved fields
+                        if "Reserved" in name or "预留" in name:
+                            continue
+                        if name not in groups:
+                            groups[name] = []
+                        groups[name].append(str(field.parsed_value))
+
+                final_output_lines = []
+                for name, values in groups.items():
+                    meaningful_values = [v for v in values if "unknown" not in v.lower() and "未知状态" not in v and not v.startswith("0 -")]
+
+                    # If we have meaningful values, use them. Otherwise use the original values (which are all unknown).
+                    target_values = meaningful_values if meaningful_values else values
+
+                    display_values = []
+                    for v in target_values:
+                        # Extract content in parentheses
+                        m = re.search(r'\((.*?)\)', v)
+                        if m:
+                            display_values.append(m.group(1))
+                        else:
+                            display_values.append(v)
+
+                    # Deduplicate
+                    display_values = list(dict.fromkeys(display_values))
+
+                    status_str = ", ".join(display_values) if display_values else "未知状态"
+
+                    # Extract label from name: "SecOCkeySlotStatus(SecOC秘钥槽状态)" -> "SecOC秘钥槽状态"
+                    m_label = re.search(r'\((.*?)\)', name)
+                    label = m_label.group(1) if m_label else name
+
+                    final_output_lines.append(f"{label}：{status_str}")
+
+                if final_output_lines:
+                    res ="\n".join(final_output_lines)
+                    self.log_signal.emit(f"读取密钥槽状态DPT解析结果: {res}")
+                    return res
+                else:
+                    return "解析结果为空"
+
+            else:
+                self.log_signal.emit("DPT解析失败: 未找到匹配的解析规则")
+                return f"DPT解析失败 Data: {data.hex(' ').upper()}"
+        else:
+            self.log_signal.emit("DPT服务未就绪，无法解析数据")
+            return f"Raw: {data.hex(' ').upper()}"
 
     def _get_cms_env(self) -> str:
         self.log_signal.emit("-->读取CMS环境<--")
         data = self._send_uds_read(0xBE, 0x2D)
-        if data: return data.hex()
-        return "Unknown"
+
+        if not data:
+            return "读取失败"
+
+        if self._dpt_service.is_ready():
+            parsed_result = self._dpt_service.parse_bytes(data, did="BE2D")
+            if parsed_result:
+                lines = []
+                for field in parsed_result.fields:
+                    name = field.name
+                    val_str = str(field.parsed_value)
+
+                    # 针对 ASCII 编码字段或特定字段名进行 ASCII 转换尝试
+                    # 主要是处理全FF情况，或者 DPT 返回了 Hex String 的情况
+                    is_ascii_field = getattr(field, 'encoding', '') == 'ASCII' or 'CMS' in name
+                    if is_ascii_field:
+                        raw_hex = getattr(field, 'raw_hex', '')
+                        if raw_hex:
+                            try:
+                                hex_str = raw_hex.replace(' ', '')
+                                byte_data = bytes.fromhex(hex_str)
+                                # 检查是否全为 FF 或 00 (未配置)
+                                if all(b == 0xFF for b in byte_data) or all(b == 0x00 for b in byte_data):
+                                    val_str = "未配置"
+                                else:
+                                    # 尝试去除 padding (00 或 FF) 并解码
+                                    clean_bytes = byte_data.replace(b'\xff', b'').replace(b'\x00', b'')
+                                    if clean_bytes:
+                                        decoded = clean_bytes.decode('ascii', errors='ignore').strip()
+                                        val_str = decoded if decoded else val_str
+                                    else:
+                                        val_str = "未配置"
+                            except Exception:
+                                pass
+
+                    lines.append(f"{name}：{val_str}")
+                    res = "\n".join(lines) if lines else "解析结果为空"
+                    self.log_signal.emit(f"读取CMS环境DPT解析结果: {res}")
+                return res
+            else:
+                 self.log_signal.emit("DPT解析失败: 未找到匹配的解析规则")
+                 return f"DPT解析失败 Data: {data.hex(' ').upper()}"
+        else:
+            self.log_signal.emit("DPT服务未就绪，无法解析数据")
+            return f"Raw: {data.hex(' ').upper()}"
 
     def _get_power_wake(self) -> str:
         return "Unknown" # Mock data
