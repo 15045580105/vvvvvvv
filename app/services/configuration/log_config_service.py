@@ -80,11 +80,11 @@ class LogConfigService(BaseService):
             _log(f"读取当前日志配置 (22 {did:X})...")
             read_cmd = bytes([0x22]) + did_bytes
             resp = doip_client.send_doip_message(read_cmd)
+
             if not resp or resp[0] != 0x62:
                 _log(f"读取失败: {resp.hex(' ').upper() if resp else '无响应'}")
                 success_all = False
                 continue
-
             _log(f"当前配置: {resp.hex(' ').upper()}")
 
             # --- 第二步：写入新配置 (2E DID VAL) ---
@@ -97,50 +97,7 @@ class LogConfigService(BaseService):
 
             # 读取是否为工厂模式，工厂模式不需要走2701安全认证
             is_factory_mode = False
-            # TopologyService methods now use signals too.
-            # We can't easily get value from topology service via blocking call if it's async signal based.
-            # However, _get_factory_mode in TopologyService was modified to emit signal OR return value?
-            # Let's check TopologyService again.
-            # TopologyService helpers like _get_factory_mode take log_callback?
-            # I need to check how I modified TopologyService.
-
-            # Re-checking TopologyService logic...
-            # The previous modification to TopologyService was for _read_dtc_and_match.
-            # I didn't verify if _get_factory_mode still has log_callback.
-            # The grep showed TopologyService had some hits.
-            # If _get_factory_mode is async or requires callback, this synchronous logic breaks.
-            # Assuming for now I can pass _log (self.log_signal.emit) if it accepts a callable.
-            # But the user asked to replace log_callback with signal.
-
-            # Note: TopologyService _get_factory_mode in previous read was:
-            # def _get_factory_mode(self, log_callback...):
-            # So I need to update TopologyService too to remove log_callback from helpers if they are using it.
-
             if self._topology_service:
-                # Assuming _get_factory_mode is modified to not take callback or we adapt
-                # If valid implementation:
-                # factory_mode_str = self._topology_service.get_factory_mode_sync() ?
-                # Or we rely on DeviceService directly here since TopologyService is mainly for UI updates.
-
-                # Let's look at the code block again.
-                # factory_mode_str = self._topology_service._get_factory_mode(log_callback=_log)
-
-                # I will use self.log_signal.emit as the callback for now, as it fits the signature Callable[[str], None].
-                # Refactoring ALL log_callback to signals might imply public methods don't take it.
-                # Internal helpers might still take a logging function?
-                # User said: "改整个文件夹下所有用到log_callback作为日志传递更新到view的函数..."
-                # If _get_factory_mode is used by LogConfigService, it's an internal-ish usage.
-                # But to follow instructions strictly, I should change _get_factory_mode too.
-
-                # Let's pass _log for now (which is self.log_signal.emit) if the method accepts it.
-                # If I remove log_callback from _get_factory_mode, I can't pass it.
-                # If _get_factory_mode emits its own signal, LogConfigService won't capture it easily to decide logic flow (is_factory_mode).
-
-                # Decision: For synchronous logic flow like this, keeping a return value is essential.
-                # Logging can be done via the service's own signal.
-                # So LogConfigService doesn't need to pass a callback to TopologyService.
-                # TopologyService will emit its own logs.
-
                 factory_mode_str = self._topology_service._get_factory_mode()
                 if "工厂模式" in factory_mode_str:
                     is_factory_mode = True
@@ -166,7 +123,6 @@ class LogConfigService(BaseService):
                     success_all = False
                     continue
 
-                # 2. 2E ...
                 _log(f"发送写指令: {write_cmd.hex(' ').upper()}")
                 write_resp = self._device_service.send_doip_payload(write_cmd)
 
@@ -192,7 +148,7 @@ class LogConfigService(BaseService):
             # 验证值 (假设格式为 62 DID VAL)
             # resp: 62 BE 02 06
             if len(verify_resp) >= 4 and verify_resp[3] == level_val:
-                _log("配置成功！")
+                _log(f"当前值: {verify_resp.hex(' ').upper()}, 配置成功！")
             else:
                 _log(f"验证失败，当前值: {verify_resp.hex(' ').upper()}")
                 success_all = False
@@ -214,10 +170,10 @@ class LogConfigService(BaseService):
 
         did = 0xBE17
         did_bytes = did.to_bytes(2, 'big')
-
         # 读取
-        _log(f"读取 DID {did:X} 状态...")
+        _log(f"读取 DID {did:X} ")
         read_resp = client.send_doip_message(bytes([0x22]) + did_bytes)
+        _log(f"返回：{read_resp}")
         if not read_resp or read_resp[0] != 0x62 or len(read_resp) < 4:
             _log(f"读取 DID 失败或响应异常")
             return False

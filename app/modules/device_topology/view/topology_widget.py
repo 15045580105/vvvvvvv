@@ -234,12 +234,12 @@ class TopologyWidget(QGraphicsView):
         # 初始化各个信息面板的内容 Widget
         self._init_info_widgets()
 
-        self._add_tool_button("车辆信息", toolbar_layout, self.vehicle_info_widget)
-        self._add_tool_button("服务状态信息", toolbar_layout, self.service_status_widget)
-        self._add_tool_button("证书信息", toolbar_layout, self.security_info_widget)
-        self._add_tool_button("网络管理", toolbar_layout, self.network_mgmt_widget)
-        self._add_tool_button("储存信息", toolbar_layout, self.storage_info_widget)
-        self._add_tool_button("版本信息", toolbar_layout, self.version_info_widget)
+        self._add_tool_button("车辆信息", toolbar_layout, self.vehicle_info_widget, initial_size=(850, 500))
+        self._add_tool_button("服务状态信息", toolbar_layout, self.service_status_widget, initial_size=(850, 500))
+        self._add_tool_button("证书信息", toolbar_layout, self.security_info_widget, initial_size=(850, 500))
+        self._add_tool_button("网络管理", toolbar_layout, self.network_mgmt_widget, initial_size=(850, 500))
+        self._add_tool_button("储存信息", toolbar_layout, self.storage_info_widget, initial_size=(850, 500))
+        self._add_tool_button("版本信息", toolbar_layout, self.version_info_widget, initial_size=(850, 500))
         self._add_tool_button("以太网网络诊断", toolbar_layout, self.network_diag_widget, initial_size=(850, 500))
 
         toolbar_layout.addStretch()
@@ -431,19 +431,24 @@ class TopologyWidget(QGraphicsView):
         ])
 
         # 5. 存储信息
-        self.storage_info_widget = QWidget()
-        self.storage_labels = {}
-        setup_form_layout(self.storage_info_widget, self.storage_labels, [
-            ("a_core_storage", "存储情况：")
-            # ("m_core_storage", "M核存储情况：")
-        ])
+        self.storage_info_widget, self.storage_text, s_search_input, s_count_lbl, s_btn_prev, s_btn_next = \
+            self._create_searchable_text_widget()
+        s_search_input.textChanged.connect(
+            lambda: self._perform_search(self.storage_text, s_search_input, s_count_lbl))
+        s_btn_prev.clicked.connect(
+            lambda: self._perform_find(self.storage_text, s_search_input, s_count_lbl, backwards=True))
+        s_btn_next.clicked.connect(
+            lambda: self._perform_find(self.storage_text, s_search_input, s_count_lbl, backwards=False))
 
         # 6. 版本信息
-        self.version_info_widget = QWidget()
-        self.version_labels = {}
-        setup_form_layout(self.version_info_widget, self.version_labels, [
-            ("version", "版本信息：")
-        ])
+        self.version_info_widget, self.version_text, v_search_input, v_count_lbl, v_btn_prev, v_btn_next = \
+            self._create_searchable_text_widget()
+        v_search_input.textChanged.connect(
+            lambda: self._perform_search(self.version_text, v_search_input, v_count_lbl))
+        v_btn_prev.clicked.connect(
+            lambda: self._perform_find(self.version_text, v_search_input, v_count_lbl, backwards=True))
+        v_btn_next.clicked.connect(
+            lambda: self._perform_find(self.version_text, v_search_input, v_count_lbl, backwards=False))
 
         # 7. 以太网网络诊断
         self.network_diag_widget = NetworkStatusPanel()
@@ -705,6 +710,162 @@ class TopologyWidget(QGraphicsView):
 
         self.status_search_label.setText(f"{index}/{total}")
 
+    def _create_searchable_text_widget(self, placeholder="查找内容..."):
+        """创建一个带有搜索栏和文本编辑框的Widget"""
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+        layout.setContentsMargins(0, 0, 0, 0)
+
+        # ---------------------
+        # Search Bar
+        # ---------------------
+        search_widget = QWidget()
+        search_layout = QHBoxLayout(search_widget)
+        search_layout.setContentsMargins(0, 0, 0, 4)
+        search_layout.setSpacing(6)
+
+        search_input = QLineEdit()
+        search_input.setPlaceholderText(placeholder)
+        search_input.setStyleSheet("""
+            QLineEdit {
+                border: 1px solid #D1D5DB;
+                border-radius: 4px;
+                padding: 4px 8px;
+                background-color: #FFFFFF;
+                color: #374151;
+            }
+            QLineEdit:focus {
+                border: 1px solid #3B82F6;
+            }
+        """)
+
+        count_label = QLabel("0/0")
+        count_label.setStyleSheet("color: #6B7280; font-size: 12px;")
+        count_label.setFixedWidth(50)
+        count_label.setAlignment(Qt.AlignCenter)
+
+        # 查找上一个
+        btn_prev = QPushButton("▲")
+        btn_prev.setFixedSize(24, 24)
+        btn_prev.setCursor(Qt.PointingHandCursor)
+        btn_prev.setToolTip("查找上一个")
+        btn_prev.setStyleSheet("QPushButton { border: 1px solid #E5E7EB; border-radius: 4px; color: #4B5563; } QPushButton:hover { background-color: #F3F4F6; }")
+
+        # 查找下一个
+        btn_next = QPushButton("▼")
+        btn_next.setFixedSize(24, 24)
+        btn_next.setCursor(Qt.PointingHandCursor)
+        btn_next.setToolTip("查找下一个")
+        btn_next.setStyleSheet("QPushButton { border: 1px solid #E5E7EB; border-radius: 4px; color: #4B5563; } QPushButton:hover { background-color: #F3F4F6; }")
+
+        search_layout.addWidget(search_input)
+        search_layout.addWidget(count_label)
+        search_layout.addWidget(btn_prev)
+        search_layout.addWidget(btn_next)
+
+        layout.addWidget(search_widget)
+
+        # 详细文本区域
+        text_edit = QTextEdit()
+        text_edit.setReadOnly(True)
+        text_edit.setStyleSheet("""
+            QTextEdit {
+                border: 1px solid #E5E7EB;
+                border-radius: 6px;
+                background-color: #F9FAFB;
+                padding: 4px;
+                font-family: "Consolas", "Courier New", monospace;
+                font-size: 9pt;
+            }
+        """)
+        layout.addWidget(text_edit)
+
+        return widget, text_edit, search_input, count_label, btn_prev, btn_next
+
+    def _perform_search(self, text_edit, search_input, count_label):
+        """通用搜索逻辑"""
+        text = search_input.text()
+
+        # 清除现有高亮
+        cursor = text_edit.textCursor()
+        cursor.clearSelection()
+        text_edit.setTextCursor(cursor)
+
+        # 重置额外选择
+        text_edit.setExtraSelections([])
+
+        if not text:
+            count_label.setText("0/0")
+            return
+
+        # 查找所有匹配
+        extra_selections = []
+        doc = text_edit.document()
+
+        search_cursor = doc.find(text)
+        count = 0
+        while not search_cursor.isNull():
+            count += 1
+            highlight_selection = QTextEdit.ExtraSelection()
+            highlight_selection.format.setBackground(QColor("#FFFF00"))
+            highlight_selection.cursor = search_cursor
+            extra_selections.append(highlight_selection)
+
+            search_cursor = doc.find(text, search_cursor)
+
+        text_edit.setExtraSelections(extra_selections)
+        count_label.setText(f"0/{count}")
+
+    def _perform_find(self, text_edit, search_input, count_label, backwards=False):
+        """通用查找上一个/下一个逻辑"""
+        text = search_input.text()
+        if not text:
+            return
+
+        # 设置查找标志
+        flags = QtGui.QTextDocument.FindFlags()
+        if backwards:
+            flags |= QtGui.QTextDocument.FindBackward
+
+        found = text_edit.find(text, flags)
+
+        # 如果没找到，尝试从头/尾开始循环查找
+        if not found:
+            cursor = text_edit.textCursor()
+            if backwards:
+                cursor.movePosition(QtGui.QTextCursor.End)
+            else:
+                cursor.movePosition(QtGui.QTextCursor.Start)
+            text_edit.setTextCursor(cursor)
+            found = text_edit.find(text, flags)
+
+        if found:
+            self._update_search_index_display_generic(text_edit, search_input, count_label)
+
+    def _update_search_index_display_generic(self, text_edit, search_input, count_label):
+        """通用更新搜索索引显示"""
+        text = search_input.text()
+        if not text:
+            return
+
+        current_cursor = text_edit.textCursor()
+        current_pos = current_cursor.position()
+
+        # 重新遍历计算当前是第几个
+        doc = text_edit.document()
+        search_cursor = doc.find(text)
+        index = 0
+        total = 0
+
+        while not search_cursor.isNull():
+            total += 1
+            # 判断 current_cursor 是否就在 search_cursor 的范围内
+            if search_cursor.position() == current_pos:
+                index = total
+            search_cursor = doc.find(text, search_cursor)
+
+        count_label.setText(f"{index}/{total}")
+
     def update_vehicle_info(self, info: dict):
         """
         更新车辆信息。
@@ -767,18 +928,46 @@ class TopologyWidget(QGraphicsView):
 
     def update_storage_info(self, info: dict):
         """部分更新存储信息"""
-        for key, value in info.items():
-            if key in self.storage_labels:
-                self.storage_labels[key].setText(str(value))
+        if not info:
+             self.storage_text.clear()
+             return
+
+        content = info.get("a_core_storage", "")
+        if not content and info:
+             try:
+                 content = json.dumps(info, indent=4, ensure_ascii=False)
+             except:
+                 content = str(info)
+
+        if isinstance(content, str):
+             stripped = content.strip()
+             if (stripped.startswith("{") and stripped.endswith("}")) or \
+                (stripped.startswith("[") and stripped.endswith("]")):
+                 try:
+                     parsed = json.loads(content)
+                     content = json.dumps(parsed, indent=4, ensure_ascii=False)
+                 except:
+                     pass
+
+        self.storage_text.setText(str(content))
 
     def update_version_info(self, info: dict):
         """更新版本信息面板"""
-        if not info: return
-        # 假设 info 结构: {"m_core_storage": "..."}
-        # 这里我们只展示 m_core_storage 作为版本信息
-        val = info.get("m_core_storage", "—")
-        if "version" in self.version_labels:
-            self.version_labels["version"].setText(val)
+        if not info:
+            self.version_text.clear()
+            return
+
+        val = info.get("m_core_storage", "")
+        if not val and "version" in info:
+             val = info.get("version", "")
+
+        if not val and info:
+             try:
+                 val = json.dumps(info, indent=4, ensure_ascii=False)
+             except:
+                 val = str(info)
+
+        self.version_text.setText(str(val))
 
     def _show_panel(self, button):
         """显示面板"""
