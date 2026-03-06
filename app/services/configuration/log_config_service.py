@@ -36,7 +36,6 @@ class LogConfigService(BaseService):
     def set_ecu_log_level(self, ecus: List[str], level: str) -> bool:
         """为指定的 ECU 设置日志等级。"""
         _log = self.log_signal.emit
-
         if not self._device_service:
             _log("DeviceService 未注入")
             return False
@@ -747,11 +746,11 @@ class LogConfigService(BaseService):
         # a) Restore CCUA
         if options.get("restore_ccua"):
             _log("开始恢复 CCUA 默认配置...")
-            if not self._restore_ccua_default():
+            # a) 发送 UDS 2E BE 17 02
+            if not self._set_did_byte(0xBE17, 0x02, "CCUA"):
                 result["success"] = False
                 _log("CCUA 默认配置恢复失败")
             else:
-                # ccua_apps = self.get_apps("CCUA", "", "")
                 self.batch_update_ccua_apps(["CCUA"], "ERROR", "NETWORK")
                 _log("CCUA 默认配置恢复成功")
                 result["restart_required"] = True # Need confirm restart in UI
@@ -785,15 +784,14 @@ class LogConfigService(BaseService):
                     # d) 删除 /log 下所有日志文件
                     cmd = "rm -rf /log/*"
                     _log(f"执行 SSH 指令: {cmd}")
-                    out = ssh_client.execute_command(cmd)
-                    _log("日志删除指令已发送")
+                    # out = ssh_client.execute_command(cmd)
+                    _log("测试阶段，日志删除指令暂不发送")
                 except Exception as e:
                     _log(f"日志删除失败: {e}")
                     result["success"] = False
             else:
                 _log("SSH 未连接，无法删除日志")
                 result["success"] = False
-
         return result
 
     def _set_did_byte(self, did: int, val: int, ecu_name: str) -> bool:
@@ -831,107 +829,6 @@ class LogConfigService(BaseService):
         else:
              _log(f"设置失败, 响应: {resp.hex(' ') if resp else 'None'}")
              return False
-
-    def _restore_ccua_default(self) -> bool:
-        """
-        a1) UDS 2E BE 17 02
-        a2) Walk process_log_config.json via SSH
-        """
-        _log = self.log_signal.emit
-        # a1) Update DID 0xBE17 to 02
-        if not self._set_did_byte(0xBE17, 0x02, "CCUA"):
-            return False
-
-        # # a2) Restore process_log_configs
-        # # Load local map file
-        # # Use user provided path if available
-        # if self._map_file_path and os.path.exists(self._map_file_path):
-        #     map_file_path = self._map_file_path
-        # else:
-        #     _log("错误: 未设置本地映射文件路径，请在导入区域选择JSON文件")
-        #     return False
-        #
-        # try:
-        #     if not os.path.exists(map_file_path):
-        #           _log(f"错误: 找不到映射文件 {map_file_path}")
-        #           return False
-        #
-        #     _log(f"使用映射文件: {map_file_path}")
-        #     with open(map_file_path, 'r', encoding='utf-8') as f:
-        #         data = json.load(f)
-        #         configs = data.get("process_log_configs", {})
-        # except Exception as e:
-        #     _log(f"无法读取映射文件: {e}")
-        #     return False
-        #
-        # ssh_client = self._device_service.get_ssh_client()
-        # if not ssh_client or not ssh_client.is_connected():
-        #     _log("SSH 未连接，无法恢复 APP 配置文件")
-        #     return False
-        #
-        # success_count = 0
-        # fail_count = 0
-        #
-        # for key, info in configs.items():
-        #     remote_path = info.get("path")
-        #     if not remote_path: continue
-        #
-        #     # Read remote file
-        #     cmd_read = f"cat {remote_path}"
-        #     # _log(f"读取: {remote_path}")
-        #     json_content_str = ssh_client.execute_command(cmd_read)
-        #     if not json_content_str:
-        #          # _log(f"读取失败或文件为空: {key}")
-        #          fail_count += 1
-        #          continue
-        #
-        #     try:
-        #         remote_json = json.loads(json_content_str)
-        #         modified = False
-        #
-        #         # Check logTraceLogLevel -> ERROR
-        #         if remote_json.get("logTraceLogLevel") != "ERROR":
-        #             remote_json["logTraceLogLevel"] = "ERROR"
-        #             modified = True
-        #
-        #         # Check logTraceLogMode -> NETWORK
-        #         if remote_json.get("logTraceLogMode") != "NETWORK":
-        #             remote_json["logTraceLogMode"] = "NETWORK"
-        #             modified = True
-        #
-        #         if modified:
-        #             # Write back
-        #             new_content = json.dumps(remote_json, indent=4)
-        #             # Escape double quotes for shell command if simple echo used, or use sftp?
-        #             # Using a safe write method is better.
-        #             # Assuming ssh_client has capability to write file or use echo
-        #
-        #             # Trick: use echo '...' > path. Need to handle JSON quotes.
-        #             # A safer way is using python on device if available, or just careful escaping.
-        #             # Or 'cat > path <<EOF ... EOF'
-        #
-        #             # Let's try simple echo with single quotes wrapping json
-        #             safe_json = new_content.replace("'", "'\\''") # Escape single quotes inside JSON
-        #             cmd_write = f"echo '{safe_json}' > {remote_path}"
-        #
-        #             ssh_client.execute_command(cmd_write)
-        #             # Verify? Skip for performance or do sample verification
-        #             # _log(f"已恢复: {key}")
-        #             success_count += 1
-        #         else:
-        #             # _log(f"无需修改: {key}")
-        #             pass
-        #
-        #     except json.JSONDecodeError:
-        #         # _log(f"JSON 解析失败: {remote_path}")
-        #         fail_count += 1
-        #         pass
-        #     except Exception as e:
-        #         # _log(f"处理失败 {key}: {e}")
-        #         fail_count += 1
-        #
-        # _log(f"APP 配置恢复统计: 修改 {success_count}, 失败/跳过 {fail_count}")
-        return True
 
     def reset_ccu(self):
         """UDS 11 03 (Soft Reset)"""

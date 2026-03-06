@@ -58,17 +58,33 @@ class WelcomeWidget(QtWidgets.QWidget):
         """)
         title.setAlignment(Qt.AlignCenter)
 
-        subtitle = QtWidgets.QLabel("车载诊断工具平台")
-        subtitle.setStyleSheet("""
-            font-family: "Microsoft YaHei UI";
-            font-size: 15pt;
+        # Subtitle (Logo + Text)
+        subtitle_container = QtWidgets.QWidget()
+        subtitle_layout = QtWidgets.QHBoxLayout(subtitle_container)
+        subtitle_layout.setContentsMargins(0, 0, 0, 0)
+        subtitle_layout.setSpacing(12)
+        subtitle_layout.setAlignment(Qt.AlignCenter)
+
+        logo_label_wc = QtWidgets.QLabel()
+        logo_path_wc = "app/resources/images/desay_logo.jpg"
+        logo_pixmap_wc = QtGui.QPixmap(logo_path_wc)
+        if not logo_pixmap_wc.isNull():
+            logo_label_wc.setPixmap(logo_pixmap_wc.scaledToHeight(28, Qt.SmoothTransformation))
+
+        text_label_wc = QtWidgets.QLabel("IC_STH")
+        text_label_wc.setStyleSheet("""
+            font-family: "Segoe UI", "Microsoft YaHei UI";
+            font-size: 16pt;
             color: #6B7280;
-            letter-spacing: 4px;
+            font-weight: 600; 
+            letter-spacing: 2px;
         """)
-        subtitle.setAlignment(Qt.AlignCenter)
+
+        subtitle_layout.addWidget(logo_label_wc)
+        subtitle_layout.addWidget(text_label_wc)
 
         header_layout.addWidget(title)
-        header_layout.addWidget(subtitle)
+        header_layout.addWidget(subtitle_container)
 
         content_layout.addWidget(header_container)
 

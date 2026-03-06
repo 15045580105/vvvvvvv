@@ -15,7 +15,7 @@ class MainView(QtWidgets.QMainWindow):
         self.setup_ui()
 
     def setup_ui(self):
-        self.setWindowTitle("车载诊断工具平台 v1.0 ")
+        self.setWindowTitle("车载测试平台 v1.0 ")
         # 调整最小尺寸以适应 1080p @ 150% 缩放 (有效分辨率 1280x720)
         self.setMinimumSize(1024, 680)
 
@@ -51,6 +51,19 @@ class MainView(QtWidgets.QMainWindow):
         dpt_action = QtWidgets.QAction("DPT文件转换", self)
         dpt_action.triggered.connect(self.show_dpt_convert_tool)
         tools_menu.addAction(dpt_action)
+
+        # --- 预留功能 (Marked for future dev) ---
+        # 高级功能（脚本执行）
+        script_exec_action = QtWidgets.QAction("脚本执行", self)
+        script_exec_action.setEnabled(False) # 暂未开放
+        tools_menu.addAction(script_exec_action)
+
+        # 示例（示例页面）
+        demo_page_action = QtWidgets.QAction("示例页面", self)
+        demo_page_action.setEnabled(False) # 暂未开放
+        tools_menu.addAction(demo_page_action)
+        # ----------------------------------------
+
         self.tools_btn.setMenu(tools_menu)
 
         # 添加弹性空间，使“软件设置”按钮居右
@@ -87,6 +100,7 @@ class MainView(QtWidgets.QMainWindow):
         self.nav_dock.setFeatures(QtWidgets.QDockWidget.DockWidgetMovable | QtWidgets.QDockWidget.DockWidgetFloatable)
         # 初始化最小宽度，防止过小
         self.nav_dock.setMinimumWidth(220)
+
         self.nav_tree = QtWidgets.QTreeWidget()
         self.nav_tree.setHeaderHidden(True)
         self.nav_tree.setRootIsDecorated(True)
@@ -116,6 +130,21 @@ class MainView(QtWidgets.QMainWindow):
         self.setCentralWidget(self.central_stack)
 
         self.status_bar = QtWidgets.QStatusBar()
+
+        # Desay Logo & IC_STH Text (最左边)
+        logo_label = QtWidgets.QLabel()
+        logo_path = "app/resources/images/desay_logo.jpg"
+        logo_pixmap = QtGui.QPixmap(logo_path)
+        if not logo_pixmap.isNull():
+            logo_label.setPixmap(logo_pixmap.scaledToHeight(16, Qt.SmoothTransformation))
+            logo_label.setContentsMargins(10, 0, 0, 0) # 左侧留点空隙
+
+        text_label = QtWidgets.QLabel("2025 IC_STH PTV AT. All rights reserved.")
+        text_label.setStyleSheet("color: #6B7280; font-weight: bold; font-family: 'Segoe UI', 'Microsoft YaHei UI'; margin-left: 5px; margin-right: 15px;")
+
+        self.status_bar.addWidget(logo_label)
+        self.status_bar.addWidget(text_label)
+
         self.doip_status_label = QtWidgets.QLabel("DoIP: ⏸️ 离线")
         self.ssh_status_label = QtWidgets.QLabel("SSH: ⏸️ 离线")
         self.someip_status_label = QtWidgets.QLabel("SOMEIP: ⏸️ 离线")
