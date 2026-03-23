@@ -16,7 +16,7 @@ from app.services.configuration.config_service import AppConfigurationService
 def _parse_range(val: Any) -> tuple[int, int]:
     """Returns (start, length). If 'All' or invalid, returns (-1, -1)."""
     if val is None: return -1, -1
-    s = str(val).strip().lower()
+    s = str(val).strip().lower().replace("#", "")
     if s == "all": return -1, -1
 
     separator = None
@@ -185,6 +185,12 @@ def _process_structured_dids(did_list: List[Dict], result: Dict[str, Any], sheet
              group_val = item.get("group", "")
 
              byte_val = item.get("byte")
+
+             # Skip items with undefined byte position (e.g. request parameters in response parsing, marked as "-")
+             s_byte = str(byte_val).strip()
+             if s_byte == "-" or not s_byte:
+                 continue
+
              byte_start, byte_len = _parse_range(byte_val)
              if byte_start == -1:
                  # Handle "All" or missing?

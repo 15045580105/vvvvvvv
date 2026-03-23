@@ -977,10 +977,32 @@ class ValueDetailDialog(QtWidgets.QDialog):
         description = parse_result.description if parse_result and parse_result.description else row_info.description
         info_layout.addRow("描述:", QtWidgets.QLabel(description))
 
-        # 原始值显示（支持换行）
-        val_label = QtWidgets.QLabel(row_info.value)
-        val_label.setWordWrap(True)
+        # 原始值显示（每行32字节，最多4行，悬浮显示全部）
+        raw_val = row_info.value if row_info.value else ""
+
+        # 尝试智能分词：如果有空格则按空格分，否则按每2个字符（Hex Byte）分
+        if " " in raw_val:
+            parts = raw_val.split()
+        else:
+            parts = [raw_val[i:i+2] for i in range(0, len(raw_val), 2)]
+
+        chunks = []
+        if parts:
+            # 每32个字节元素合并为一行
+            chunks = [" ".join(parts[i:i+32]) for i in range(0, len(parts), 32)]
+
+        full_text = "\n".join(chunks)
+
+        if len(chunks) > 4:
+            display_text = "\n".join(chunks[:4]) + "\n..."
+        else:
+            display_text = full_text
+
+        val_label = QtWidgets.QLabel(display_text)
         val_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        # 设置 tooltip 显示完整内容
+        val_label.setToolTip(full_text)
+
         info_layout.addRow("原始值:", val_label)
 
         layout.addWidget(info_group)

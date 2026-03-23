@@ -265,7 +265,12 @@ def _extract_did_sheet(all_rows: List[tuple], header_idx: int, result_list: List
             return -1
 
         bit_idx = find_in_slice(["bit", "位"], b_idx, limit_idx)
-        enc_idx = find_in_slice(["encoding", "type", "format", "编码", "类型"], b_idx, limit_idx)
+        
+        # Prioritize explicit "encoding" keywords to avoid matching "Data Type" incorrectly
+        enc_idx = find_in_slice(["encoding", "编码"], b_idx, limit_idx)
+        if enc_idx == -1:
+            enc_idx = find_in_slice(["type", "format", "类型"], b_idx, limit_idx)
+
         desc_e = find_in_slice(["sub data name(e)", "data name(e)", "description(e)"], b_idx, limit_idx)
         desc_c = find_in_slice(["sub data name(c)", "data name(c)", "description(c)"], b_idx, limit_idx)
         conv_e = find_in_slice(["conversion(e)"], b_idx, limit_idx)

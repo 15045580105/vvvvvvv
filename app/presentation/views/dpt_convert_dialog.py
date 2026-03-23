@@ -15,6 +15,12 @@ def run_conversion_task(log_callback, input_path, output_dir):
     log_callback("正在加密数据...")
     output_file = os.path.join(output_dir, "dpt_config.dat")
 
+    # 同步生成 JSON 文件方便调试
+    log_callback("正在生成 JSON备份...")
+    json_file = os.path.join(output_dir, "dpt_config.json")
+    with open(json_file, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+
     json_str = json.dumps(data, ensure_ascii=False, separators=(',', ':'))
     encrypted_bytes = dpt_encryptor.encrypt(json_str)
 
