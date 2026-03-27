@@ -4,6 +4,8 @@ from app.common.log.operation_log_manager import OperationLogManager
 from app.presentation.views.base_view import BaseView
 from app.common.ui.widgets import ModernButton, CheckableComboBox
 from app.common.ui.modern_widgets import MessageToast
+from app.common.ui.log_splitter import LogAreaSplitter
+from app.common.ui.log_panel import LogPanelBuilder
 
 class CommonConfigView(BaseView):
     def setup_ui(self):
@@ -46,7 +48,13 @@ class CommonConfigView(BaseView):
 
     def _init_param_config_tab(self):
         self.param_tab = QtWidgets.QWidget()
-        layout = QtWidgets.QVBoxLayout(self.param_tab)
+        root_layout = QtWidgets.QVBoxLayout(self.param_tab)
+        root_layout.setSpacing(0)
+        root_layout.setContentsMargins(0, 0, 0, 0)
+        self.param_splitter = LogAreaSplitter(self.param_tab, min_log_height=150, max_log_ratio=0.6)
+        root_layout.addWidget(self.param_splitter)
+        content_widget = QtWidgets.QWidget()
+        layout = QtWidgets.QVBoxLayout(content_widget)
         layout.setSpacing(14)
         layout.setContentsMargins(14, 14, 14, 14)
 
@@ -159,15 +167,22 @@ class CommonConfigView(BaseView):
         self.param_log_text = QtWidgets.QTextEdit()
         self.param_log_text.setReadOnly(True)
         self.param_log_text.setPlaceholderText("这里显示常用$2E服务的操作日志...")
+        LogPanelBuilder.attach_search(log_layout, self.param_log_text)
         log_layout.addWidget(self.param_log_text)
         log_group.setLayout(log_layout)
-        layout.addWidget(log_group, stretch=1)
+        self.param_splitter.set_panels(content_widget, log_group, initial_log_height=220)
 
         self.tab_widget.addTab(self.param_tab, "常用$2E服务")
 
     def _init_routine_control_tab(self):
         self.routine_tab = QtWidgets.QWidget()
-        layout = QtWidgets.QVBoxLayout(self.routine_tab)
+        root_layout = QtWidgets.QVBoxLayout(self.routine_tab)
+        root_layout.setSpacing(0)
+        root_layout.setContentsMargins(0, 0, 0, 0)
+        self.routine_splitter = LogAreaSplitter(self.routine_tab, min_log_height=150, max_log_ratio=0.6)
+        root_layout.addWidget(self.routine_splitter)
+        content_widget = QtWidgets.QWidget()
+        layout = QtWidgets.QVBoxLayout(content_widget)
         layout.setSpacing(14)
         layout.setContentsMargins(14, 14, 14, 14)
 
@@ -277,9 +292,10 @@ class CommonConfigView(BaseView):
         self.routine_log_text = QtWidgets.QTextEdit()
         self.routine_log_text.setReadOnly(True)
         self.routine_log_text.setPlaceholderText("这里显示常用$31&$2F服务的操作日志...")
+        LogPanelBuilder.attach_search(log_layout, self.routine_log_text)
         log_layout.addWidget(self.routine_log_text)
         log_group.setLayout(log_layout)
-        layout.addWidget(log_group, stretch=1)
+        self.routine_splitter.set_panels(content_widget, log_group, initial_log_height=220)
 
         self.tab_widget.addTab(self.routine_tab, "常用$31&$2F服务")
 
@@ -780,4 +796,3 @@ class CommonConfigView(BaseView):
         table = self.param_table if is_2e else self.routine_table
         status = "success" if success else "failed"
         self.set_button_status(table, row_index, status)
-

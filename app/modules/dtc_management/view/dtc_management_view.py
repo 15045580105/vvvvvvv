@@ -5,6 +5,8 @@ from PyQt5.QtCore import Qt
 
 from app.common.log.operation_log_manager import OperationLogManager
 from app.common.ui.widgets import ModernButton
+from app.common.ui.log_splitter import LogAreaSplitter
+from app.common.ui.log_panel import LogPanelBuilder
 from app.presentation.views.base_view import BaseView
 
 
@@ -21,15 +23,20 @@ class DTCView(BaseView):
         main_layout.setSpacing(0)
 
         # Splitter
-        self.splitter = QtWidgets.QSplitter(Qt.Vertical)
+        self.splitter = LogAreaSplitter(self, min_log_height=150, max_log_ratio=0.8)
         main_layout.addWidget(self.splitter)
+
+        content_widget = QtWidgets.QWidget()
+        content_layout = QtWidgets.QVBoxLayout(content_widget)
+        content_layout.setContentsMargins(0, 0, 0, 0)
+        content_layout.setSpacing(0)
 
         # Top Container
         self.top_widget = QtWidgets.QWidget()
         top_layout = QtWidgets.QVBoxLayout(self.top_widget)
         top_layout.setContentsMargins(0, 0, 0, 0)
         top_layout.setSpacing(0)
-        self.splitter.addWidget(self.top_widget)
+        content_layout.addWidget(self.top_widget)
 
         # Global Action Buttons
         self.read_btn = ModernButton("读取故障码", "#3B82F6")
@@ -90,16 +97,15 @@ class DTCView(BaseView):
         # Log Window (Output)
         log_group = QtWidgets.QGroupBox("操作日志")
         log_layout = QtWidgets.QVBoxLayout(log_group)
-        log_layout.setContentsMargins(6, 6, 6, 6)
+        log_layout.setContentsMargins(8, 12, 8, 8)
         self.log_edit = QtWidgets.QPlainTextEdit()
         self.log_edit.setReadOnly(True)
         self.log_edit.setMaximumBlockCount(500)
-        self.log_edit.setMinimumHeight(100)
+        self.log_edit.setMinimumHeight(0)
+        LogPanelBuilder.attach_search(log_layout, self.log_edit)
         log_layout.addWidget(self.log_edit)
 
-        self.splitter.addWidget(log_group)
-        self.splitter.setStretchFactor(0, 2)
-        self.splitter.setStretchFactor(1, 1)
+        self.splitter.set_panels(content_widget, log_group, initial_log_height=100)
 
 
     def setup_fault_page(self, parent):

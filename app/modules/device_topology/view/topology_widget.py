@@ -1,4 +1,4 @@
-import sys
+﻿import sys
 import openpyxl
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from PyQt5 import QtGui, QtWidgets
@@ -184,6 +184,8 @@ class TopologyWidget(QGraphicsView):
         self._max_scale = 2.5
         self._panning = False
         self._pan_start = QPoint()
+        self._auto_fit_enabled = True
+        self._fit_padding = 12
 
         self.setRenderHints(QPainter.Antialiasing | QPainter.TextAntialiasing)
         self.setTransformationAnchor(QGraphicsView.AnchorUnderMouse)
@@ -197,7 +199,7 @@ class TopologyWidget(QGraphicsView):
 
         self.init_nodes(node_data)
         self.layout_nodes()
-        self.setMinimumSize(800, 500)
+        # self.setMinimumSize(800, 500)
 
     def _init_transparent_toolbar(self):
         """初始化透明悬浮工具栏"""
@@ -996,6 +998,7 @@ class TopologyWidget(QGraphicsView):
         # 工具栏宽度比视图小20px（左右各10px边距）
         if hasattr(self, 'toolbar'):
             self.toolbar.setGeometry(10, 10, self.viewport().width() - 20, 46)
+        self._fit_topology_to_view()
 
     def init_nodes(self, node_data):
         self.scene.clear()
@@ -1067,6 +1070,7 @@ class TopologyWidget(QGraphicsView):
         child_count = len(self.child_nodes)
         if child_count == 0:
             self._update_scene_rect()
+            self._fit_topology_to_view(force=True)
             return
 
         # 逻辑优化：超过10个节点才分两排
@@ -1134,7 +1138,7 @@ class TopologyWidget(QGraphicsView):
                 self._add_connection(connection_x, main_bottom_y, node_top_y, node.connection_note)
 
         self._update_scene_rect()
-        self.centerOn(self.main_node_item)
+        self._fit_topology_to_view(force=True)
 
     def _add_connection(self, connection_x, main_bottom_y, node_top_y, note):
         pen = QPen(QColor(100, 100, 100), 2)
@@ -1164,6 +1168,44 @@ class TopologyWidget(QGraphicsView):
         else:
             rect = QRectF(-500, -350, 1000, 700)
         self.setSceneRect(rect)
+
+    def _fit_topology_to_view(self, force=False):
+        """根据当前视口尺寸自适应显示拓扑图，避免小屏幕下遮挡其他布局。"""
+        if not force and not getattr(self, '_auto_fit_enabled', True):
+            return
+        if self.scene is None or not self.scene.items():
+            return
+
+        viewport_rect = self.viewport().rect()
+        if viewport_rect.width() <= 0 or viewport_rect.height() <= 0:
+            return
+
+        fit_rect = self.sceneRect()
+        if fit_rect.isEmpty() or fit_rect.width() <= 0 or fit_rect.height() <= 0:
+            return
+
+        top_offset = self._fit_padding
+        if hasattr(self, 'toolbar') and self.toolbar and self.toolbar.isVisible():
+            top_offset += self.toolbar.height() + 8
+
+        available_width = viewport_rect.width() - self._fit_padding * 2
+        available_height = viewport_rect.height() - top_offset - self._fit_padding
+        if available_width <= 0 or available_height <= 0:
+            return
+
+        x_ratio = available_width / fit_rect.width()
+        y_ratio = available_height / fit_rect.height()
+        scale_factor = min(x_ratio, y_ratio)
+        scale_factor = max(self._min_scale, min(scale_factor, self._max_scale))
+
+        self.resetTransform()
+        self.scale(scale_factor, scale_factor)
+        self._current_scale = scale_factor
+
+        center_y = fit_rect.center().y()
+        if hasattr(self, 'toolbar') and self.toolbar and self.toolbar.isVisible():
+            center_y += max(0, top_offset - self._fit_padding) / max(scale_factor, 0.001) / 2
+        self.centerOn(QPointF(fit_rect.center().x(), center_y))
 
     def calculate_main_node_size(self):
         child_count = len(self.child_nodes)
@@ -1199,6 +1241,7 @@ class TopologyWidget(QGraphicsView):
         delta = event.angleDelta().y() if event.angleDelta().y() else event.pixelDelta().y()
         if delta == 0:
             return
+        self._auto_fit_enabled = False
         zoom_factor = 1.15 if delta > 0 else 1 / 1.15
         new_scale = self._current_scale * zoom_factor
         if new_scale < self._min_scale or new_scale > self._max_scale:
@@ -1243,7 +1286,7 @@ class TopologyWidget(QGraphicsView):
         return QSize(1000, 700)
 
     def minimumSizeHint(self):
-        return QSize(600, 400)
+        return QSize(320, 160)
 
 
 class FloatingPanel(QWidget):
@@ -1394,7 +1437,7 @@ class FloatingPanel(QWidget):
         main_layout.addWidget(main_frame)
 
         self.resize(*self.initial_size)
-        self.setMinimumSize(300, 200)
+        # self.setMinimumSize(300, 200)
         self.hide()
 
     def add_panel_content(self, layout):
@@ -1563,6 +1606,7 @@ class SimpleTopologyWindow(QWidget):
         self.setWindowTitle("网络拓扑图 - 网络管理系统")
         self.setGeometry(10, 10, 1400, 800)
         self.setStyleSheet("background-color: #F9FAFB;")
+        self.setMinimumHeight(0)
 
         # 创建示例数据
         node_data = [
@@ -1581,31 +1625,19 @@ class SimpleTopologyWindow(QWidget):
 
         # 创建拓扑图
         self.topology = TopologyWidget(node_data)
+        self.topology.setMinimumHeight(0)
+        self.topology.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Expanding)
 
         # 主布局
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(self.topology)
 
+    def minimumSizeHint(self):
+        return QSize(320, 220)
 
-def main():
-    """主函数"""
-    app = QApplication(sys.argv)
-    app.setStyle('Fusion')
-
-    # 设置全局样式
-    app.setStyleSheet("""
-        QMainWindow, QWidget {
-            background-color: #ecf0f1;
-        }
-        QLabel {
-            color: #2c3e50;
-        }
-    """)
-
-    window = SimpleTopologyWindow()
-    window.show()
-    sys.exit(app.exec_())
+    def sizeHint(self):
+        return QSize(760, 520)
 
 
 class CanLinTopologyWidget(TopologyWidget):
@@ -1624,6 +1656,7 @@ class CanLinTopologyWindow(QWidget):
         self.init_ui()
 
     def init_ui(self):
+        self.setMinimumHeight(0)
         # 构造节点数据
         # 主节点 LLCE
         # 格式: (name, icon, status, x, y)
@@ -1640,11 +1673,17 @@ class CanLinTopologyWindow(QWidget):
             node_data.append((f"CANFD{i}", "", "online", 0, 0))
 
         self.topology = CanLinTopologyWidget(node_data)
+        self.topology.setMinimumHeight(0)
+        self.topology.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Expanding)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(self.topology)
 
+    def minimumSizeHint(self):
+        return QSize(320, 220)
+
 
 if __name__ == "__main__":
     main()
+

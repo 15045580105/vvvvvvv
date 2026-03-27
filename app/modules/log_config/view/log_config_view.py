@@ -9,6 +9,8 @@ warnings.filterwarnings("ignore", category=DeprecationWarning, message=".*sipPyT
 from app.common.ui.widgets import ModernButton, MultiSelectComboBox
 from app.presentation.views.base_view import BaseView
 from app.common.ui.modern_widgets import MessageToast
+from app.common.ui.log_splitter import LogAreaSplitter
+from app.common.ui.log_panel import LogPanelBuilder
 
 
 class LogConfigEditDialog(QtWidgets.QDialog):
@@ -147,9 +149,13 @@ class LogConfigView(BaseView):
 
     def _init_ecu_tab(self):
         self.ecu_tab = QtWidgets.QWidget()
-        layout = QtWidgets.QVBoxLayout(self.ecu_tab)
-        layout.setSpacing(16)
-        layout.setContentsMargins(20, 20, 20, 20)
+        root_layout = QtWidgets.QVBoxLayout(self.ecu_tab)
+        root_layout.setSpacing(0)
+        root_layout.setContentsMargins(0, 0, 0, 0)
+        self.ecu_splitter = LogAreaSplitter(self.ecu_tab, min_log_height=150, max_log_ratio=0.6)
+        root_layout.addWidget(self.ecu_splitter)
+        content_widget = QtWidgets.QWidget()
+        layout = QtWidgets.QVBoxLayout(content_widget)
 
         # 控制区域
         controls_layout = QtWidgets.QGridLayout()
@@ -188,18 +194,22 @@ class LogConfigView(BaseView):
         self.ecu_log_text = QtWidgets.QTextEdit()
         self.ecu_log_text.setReadOnly(True)
         self.ecu_log_text.setPlaceholderText("这里显示用户的操作日志...")
-        # 移除局部样式，使用全局样式以保持一致
+        LogPanelBuilder.attach_search(log_layout, self.ecu_log_text)
         log_layout.addWidget(self.ecu_log_text)
         log_group.setLayout(log_layout)
-        layout.addWidget(log_group, stretch=1)
+        self.ecu_splitter.set_panels(content_widget, log_group, initial_log_height=180)
 
         self.tab_widget.addTab(self.ecu_tab, "ECU配置")
 
     def _init_app_tab(self):
         self.app_tab = QtWidgets.QWidget()
-        layout = QtWidgets.QVBoxLayout(self.app_tab)
-        layout.setSpacing(10)
-        layout.setContentsMargins(10, 10, 10, 10)
+        root_layout = QtWidgets.QVBoxLayout(self.app_tab)
+        root_layout.setSpacing(0)
+        root_layout.setContentsMargins(0, 0, 0, 0)
+        self.app_splitter = LogAreaSplitter(self.app_tab, min_log_height=150, max_log_ratio=0.6)
+        root_layout.addWidget(self.app_splitter)
+        content_widget = QtWidgets.QWidget()
+        layout = QtWidgets.QVBoxLayout(content_widget)
 
         # 筛选行
         filter_layout = QtWidgets.QHBoxLayout()
@@ -300,18 +310,23 @@ class LogConfigView(BaseView):
         self.app_log_text = QtWidgets.QTextEdit()
         self.app_log_text.setReadOnly(True)
         self.app_log_text.setPlaceholderText("这里显示用户的操作日志...")
-        self.app_log_text.setMaximumHeight(150) # 保留高度限制，避免挤压表格
+        self.app_log_text.setMaximumHeight(16777215) # 保留高度限制，避免挤压表格
+        LogPanelBuilder.attach_search(log_layout, self.app_log_text)
         log_layout.addWidget(self.app_log_text)
         log_group.setLayout(log_layout)
-        layout.addWidget(log_group)
+        self.app_splitter.set_panels(content_widget, log_group, initial_log_height=150)
 
         self.tab_widget.addTab(self.app_tab, "APP配置")
 
     def _init_restore_tab(self):
         self.restore_tab = QtWidgets.QWidget()
-        layout = QtWidgets.QVBoxLayout(self.restore_tab)
-        layout.setSpacing(20)
-        layout.setContentsMargins(30, 30, 30, 30)
+        root_layout = QtWidgets.QVBoxLayout(self.restore_tab)
+        root_layout.setSpacing(0)
+        root_layout.setContentsMargins(0, 0, 0, 0)
+        self.restore_splitter = LogAreaSplitter(self.restore_tab, min_log_height=150, max_log_ratio=0.6)
+        root_layout.addWidget(self.restore_splitter)
+        content_widget = QtWidgets.QWidget()
+        layout = QtWidgets.QVBoxLayout(content_widget)
 
         options_group = QtWidgets.QWidget()
         options_layout = QtWidgets.QVBoxLayout(options_group)
@@ -347,9 +362,10 @@ class LogConfigView(BaseView):
         self.restore_log_text = QtWidgets.QTextEdit()
         self.restore_log_text.setReadOnly(True)
         self.restore_log_text.setPlaceholderText("这里显示用户的操作日志...")
+        LogPanelBuilder.attach_search(log_layout, self.restore_log_text)
         log_layout.addWidget(self.restore_log_text)
         log_group.setLayout(log_layout)
-        layout.addWidget(log_group, stretch=1)
+        self.restore_splitter.set_panels(content_widget, log_group, initial_log_height=180)
 
         self.tab_widget.addTab(self.restore_tab, "恢复默认配置")
 
@@ -524,4 +540,3 @@ def _setup_searchable_combo(combo):
     completer.setFilterMode(QtCore.Qt.MatchContains)      # 包含模式
     completer.setCaseSensitivity(QtCore.Qt.CaseInsensitive) # 忽略大小写
     combo.setCompleter(completer)
-

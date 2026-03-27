@@ -7,6 +7,8 @@ from app.common.log.operation_log_manager import OperationLogManager
 from app.common.ui.widgets import ModernButton
 from app.presentation.views.base_view import BaseView
 from app.modules.ecu_initialization.view.ecu_initialization_view import ECUInitView
+from app.common.ui.log_splitter import LogAreaSplitter
+from app.common.ui.log_panel import LogPanelBuilder
 
 
 class FullCellDelegate(QtWidgets.QStyledItemDelegate):
@@ -418,12 +420,11 @@ class DIDView(BaseView):
         main_layout.addLayout(ctl)
 
         # Splitter for resizable log window
-        self.splitter = QtWidgets.QSplitter(Qt.Vertical)
+        self.splitter = LogAreaSplitter(self, min_log_height=150, max_log_ratio=0.8)
         main_layout.addWidget(self.splitter)
 
         # 使用 QStackedWidget 来切换 DID 表格和 ECU 初始化界面
         self.stack = QtWidgets.QStackedWidget()
-        self.splitter.addWidget(self.stack)
 
         # --- 页面 1: DID 表格 ---
         table_widget = QtWidgets.QWidget()
@@ -509,18 +510,19 @@ class DIDView(BaseView):
         self.stack.addWidget(self.ecu_init_view) # Index 1
 
         # 底部区域：仅保留请求/响应原始数据，占 1/3
-        raw_group = QtWidgets.QGroupBox("请求/响应原始数据")
+        raw_group = QtWidgets.QGroupBox("操作日志")
         raw_layout = QtWidgets.QVBoxLayout(raw_group)
+        raw_layout.setContentsMargins(8, 12, 8, 8)
         font = QtGui.QFont("Consolas", 10)
         self.raw_text = QtWidgets.QTextEdit()
         self.raw_text.setPlaceholderText("请求和响应原始数据将在这里显示...")
         self.raw_text.setFont(font)
         self.raw_text.setReadOnly(True)
+        self.raw_text.setMinimumHeight(0)
+        LogPanelBuilder.attach_search(raw_layout, self.raw_text)
         raw_layout.addWidget(self.raw_text)
 
-        self.splitter.addWidget(raw_group)
-        self.splitter.setStretchFactor(0, 3)
-        self.splitter.setStretchFactor(1, 1)
+        self.splitter.set_panels(self.stack, raw_group, initial_log_height=300)
 
         # 信号转发（仅界面层）
         self.read_btn.clicked.connect(self.read_requested.emit)

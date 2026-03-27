@@ -2,6 +2,7 @@ from PyQt5 import QtWidgets, QtCore, QtGui
 
 from app.common.ui.widgets import ModernButton
 from app.presentation.views.base_view import BaseView
+from app.common.ui.log_panel import LogPanelBuilder
 
 
 class ScriptExecView(BaseView):
@@ -146,23 +147,18 @@ class ScriptExecView(BaseView):
         self.bottom_splitter.addWidget(self.exec_group)
 
         # ---------- 右：日志单独一块 ----------
-        self.log_group = QtWidgets.QGroupBox("执行日志")
+        self.log_group = QtWidgets.QGroupBox("操作日志")
         log_layout = QtWidgets.QVBoxLayout(self.log_group)
         log_layout.setContentsMargins(8, 8, 8, 8)
         log_layout.setSpacing(4)
 
-        # 顶部工具行：清空 + 预留过滤/导出（暂只放清空按钮）
-        log_toolbar = QtWidgets.QHBoxLayout()
         self.clear_output_btn = ModernButton("清空", "#6B7280", "✕")
-        log_toolbar.addWidget(self.clear_output_btn)
-        log_toolbar.addStretch()
-        log_layout.addLayout(log_toolbar)
 
-        # 日志输出框
         self.script_output = QtWidgets.QTextEdit()
         self.script_output.setReadOnly(True)
         self.script_output.setFont(QtGui.QFont("Consolas", 10))
         self.script_output.setLineWrapMode(QtWidgets.QTextEdit.NoWrap)
+        LogPanelBuilder.attach_search(log_layout, self.script_output, trailing_widgets=[self.clear_output_btn])
         log_layout.addWidget(self.script_output)
 
         self.bottom_splitter.addWidget(self.log_group)
@@ -178,6 +174,14 @@ class ScriptExecView(BaseView):
         # 上下比例
         self.main_splitter.setStretchFactor(0, 3)
         self.main_splitter.setStretchFactor(1, 5)
+
+        # 设置最小高度
+        self.device_group.setMinimumHeight(150)
+        bottom_widget.setMinimumHeight(150)
+        self.log_group.setMinimumHeight(150)
+
+        # 设置初始大小比例
+        self.main_splitter.setSizes([220, 480])
 
         main_layout.addWidget(self.main_splitter)
 
