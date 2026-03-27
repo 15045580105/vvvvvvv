@@ -36,7 +36,6 @@ class LogConfigService(BaseService):
     def set_ecu_log_level(self, ecus: List[str], level: str) -> bool:
         """为指定的 ECU 设置日志等级。"""
         _log = self.log_signal.emit
-
         if not self._device_service:
             _log("DeviceService 未注入")
             return False
@@ -80,11 +79,11 @@ class LogConfigService(BaseService):
             _log(f"读取当前日志配置 (22 {did:X})...")
             read_cmd = bytes([0x22]) + did_bytes
             resp = doip_client.send_doip_message(read_cmd)
+
             if not resp or resp[0] != 0x62:
                 _log(f"读取失败: {resp.hex(' ').upper() if resp else '无响应'}")
                 success_all = False
                 continue
-
             _log(f"当前配置: {resp.hex(' ').upper()}")
 
             # --- 第二步：写入新配置 (2E DID VAL) ---
@@ -97,50 +96,7 @@ class LogConfigService(BaseService):
 
             # 读取是否为工厂模式，工厂模式不需要走2701安全认证
             is_factory_mode = False
-            # TopologyService methods now use signals too.
-            # We can't easily get value from topology service via blocking call if it's async signal based.
-            # However, _get_factory_mode in TopologyService was modified to emit signal OR return value?
-            # Let's check TopologyService again.
-            # TopologyService helpers like _get_factory_mode take log_callback?
-            # I need to check how I modified TopologyService.
-
-            # Re-checking TopologyService logic...
-            # The previous modification to TopologyService was for _read_dtc_and_match.
-            # I didn't verify if _get_factory_mode still has log_callback.
-            # The grep showed TopologyService had some hits.
-            # If _get_factory_mode is async or requires callback, this synchronous logic breaks.
-            # Assuming for now I can pass _log (self.log_signal.emit) if it accepts a callable.
-            # But the user asked to replace log_callback with signal.
-
-            # Note: TopologyService _get_factory_mode in previous read was:
-            # def _get_factory_mode(self, log_callback...):
-            # So I need to update TopologyService too to remove log_callback from helpers if they are using it.
-
             if self._topology_service:
-                # Assuming _get_factory_mode is modified to not take callback or we adapt
-                # If valid implementation:
-                # factory_mode_str = self._topology_service.get_factory_mode_sync() ?
-                # Or we rely on DeviceService directly here since TopologyService is mainly for UI updates.
-
-                # Let's look at the code block again.
-                # factory_mode_str = self._topology_service._get_factory_mode(log_callback=_log)
-
-                # I will use self.log_signal.emit as the callback for now, as it fits the signature Callable[[str], None].
-                # Refactoring ALL log_callback to signals might imply public methods don't take it.
-                # Internal helpers might still take a logging function?
-                # User said: "改整个文件夹下所有用到log_callback作为日志传递更新到view的函数..."
-                # If _get_factory_mode is used by LogConfigService, it's an internal-ish usage.
-                # But to follow instructions strictly, I should change _get_factory_mode too.
-
-                # Let's pass _log for now (which is self.log_signal.emit) if the method accepts it.
-                # If I remove log_callback from _get_factory_mode, I can't pass it.
-                # If _get_factory_mode emits its own signal, LogConfigService won't capture it easily to decide logic flow (is_factory_mode).
-
-                # Decision: For synchronous logic flow like this, keeping a return value is essential.
-                # Logging can be done via the service's own signal.
-                # So LogConfigService doesn't need to pass a callback to TopologyService.
-                # TopologyService will emit its own logs.
-
                 factory_mode_str = self._topology_service._get_factory_mode()
                 if "工厂模式" in factory_mode_str:
                     is_factory_mode = True
@@ -166,7 +122,6 @@ class LogConfigService(BaseService):
                     success_all = False
                     continue
 
-                # 2. 2E ...
                 _log(f"发送写指令: {write_cmd.hex(' ').upper()}")
                 write_resp = self._device_service.send_doip_payload(write_cmd)
 
@@ -192,7 +147,7 @@ class LogConfigService(BaseService):
             # 验证值 (假设格式为 62 DID VAL)
             # resp: 62 BE 02 06
             if len(verify_resp) >= 4 and verify_resp[3] == level_val:
-                _log("配置成功！")
+                _log(f"当前值: {verify_resp.hex(' ').upper()}, 配置成功！")
             else:
                 _log(f"验证失败，当前值: {verify_resp.hex(' ').upper()}")
                 success_all = False
@@ -214,10 +169,10 @@ class LogConfigService(BaseService):
 
         did = 0xBE17
         did_bytes = did.to_bytes(2, 'big')
-
         # 读取
-        _log(f"读取 DID {did:X} 状态...")
+        _log(f"读取 DID {did:X} ")
         read_resp = client.send_doip_message(bytes([0x22]) + did_bytes)
+        _log(f"返回：{read_resp}")
         if not read_resp or read_resp[0] != 0x62 or len(read_resp) < 4:
             _log(f"读取 DID 失败或响应异常")
             return False
@@ -791,11 +746,11 @@ class LogConfigService(BaseService):
         # a) Restore CCUA
         if options.get("restore_ccua"):
             _log("开始恢复 CCUA 默认配置...")
-            if not self._restore_ccua_default():
+            # a) 发送 UDS 2E BE 17 02
+            if not self._set_did_byte(0xBE17, 0x02, "CCUA"):
                 result["success"] = False
                 _log("CCUA 默认配置恢复失败")
             else:
-                # ccua_apps = self.get_apps("CCUA", "", "")
                 self.batch_update_ccua_apps(["CCUA"], "ERROR", "NETWORK")
                 _log("CCUA 默认配置恢复成功")
                 result["restart_required"] = True # Need confirm restart in UI
@@ -829,15 +784,14 @@ class LogConfigService(BaseService):
                     # d) 删除 /log 下所有日志文件
                     cmd = "rm -rf /log/*"
                     _log(f"执行 SSH 指令: {cmd}")
-                    out = ssh_client.execute_command(cmd)
-                    _log("日志删除指令已发送")
+                    # out = ssh_client.execute_command(cmd)
+                    _log("测试阶段，日志删除指令暂不发送")
                 except Exception as e:
                     _log(f"日志删除失败: {e}")
                     result["success"] = False
             else:
                 _log("SSH 未连接，无法删除日志")
                 result["success"] = False
-
         return result
 
     def _set_did_byte(self, did: int, val: int, ecu_name: str) -> bool:
@@ -875,107 +829,6 @@ class LogConfigService(BaseService):
         else:
              _log(f"设置失败, 响应: {resp.hex(' ') if resp else 'None'}")
              return False
-
-    def _restore_ccua_default(self) -> bool:
-        """
-        a1) UDS 2E BE 17 02
-        a2) Walk process_log_config.json via SSH
-        """
-        _log = self.log_signal.emit
-        # a1) Update DID 0xBE17 to 02
-        if not self._set_did_byte(0xBE17, 0x02, "CCUA"):
-            return False
-
-        # # a2) Restore process_log_configs
-        # # Load local map file
-        # # Use user provided path if available
-        # if self._map_file_path and os.path.exists(self._map_file_path):
-        #     map_file_path = self._map_file_path
-        # else:
-        #     _log("错误: 未设置本地映射文件路径，请在导入区域选择JSON文件")
-        #     return False
-        #
-        # try:
-        #     if not os.path.exists(map_file_path):
-        #           _log(f"错误: 找不到映射文件 {map_file_path}")
-        #           return False
-        #
-        #     _log(f"使用映射文件: {map_file_path}")
-        #     with open(map_file_path, 'r', encoding='utf-8') as f:
-        #         data = json.load(f)
-        #         configs = data.get("process_log_configs", {})
-        # except Exception as e:
-        #     _log(f"无法读取映射文件: {e}")
-        #     return False
-        #
-        # ssh_client = self._device_service.get_ssh_client()
-        # if not ssh_client or not ssh_client.is_connected():
-        #     _log("SSH 未连接，无法恢复 APP 配置文件")
-        #     return False
-        #
-        # success_count = 0
-        # fail_count = 0
-        #
-        # for key, info in configs.items():
-        #     remote_path = info.get("path")
-        #     if not remote_path: continue
-        #
-        #     # Read remote file
-        #     cmd_read = f"cat {remote_path}"
-        #     # _log(f"读取: {remote_path}")
-        #     json_content_str = ssh_client.execute_command(cmd_read)
-        #     if not json_content_str:
-        #          # _log(f"读取失败或文件为空: {key}")
-        #          fail_count += 1
-        #          continue
-        #
-        #     try:
-        #         remote_json = json.loads(json_content_str)
-        #         modified = False
-        #
-        #         # Check logTraceLogLevel -> ERROR
-        #         if remote_json.get("logTraceLogLevel") != "ERROR":
-        #             remote_json["logTraceLogLevel"] = "ERROR"
-        #             modified = True
-        #
-        #         # Check logTraceLogMode -> NETWORK
-        #         if remote_json.get("logTraceLogMode") != "NETWORK":
-        #             remote_json["logTraceLogMode"] = "NETWORK"
-        #             modified = True
-        #
-        #         if modified:
-        #             # Write back
-        #             new_content = json.dumps(remote_json, indent=4)
-        #             # Escape double quotes for shell command if simple echo used, or use sftp?
-        #             # Using a safe write method is better.
-        #             # Assuming ssh_client has capability to write file or use echo
-        #
-        #             # Trick: use echo '...' > path. Need to handle JSON quotes.
-        #             # A safer way is using python on device if available, or just careful escaping.
-        #             # Or 'cat > path <<EOF ... EOF'
-        #
-        #             # Let's try simple echo with single quotes wrapping json
-        #             safe_json = new_content.replace("'", "'\\''") # Escape single quotes inside JSON
-        #             cmd_write = f"echo '{safe_json}' > {remote_path}"
-        #
-        #             ssh_client.execute_command(cmd_write)
-        #             # Verify? Skip for performance or do sample verification
-        #             # _log(f"已恢复: {key}")
-        #             success_count += 1
-        #         else:
-        #             # _log(f"无需修改: {key}")
-        #             pass
-        #
-        #     except json.JSONDecodeError:
-        #         # _log(f"JSON 解析失败: {remote_path}")
-        #         fail_count += 1
-        #         pass
-        #     except Exception as e:
-        #         # _log(f"处理失败 {key}: {e}")
-        #         fail_count += 1
-        #
-        # _log(f"APP 配置恢复统计: 修改 {success_count}, 失败/跳过 {fail_count}")
-        return True
 
     def reset_ccu(self):
         """UDS 11 03 (Soft Reset)"""

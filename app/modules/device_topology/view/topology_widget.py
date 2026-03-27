@@ -1,4 +1,4 @@
-import sys
+﻿import sys
 import openpyxl
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from PyQt5 import QtGui, QtWidgets
@@ -184,6 +184,8 @@ class TopologyWidget(QGraphicsView):
         self._max_scale = 2.5
         self._panning = False
         self._pan_start = QPoint()
+        self._auto_fit_enabled = True
+        self._fit_padding = 12
 
         self.setRenderHints(QPainter.Antialiasing | QPainter.TextAntialiasing)
         self.setTransformationAnchor(QGraphicsView.AnchorUnderMouse)
@@ -197,7 +199,7 @@ class TopologyWidget(QGraphicsView):
 
         self.init_nodes(node_data)
         self.layout_nodes()
-        self.setMinimumSize(800, 500)
+        # self.setMinimumSize(800, 500)
 
     def _init_transparent_toolbar(self):
         """初始化透明悬浮工具栏"""
@@ -234,12 +236,12 @@ class TopologyWidget(QGraphicsView):
         # 初始化各个信息面板的内容 Widget
         self._init_info_widgets()
 
-        self._add_tool_button("车辆信息", toolbar_layout, self.vehicle_info_widget)
-        self._add_tool_button("服务状态信息", toolbar_layout, self.service_status_widget)
-        self._add_tool_button("证书信息", toolbar_layout, self.security_info_widget)
-        self._add_tool_button("网络管理", toolbar_layout, self.network_mgmt_widget)
-        self._add_tool_button("储存信息", toolbar_layout, self.storage_info_widget)
-        self._add_tool_button("版本信息", toolbar_layout, self.version_info_widget)
+        self._add_tool_button("车辆信息", toolbar_layout, self.vehicle_info_widget, initial_size=(850, 500))
+        self._add_tool_button("服务状态信息", toolbar_layout, self.service_status_widget, initial_size=(850, 500))
+        self._add_tool_button("证书信息", toolbar_layout, self.security_info_widget, initial_size=(850, 500))
+        self._add_tool_button("网络管理", toolbar_layout, self.network_mgmt_widget, initial_size=(850, 500))
+        self._add_tool_button("储存信息", toolbar_layout, self.storage_info_widget, initial_size=(850, 500))
+        self._add_tool_button("版本信息", toolbar_layout, self.version_info_widget, initial_size=(850, 500))
         self._add_tool_button("以太网网络诊断", toolbar_layout, self.network_diag_widget, initial_size=(850, 500))
 
         toolbar_layout.addStretch()
@@ -431,19 +433,24 @@ class TopologyWidget(QGraphicsView):
         ])
 
         # 5. 存储信息
-        self.storage_info_widget = QWidget()
-        self.storage_labels = {}
-        setup_form_layout(self.storage_info_widget, self.storage_labels, [
-            ("a_core_storage", "存储情况：")
-            # ("m_core_storage", "M核存储情况：")
-        ])
+        self.storage_info_widget, self.storage_text, s_search_input, s_count_lbl, s_btn_prev, s_btn_next = \
+            self._create_searchable_text_widget()
+        s_search_input.textChanged.connect(
+            lambda: self._perform_search(self.storage_text, s_search_input, s_count_lbl))
+        s_btn_prev.clicked.connect(
+            lambda: self._perform_find(self.storage_text, s_search_input, s_count_lbl, backwards=True))
+        s_btn_next.clicked.connect(
+            lambda: self._perform_find(self.storage_text, s_search_input, s_count_lbl, backwards=False))
 
         # 6. 版本信息
-        self.version_info_widget = QWidget()
-        self.version_labels = {}
-        setup_form_layout(self.version_info_widget, self.version_labels, [
-            ("version", "版本信息：")
-        ])
+        self.version_info_widget, self.version_text, v_search_input, v_count_lbl, v_btn_prev, v_btn_next = \
+            self._create_searchable_text_widget()
+        v_search_input.textChanged.connect(
+            lambda: self._perform_search(self.version_text, v_search_input, v_count_lbl))
+        v_btn_prev.clicked.connect(
+            lambda: self._perform_find(self.version_text, v_search_input, v_count_lbl, backwards=True))
+        v_btn_next.clicked.connect(
+            lambda: self._perform_find(self.version_text, v_search_input, v_count_lbl, backwards=False))
 
         # 7. 以太网网络诊断
         self.network_diag_widget = NetworkStatusPanel()
@@ -705,6 +712,162 @@ class TopologyWidget(QGraphicsView):
 
         self.status_search_label.setText(f"{index}/{total}")
 
+    def _create_searchable_text_widget(self, placeholder="查找内容..."):
+        """创建一个带有搜索栏和文本编辑框的Widget"""
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+        layout.setContentsMargins(0, 0, 0, 0)
+
+        # ---------------------
+        # Search Bar
+        # ---------------------
+        search_widget = QWidget()
+        search_layout = QHBoxLayout(search_widget)
+        search_layout.setContentsMargins(0, 0, 0, 4)
+        search_layout.setSpacing(6)
+
+        search_input = QLineEdit()
+        search_input.setPlaceholderText(placeholder)
+        search_input.setStyleSheet("""
+            QLineEdit {
+                border: 1px solid #D1D5DB;
+                border-radius: 4px;
+                padding: 4px 8px;
+                background-color: #FFFFFF;
+                color: #374151;
+            }
+            QLineEdit:focus {
+                border: 1px solid #3B82F6;
+            }
+        """)
+
+        count_label = QLabel("0/0")
+        count_label.setStyleSheet("color: #6B7280; font-size: 12px;")
+        count_label.setFixedWidth(50)
+        count_label.setAlignment(Qt.AlignCenter)
+
+        # 查找上一个
+        btn_prev = QPushButton("▲")
+        btn_prev.setFixedSize(24, 24)
+        btn_prev.setCursor(Qt.PointingHandCursor)
+        btn_prev.setToolTip("查找上一个")
+        btn_prev.setStyleSheet("QPushButton { border: 1px solid #E5E7EB; border-radius: 4px; color: #4B5563; } QPushButton:hover { background-color: #F3F4F6; }")
+
+        # 查找下一个
+        btn_next = QPushButton("▼")
+        btn_next.setFixedSize(24, 24)
+        btn_next.setCursor(Qt.PointingHandCursor)
+        btn_next.setToolTip("查找下一个")
+        btn_next.setStyleSheet("QPushButton { border: 1px solid #E5E7EB; border-radius: 4px; color: #4B5563; } QPushButton:hover { background-color: #F3F4F6; }")
+
+        search_layout.addWidget(search_input)
+        search_layout.addWidget(count_label)
+        search_layout.addWidget(btn_prev)
+        search_layout.addWidget(btn_next)
+
+        layout.addWidget(search_widget)
+
+        # 详细文本区域
+        text_edit = QTextEdit()
+        text_edit.setReadOnly(True)
+        text_edit.setStyleSheet("""
+            QTextEdit {
+                border: 1px solid #E5E7EB;
+                border-radius: 6px;
+                background-color: #F9FAFB;
+                padding: 4px;
+                font-family: "Consolas", "Courier New", monospace;
+                font-size: 9pt;
+            }
+        """)
+        layout.addWidget(text_edit)
+
+        return widget, text_edit, search_input, count_label, btn_prev, btn_next
+
+    def _perform_search(self, text_edit, search_input, count_label):
+        """通用搜索逻辑"""
+        text = search_input.text()
+
+        # 清除现有高亮
+        cursor = text_edit.textCursor()
+        cursor.clearSelection()
+        text_edit.setTextCursor(cursor)
+
+        # 重置额外选择
+        text_edit.setExtraSelections([])
+
+        if not text:
+            count_label.setText("0/0")
+            return
+
+        # 查找所有匹配
+        extra_selections = []
+        doc = text_edit.document()
+
+        search_cursor = doc.find(text)
+        count = 0
+        while not search_cursor.isNull():
+            count += 1
+            highlight_selection = QTextEdit.ExtraSelection()
+            highlight_selection.format.setBackground(QColor("#FFFF00"))
+            highlight_selection.cursor = search_cursor
+            extra_selections.append(highlight_selection)
+
+            search_cursor = doc.find(text, search_cursor)
+
+        text_edit.setExtraSelections(extra_selections)
+        count_label.setText(f"0/{count}")
+
+    def _perform_find(self, text_edit, search_input, count_label, backwards=False):
+        """通用查找上一个/下一个逻辑"""
+        text = search_input.text()
+        if not text:
+            return
+
+        # 设置查找标志
+        flags = QtGui.QTextDocument.FindFlags()
+        if backwards:
+            flags |= QtGui.QTextDocument.FindBackward
+
+        found = text_edit.find(text, flags)
+
+        # 如果没找到，尝试从头/尾开始循环查找
+        if not found:
+            cursor = text_edit.textCursor()
+            if backwards:
+                cursor.movePosition(QtGui.QTextCursor.End)
+            else:
+                cursor.movePosition(QtGui.QTextCursor.Start)
+            text_edit.setTextCursor(cursor)
+            found = text_edit.find(text, flags)
+
+        if found:
+            self._update_search_index_display_generic(text_edit, search_input, count_label)
+
+    def _update_search_index_display_generic(self, text_edit, search_input, count_label):
+        """通用更新搜索索引显示"""
+        text = search_input.text()
+        if not text:
+            return
+
+        current_cursor = text_edit.textCursor()
+        current_pos = current_cursor.position()
+
+        # 重新遍历计算当前是第几个
+        doc = text_edit.document()
+        search_cursor = doc.find(text)
+        index = 0
+        total = 0
+
+        while not search_cursor.isNull():
+            total += 1
+            # 判断 current_cursor 是否就在 search_cursor 的范围内
+            if search_cursor.position() == current_pos:
+                index = total
+            search_cursor = doc.find(text, search_cursor)
+
+        count_label.setText(f"{index}/{total}")
+
     def update_vehicle_info(self, info: dict):
         """
         更新车辆信息。
@@ -767,18 +930,46 @@ class TopologyWidget(QGraphicsView):
 
     def update_storage_info(self, info: dict):
         """部分更新存储信息"""
-        for key, value in info.items():
-            if key in self.storage_labels:
-                self.storage_labels[key].setText(str(value))
+        if not info:
+             self.storage_text.clear()
+             return
+
+        content = info.get("a_core_storage", "")
+        if not content and info:
+             try:
+                 content = json.dumps(info, indent=4, ensure_ascii=False)
+             except:
+                 content = str(info)
+
+        if isinstance(content, str):
+             stripped = content.strip()
+             if (stripped.startswith("{") and stripped.endswith("}")) or \
+                (stripped.startswith("[") and stripped.endswith("]")):
+                 try:
+                     parsed = json.loads(content)
+                     content = json.dumps(parsed, indent=4, ensure_ascii=False)
+                 except:
+                     pass
+
+        self.storage_text.setText(str(content))
 
     def update_version_info(self, info: dict):
         """更新版本信息面板"""
-        if not info: return
-        # 假设 info 结构: {"m_core_storage": "..."}
-        # 这里我们只展示 m_core_storage 作为版本信息
-        val = info.get("m_core_storage", "—")
-        if "version" in self.version_labels:
-            self.version_labels["version"].setText(val)
+        if not info:
+            self.version_text.clear()
+            return
+
+        val = info.get("m_core_storage", "")
+        if not val and "version" in info:
+             val = info.get("version", "")
+
+        if not val and info:
+             try:
+                 val = json.dumps(info, indent=4, ensure_ascii=False)
+             except:
+                 val = str(info)
+
+        self.version_text.setText(str(val))
 
     def _show_panel(self, button):
         """显示面板"""
@@ -807,6 +998,7 @@ class TopologyWidget(QGraphicsView):
         # 工具栏宽度比视图小20px（左右各10px边距）
         if hasattr(self, 'toolbar'):
             self.toolbar.setGeometry(10, 10, self.viewport().width() - 20, 46)
+        self._fit_topology_to_view()
 
     def init_nodes(self, node_data):
         self.scene.clear()
@@ -878,6 +1070,7 @@ class TopologyWidget(QGraphicsView):
         child_count = len(self.child_nodes)
         if child_count == 0:
             self._update_scene_rect()
+            self._fit_topology_to_view(force=True)
             return
 
         # 逻辑优化：超过10个节点才分两排
@@ -945,7 +1138,7 @@ class TopologyWidget(QGraphicsView):
                 self._add_connection(connection_x, main_bottom_y, node_top_y, node.connection_note)
 
         self._update_scene_rect()
-        self.centerOn(self.main_node_item)
+        self._fit_topology_to_view(force=True)
 
     def _add_connection(self, connection_x, main_bottom_y, node_top_y, note):
         pen = QPen(QColor(100, 100, 100), 2)
@@ -975,6 +1168,44 @@ class TopologyWidget(QGraphicsView):
         else:
             rect = QRectF(-500, -350, 1000, 700)
         self.setSceneRect(rect)
+
+    def _fit_topology_to_view(self, force=False):
+        """根据当前视口尺寸自适应显示拓扑图，避免小屏幕下遮挡其他布局。"""
+        if not force and not getattr(self, '_auto_fit_enabled', True):
+            return
+        if self.scene is None or not self.scene.items():
+            return
+
+        viewport_rect = self.viewport().rect()
+        if viewport_rect.width() <= 0 or viewport_rect.height() <= 0:
+            return
+
+        fit_rect = self.sceneRect()
+        if fit_rect.isEmpty() or fit_rect.width() <= 0 or fit_rect.height() <= 0:
+            return
+
+        top_offset = self._fit_padding
+        if hasattr(self, 'toolbar') and self.toolbar and self.toolbar.isVisible():
+            top_offset += self.toolbar.height() + 8
+
+        available_width = viewport_rect.width() - self._fit_padding * 2
+        available_height = viewport_rect.height() - top_offset - self._fit_padding
+        if available_width <= 0 or available_height <= 0:
+            return
+
+        x_ratio = available_width / fit_rect.width()
+        y_ratio = available_height / fit_rect.height()
+        scale_factor = min(x_ratio, y_ratio)
+        scale_factor = max(self._min_scale, min(scale_factor, self._max_scale))
+
+        self.resetTransform()
+        self.scale(scale_factor, scale_factor)
+        self._current_scale = scale_factor
+
+        center_y = fit_rect.center().y()
+        if hasattr(self, 'toolbar') and self.toolbar and self.toolbar.isVisible():
+            center_y += max(0, top_offset - self._fit_padding) / max(scale_factor, 0.001) / 2
+        self.centerOn(QPointF(fit_rect.center().x(), center_y))
 
     def calculate_main_node_size(self):
         child_count = len(self.child_nodes)
@@ -1010,6 +1241,7 @@ class TopologyWidget(QGraphicsView):
         delta = event.angleDelta().y() if event.angleDelta().y() else event.pixelDelta().y()
         if delta == 0:
             return
+        self._auto_fit_enabled = False
         zoom_factor = 1.15 if delta > 0 else 1 / 1.15
         new_scale = self._current_scale * zoom_factor
         if new_scale < self._min_scale or new_scale > self._max_scale:
@@ -1054,7 +1286,7 @@ class TopologyWidget(QGraphicsView):
         return QSize(1000, 700)
 
     def minimumSizeHint(self):
-        return QSize(600, 400)
+        return QSize(320, 160)
 
 
 class FloatingPanel(QWidget):
@@ -1205,7 +1437,7 @@ class FloatingPanel(QWidget):
         main_layout.addWidget(main_frame)
 
         self.resize(*self.initial_size)
-        self.setMinimumSize(300, 200)
+        # self.setMinimumSize(300, 200)
         self.hide()
 
     def add_panel_content(self, layout):
@@ -1374,6 +1606,7 @@ class SimpleTopologyWindow(QWidget):
         self.setWindowTitle("网络拓扑图 - 网络管理系统")
         self.setGeometry(10, 10, 1400, 800)
         self.setStyleSheet("background-color: #F9FAFB;")
+        self.setMinimumHeight(0)
 
         # 创建示例数据
         node_data = [
@@ -1392,31 +1625,19 @@ class SimpleTopologyWindow(QWidget):
 
         # 创建拓扑图
         self.topology = TopologyWidget(node_data)
+        self.topology.setMinimumHeight(0)
+        self.topology.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Expanding)
 
         # 主布局
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(self.topology)
 
+    def minimumSizeHint(self):
+        return QSize(320, 220)
 
-def main():
-    """主函数"""
-    app = QApplication(sys.argv)
-    app.setStyle('Fusion')
-
-    # 设置全局样式
-    app.setStyleSheet("""
-        QMainWindow, QWidget {
-            background-color: #ecf0f1;
-        }
-        QLabel {
-            color: #2c3e50;
-        }
-    """)
-
-    window = SimpleTopologyWindow()
-    window.show()
-    sys.exit(app.exec_())
+    def sizeHint(self):
+        return QSize(760, 520)
 
 
 class CanLinTopologyWidget(TopologyWidget):
@@ -1435,6 +1656,7 @@ class CanLinTopologyWindow(QWidget):
         self.init_ui()
 
     def init_ui(self):
+        self.setMinimumHeight(0)
         # 构造节点数据
         # 主节点 LLCE
         # 格式: (name, icon, status, x, y)
@@ -1451,11 +1673,17 @@ class CanLinTopologyWindow(QWidget):
             node_data.append((f"CANFD{i}", "", "online", 0, 0))
 
         self.topology = CanLinTopologyWidget(node_data)
+        self.topology.setMinimumHeight(0)
+        self.topology.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Expanding)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(self.topology)
 
+    def minimumSizeHint(self):
+        return QSize(320, 220)
+
 
 if __name__ == "__main__":
     main()
+

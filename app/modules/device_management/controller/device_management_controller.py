@@ -232,25 +232,56 @@ class DeviceController(BaseController):
         """
         table = self.view.table
         row_count = table.rowCount()
+        action_aliases = {
+            "连接设备": ("连接设备", "连接", "connect"),
+            "断开连接": ("断开连接", "断开", "disconnect"),
+            "修改信息": ("修改信息", "修改", "edit"),
+            "删除设备": ("删除设备", "删除", "delete"),
+            "软件升级": ("软件升级", "升级", "upgrade"),
+            "状态查询": ("状态查询", "查询", "query"),
+        }
         for row in range(row_count):
             action_widget = table.cellWidget(row, 9)  # 修正为操作列索引 9
             if not action_widget:
                 continue
             buttons = {}
             for child in action_widget.findChildren(QtWidgets.QAbstractButton):
-                buttons[child.text()] = child
-            if "连接设备" in buttons:
-                buttons["连接设备"].clicked.connect(lambda _, r=row: self._do_connect(r))
-            if "断开连接" in buttons:
-                buttons["断开连接"].clicked.connect(lambda _, r=row: self._do_disconnect(r))
-            if "修改信息" in buttons:
-                buttons["修改信息"].clicked.connect(lambda _, r=row: self._do_edit(r))
-            if "删除设备" in buttons:
-                buttons["删除设备"].clicked.connect(lambda _, r=row: self._do_delete(r))
-            if "软件升级" in buttons:
-                buttons["软件升级"].clicked.connect(lambda _, r=row: self._do_upgrade(r))
-            if "状态查询" in buttons:
-                buttons["状态查询"].clicked.connect(lambda _, r=row: self._do_query(r))
+                keys = {
+                    child.text(),
+                    child.property("full_text"),
+                    child.property("compact_text"),
+                    child.property("action_key"),
+                    child.objectName(),
+                }
+                for key in keys:
+                    if key:
+                        buttons[str(key)] = child
+
+            def _resolve_button(action_name: str):
+                for alias in action_aliases.get(action_name, (action_name,)):
+                    if alias in buttons:
+                        return buttons[alias]
+                return None
+
+            connect_btn = _resolve_button("连接设备")
+            disconnect_btn = _resolve_button("断开连接")
+            edit_btn = _resolve_button("修改信息")
+            delete_btn = _resolve_button("删除设备")
+            upgrade_btn = _resolve_button("软件升级")
+            query_btn = _resolve_button("状态查询")
+
+            if connect_btn:
+                connect_btn.clicked.connect(lambda _, r=row: self._do_connect(r))
+            if disconnect_btn:
+                disconnect_btn.clicked.connect(lambda _, r=row: self._do_disconnect(r))
+            if edit_btn:
+                edit_btn.clicked.connect(lambda _, r=row: self._do_edit(r))
+            if delete_btn:
+                delete_btn.clicked.connect(lambda _, r=row: self._do_delete(r))
+            if upgrade_btn:
+                upgrade_btn.clicked.connect(lambda _, r=row: self._do_upgrade(r))
+            if query_btn:
+                query_btn.clicked.connect(lambda _, r=row: self._do_query(r))
 
     def _do_edit(self, index: int):
         """设备信息修改：仅当设备当前 SSH 状态为“离线”时允许修改。

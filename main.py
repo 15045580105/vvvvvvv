@@ -36,9 +36,9 @@ if __name__ == "__main__":
     font.setHintingPreference(QtGui.QFont.PreferFullHinting)
     app.setFont(font)
 
-    app.setApplicationName("车载诊断工具")
+    app.setApplicationName("车载测试工具")
     app.setOrganizationName("Automotive Diagnostics")
-    app.setApplicationDisplayName("车载诊断工具平台 v1.0")
+    app.setApplicationDisplayName("车载测试平台 v1.0")
 
     # 设置应用和任务栏图标（更健壮的查找：尝试多个常见位置并回退到仓库搜索）
     project_root = os.path.dirname(__file__)

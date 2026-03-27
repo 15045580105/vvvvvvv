@@ -1,12 +1,14 @@
 from PyQt5 import QtWidgets
 from PyQt5.QtWidgets import QHeaderView
 from PyQt5.QtCore import Qt as _Qt
+from PyQt5.QtCore import QDateTime, QEvent
 
-from app.common.ui.widgets import ModernButton, TableButton, LoadingSpinner
+from app.common.ui.widgets import ModernButton, TableButton, LoadingSpinner, ResponsiveButtonFlowPanel
 from app.common.log.operation_log_manager import OperationLogManager
 from app.modules.device_management.models.device_model import CONNECTING
 from app.presentation.views.base_view import BaseView
-from PyQt5.QtCore import QDateTime
+from app.common.ui.log_splitter import LogAreaSplitter
+from app.common.ui.log_panel import LogPanelBuilder
 
 # Use Qt.AlignmentFlag (not raw int) so QLabel.setAlignment avoids TypeError in some PyQt builds.
 # Also keep an integer alignment for QTableWidgetItem.setTextAlignment which expects an int.
@@ -25,6 +27,13 @@ class DeviceView(BaseView):
     def setup_ui(self):
         self.layout = QtWidgets.QVBoxLayout(self)
         self.layout.setSpacing(16)
+
+        self.log_splitter = LogAreaSplitter(self, min_log_height=150, max_log_ratio=0.8)
+        self.layout.addWidget(self.log_splitter)
+        content_widget = QtWidgets.QWidget()
+        content_layout = QtWidgets.QVBoxLayout(content_widget)
+        content_layout.setContentsMargins(0, 0, 0, 0)
+        content_layout.setSpacing(16)
 
         # 输入区域
         input_group = QtWidgets.QGroupBox("添加设备")
@@ -88,7 +97,7 @@ class DeviceView(BaseView):
         grid_layout.addWidget(self.add_btn, 1, 5)
 
         input_group.setLayout(grid_layout)
-        self.layout.addWidget(input_group)
+        content_layout.addWidget(input_group)
 
         # 设备表格
         # 列：序号(0) / 设备名(1) / 设备类型(2) / IP地址(3) / SSH端口(4) / 标准组播 IP(5) / 标准组播端口(6) / 连接状态(7) / 详情(8) / 操作(9)
@@ -99,7 +108,11 @@ class DeviceView(BaseView):
         ])
         self.table.verticalHeader().setVisible(False)
         self.table.setWordWrap(False)
+        self.table.setTextElideMode(_Qt.ElideNone if hasattr(_Qt, "ElideNone") else 3)
         vheader = self.table.verticalHeader()
+        self._action_column = 9
+        self._compact_action_threshold = 260
+        self._compact_viewport_threshold = 980
         vheader.setDefaultSectionSize(64)
         vheader.setMinimumSectionSize(56)
         hheader = self.table.horizontalHeader()
@@ -116,11 +129,12 @@ class DeviceView(BaseView):
         hheader.setSectionResizeMode(8, QHeaderView.Interactive)       # 详情
         hheader.setSectionResizeMode(9, QHeaderView.Stretch)           # 操作
 
-        self.table.setColumnWidth(1, 150)
+        self.table.setColumnWidth(1, 140)
         self.table.setColumnWidth(2, 90)
-        # 加宽连接状态和详情列，便于三行显示
-        self.table.setColumnWidth(7, 170)
-        self.table.setColumnWidth(8, 220)
+        # 连接状态和详情列保留可读性，但避免过度挤压操作列
+        self.table.setColumnWidth(7, 150)
+        self.table.setColumnWidth(8, 180)
+        self.table.setMinimumWidth(760)
 
         self.table.setAlternatingRowColors(True)
         self.table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
@@ -131,7 +145,9 @@ class DeviceView(BaseView):
             self.table.setContextMenuPolicy(_Qt.ContextMenuPolicy.DefaultContextMenu)
         else:
             self.table.setContextMenuPolicy(_Qt.DefaultContextMenu)
-        self.layout.addWidget(self.table)
+        content_layout.addWidget(self.table)
+        self.table.horizontalHeader().sectionResized.connect(self._refresh_action_layouts)
+        self.table.viewport().installEventFilter(self)
 
         # 操作日志区
         log_group = QtWidgets.QGroupBox("操作日志")
@@ -139,9 +155,57 @@ class DeviceView(BaseView):
         self.log_view = QtWidgets.QTextEdit()
         self.log_view.setReadOnly(True)
         self.log_view.setPlaceholderText("这里显示用户的操作日志...")
+        LogPanelBuilder.attach_search(log_layout, self.log_view)
         log_layout.addWidget(self.log_view)
         log_group.setLayout(log_layout)
-        self.layout.addWidget(log_group)
+        self.log_splitter.set_panels(content_widget, log_group, initial_log_height=100)
+
+    def eventFilter(self, watched, event):
+        if watched is self.table.viewport() and event.type() == QEvent.Resize:
+            self._refresh_action_layouts()
+        return super().eventFilter(watched, event)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._refresh_action_layouts()
+
+    def _should_use_compact_actions(self):
+        if not hasattr(self, "table"):
+            return False
+        viewport_width = self.table.viewport().width()
+        action_width = self.table.columnWidth(self._action_column)
+        return viewport_width <= self._compact_viewport_threshold or action_width <= self._compact_action_threshold
+
+    def _refresh_action_layouts(self, *_args):
+        if not hasattr(self, "table"):
+            return
+        compact = self._should_use_compact_actions()
+        detail_column_width = 150 if compact else 180
+        status_column_width = 138 if compact else 150
+        if self.table.columnWidth(8) != detail_column_width:
+            self.table.setColumnWidth(8, detail_column_width)
+        if self.table.columnWidth(7) != status_column_width:
+            self.table.setColumnWidth(7, status_column_width)
+        for row in range(self.table.rowCount()):
+            action_widget = self.table.cellWidget(row, self._action_column)
+            if action_widget:
+                if hasattr(action_widget, "set_compact_mode"):
+                    action_widget.set_compact_mode(compact)
+                target_width = max(112 if compact else 140, self.table.columnWidth(self._action_column) - 8)
+                action_widget.updateGeometry()
+                action_widget.resize(target_width, action_widget.height())
+            detail_widget = self.table.cellWidget(row, 8)
+            if detail_widget:
+                detail_widget.updateGeometry()
+            heights = []
+            for col in (7, 8, 9):
+                widget = self.table.cellWidget(row, col)
+                if widget:
+                    heights.append(widget.sizeHint().height())
+                    heights.append(widget.minimumSizeHint().height())
+            min_height = max(70, max(heights, default=62) + 8)
+            if self.table.rowHeight(row) != min_height:
+                self.table.setRowHeight(row, min_height)
 
     def populate(self, devices):
         """devices: list of dict
@@ -259,15 +323,14 @@ class DeviceView(BaseView):
 
             for lbl in (ssh_detail_label, doip_detail_label, someip_detail_label):
                 lbl.setAlignment(ALIGN_LEFT_LABEL)
+                lbl.setWordWrap(True)
+                lbl.setSizePolicy(QtWidgets.QSizePolicy.Preferred, QtWidgets.QSizePolicy.Minimum)
                 detail_layout.addWidget(lbl)
 
             self.table.setCellWidget(row, 8, detail_widget)
 
             # 操作列 (Index 9)
-            action_widget = QtWidgets.QWidget()
-            ah = QtWidgets.QHBoxLayout(action_widget)
-            ah.setContentsMargins(4, 4, 4, 4)
-            ah.setSpacing(8)
+            action_widget = ResponsiveButtonFlowPanel(spacing=8, row_spacing=6, margins=(4, 4, 4, 4))
 
             connect_btn = TableButton("连接设备", "#059669")
             disconnect_btn = TableButton("断开连接", "#F59E0B")
@@ -275,6 +338,20 @@ class DeviceView(BaseView):
             delete_btn = TableButton("删除设备", "#EF4444")
             upgrade_btn = TableButton("软件升级", "#6366F1")
             query_btn = TableButton("状态查询", "#0EA5E9")
+
+            button_text_pairs = [
+                (connect_btn, "连接设备", "连接", "connect"),
+                (disconnect_btn, "断开连接", "断开", "disconnect"),
+                (edit_btn, "修改信息", "修改", "edit"),
+                (delete_btn, "删除设备", "删除", "delete"),
+                (upgrade_btn, "软件升级", "升级", "upgrade"),
+                (query_btn, "状态查询", "查询", "query"),
+            ]
+            for btn, full_text, compact_text, action_key in button_text_pairs:
+                btn.setProperty("full_text", full_text)
+                btn.setProperty("compact_text", compact_text)
+                btn.setProperty("action_key", action_key)
+                btn.setObjectName(action_key)
 
             # 如果正在连接中，禁用连接按钮
             is_connecting = CONNECTING in (ssh_status, doip_status, someip_status)
@@ -287,12 +364,14 @@ class DeviceView(BaseView):
                 query_btn.setEnabled(False)
 
             for b in [connect_btn, disconnect_btn, edit_btn, delete_btn, upgrade_btn, query_btn]:
-                b.setMinimumWidth(78)
-                ah.addWidget(b)
-            ah.addStretch(1)
+                action_widget.add_button(b)
 
+            action_widget.set_compact_mode(self._should_use_compact_actions())
+            action_widget.heightChanged.connect(self._refresh_action_layouts)
             self.table.setCellWidget(row, 9, action_widget)
-            self.table.setRowHeight(row, 70)  # 高度适应 3 行文字
+            self.table.setRowHeight(row, max(70, action_widget.minimumSizeHint().height() + 8))
+
+        self._refresh_action_layouts()
 
     def append_log(self, text: str):
         timestamp = QDateTime.currentDateTime().toString("yyyy-MM-dd HH:mm:ss")

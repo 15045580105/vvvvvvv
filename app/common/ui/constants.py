@@ -1,5 +1,5 @@
 # 控制器类导入（放在基础常量之后，避免循环导入）
-from app.modules.demo_page.controller.demo_page_controller import DemoPageController
+# from app.modules.demo_page.controller.demo_page_controller import DemoPageController
 from app.modules.device_management.controller.device_management_controller import DeviceController
 from app.modules.device_topology.controller.device_topology_controller import TopologyController
 from app.modules.device_upgrade.controller.device_upgrade_controller import UpgradeController
@@ -9,11 +9,11 @@ from app.modules.file_transfer.controller.file_transfer_controller import FileTr
 from app.modules.log_config.controller.log_config_controller import LogConfigController
 from app.modules.log_management.controller.log_management_controller import LogDownloadController
 from app.modules.performance_management.controller.performance_management_controller import PerformanceController
-from app.modules.script_exec.controller.script_exec_controller import ScriptExecController
+# from app.modules.script_exec.controller.script_exec_controller import ScriptExecController
 from app.modules.uds_sequence.controller.uds_sequence_controller import UDSSequenceController
 from app.modules.clock_management.controller.clock_management_controller import ClockManagementController
 from app.modules.bus_data_management.controller.bus_data_download_controller import BusDataDownloadController
-from app.modules.data_format_converter.controller.data_format_converter_controller import DataFormatConverterController
+# from app.modules.data_format_converter.controller.data_format_converter_controller import DataFormatConverterController
 from app.modules.common_config.controller.common_config_controller import CommonConfigController
 from app.modules.someip_signboard.controller.someip_signboard_controller import SomeIpSignboardController
 
@@ -122,17 +122,17 @@ class PageConfig:
         (PAGE_DID, PAGE_DID_DISPLAY, DIDController, PAGE_TYPE_TAB),
         (PAGE_LOG_DOWNLOAD, PAGE_LOG_DOWNLOAD_DISPLAY, LogDownloadController, PAGE_TYPE_TAB),
         (PAGE_BUS_DATA_DOWNLOAD, PAGE_BUS_DATA_DOWNLOAD_DISPLAY, BusDataDownloadController, PAGE_TYPE_TAB),
-        (PAGE_DATA_CONVERTER, PAGE_DATA_CONVERTER_DISPLAY, DataFormatConverterController, PAGE_TYPE_TAB),
+        # (PAGE_DATA_CONVERTER, PAGE_DATA_CONVERTER_DISPLAY, DataFormatConverterController, PAGE_TYPE_TAB),
         (PAGE_FILE_TRANSFER, PAGE_FILE_TRANSFER_DISPLAY, FileTransferController, PAGE_TYPE_TAB),
         (PAGE_LOG_CONFIG, PAGE_LOG_CONFIG_DISPLAY, LogConfigController, PAGE_TYPE_TAB),
         (PAGE_COMMON_CONFIG, PAGE_COMMON_CONFIG_DISPLAY, CommonConfigController, PAGE_TYPE_TAB),
         (PAGE_UPGRADE, PAGE_UPGRADE_DISPLAY, UpgradeController, PAGE_TYPE_TAB),
-        (PAGE_SCRIPT, PAGE_SCRIPT_DISPLAY, ScriptExecController, PAGE_TYPE_TAB),
+        # (PAGE_SCRIPT, PAGE_SCRIPT_DISPLAY, ScriptExecController, PAGE_TYPE_TAB),
         (PAGE_PERFORMANCE, PAGE_PERFORMANCE_DISPLAY, PerformanceController, PAGE_TYPE_TAB),
         (PAGE_UDS, PAGE_UDS_DISPLAY, UDSSequenceController, PAGE_TYPE_TAB),
         (PAGE_CLOCK, PAGE_CLOCK_DISPLAY, ClockManagementController, PAGE_TYPE_TAB),
         (PAGE_SOMEIP, PAGE_SOMEIP_DISPLAY, SomeIpSignboardController, PAGE_TYPE_TAB),
-        (PAGE_DEMO, PAGE_DEMO_DISPLAY, DemoPageController, PAGE_TYPE_TAB),
+        #(PAGE_DEMO, PAGE_DEMO_DISPLAY, DemoPageController, PAGE_TYPE_TAB),
     ]
 
     # 导航树结构
@@ -148,13 +148,13 @@ class PageConfig:
             PAGE_FILE_TRANSFER_DISPLAY,
             PAGE_LOG_DOWNLOAD_DISPLAY,
             PAGE_BUS_DATA_DOWNLOAD_DISPLAY,
-            PAGE_DATA_CONVERTER_DISPLAY,
+            # PAGE_DATA_CONVERTER_DISPLAY,
         ]},
         NAV_GROUP_UPGRADE: {"children": [PAGE_UPGRADE_DISPLAY]},
         NAV_GROUP_CONFIG: {"children": [PAGE_LOG_CONFIG_DISPLAY, PAGE_COMMON_CONFIG_DISPLAY]},
         NAV_GROUP_SOMEIP: {"children": [PAGE_SOMEIP_DISPLAY]},
-        NAV_GROUP_ADV: {"children": [PAGE_SCRIPT_DISPLAY]},
-        NAV_GROUP_DEMO: {"children": [PAGE_DEMO_DISPLAY]},
+        #NAV_GROUP_ADV: {"children": [PAGE_SCRIPT_DISPLAY]},
+        #NAV_GROUP_DEMO: {"children": [PAGE_DEMO_DISPLAY]},
     }
 
     @classmethod

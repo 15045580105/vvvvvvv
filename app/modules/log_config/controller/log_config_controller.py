@@ -1,3 +1,5 @@
+import logging
+
 from PyQt5 import QtCore, QtWidgets
 
 from app.common.utils.worker import Worker  # 引入 Worker
@@ -8,6 +10,11 @@ from app.modules.log_config.view.log_config_view import LogConfigView, LogConfig
 from app.services.configuration.log_config_service import LogConfigService
 from app.services.device_manage.device_service import DeviceService
 from app.common.utils.config_center import ConfigCenter  # Add ConfigCenter import
+from app.common.ui.modern_widgets import MessageToast
+
+# 配置日志
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
 
 
 class LogConfigController(BaseController):
@@ -34,9 +41,6 @@ class LogConfigController(BaseController):
             self.view.append_log(f"已恢复配置文件路径: {saved_path}")
 
         self._workers = []
-
-        self.log_config_service.log_signal.connect(self.view.append_log)
-
         self._bind_signals()
 
         # 进入界面后自动触发一次全量刷新，避免下拉框为空
@@ -67,8 +71,11 @@ class LogConfigController(BaseController):
         # Import Map File
         self.view.import_map_btn.clicked.connect(self._on_import_map)
 
-        self.log_config_service.log_signal.connect(self.view.append_log)
+        self.log_config_service.log_signal.connect(self.update_log)
 
+    def update_log(self, message):
+        self.view.append_log(message)
+        logger.info(message)
 
     def _on_import_map(self):
         from PyQt5 import QtWidgets
@@ -89,28 +96,16 @@ class LogConfigController(BaseController):
         log_level = self.view.ecu_log_level_combo.currentText()
         if not selected_ecus:
             # 使用 Toast 提示而不是弹窗
-            from app.common.ui.modern_widgets import MessageToast
             MessageToast(self.view).show_toast("请选择至少一个ECU", 1)
             return
 
         # 检查设备是否连接
         if not self.log_config_service._device_service or not self.log_config_service._device_service.get_doip_client():
              # 尝试恢复 Toast 提示
-             from app.common.ui.modern_widgets import MessageToast
              MessageToast(self.view).show_toast("设备未连接 (DoIP)，无法执行配置", 2)
-             # self.view.show_message("设备未连接 (DoIP)，无法执行配置", "error")
              return
 
-        # 临时连接 Service 信号到 View (安全地先断开以防重复)
-        try:
-            self.log_config_service.log_signal.disconnect()
-        except Exception:
-            pass
-
-        # 使用 Worker 在后台线程执行，避免阻塞 UI
-        # from app.common.utils.worker import Worker # 已移至顶部导入
-        def task(log_callback):
-            # 忽略 log_callback，使用 Service 信号
+        def task():
             return self.log_config_service.set_ecu_log_level(selected_ecus, log_level)
 
         worker = Worker(task)
@@ -132,7 +127,6 @@ class LogConfigController(BaseController):
     def _on_app_search(self):
         # 0. 检查是否已导入配置文件
         if not self.log_config_service._map_file_path:
-             from app.common.ui.modern_widgets import MessageToast
              MessageToast(self.view).show_toast("请先导入 process_log_config_map.json 配置文件", 1) # 1=warning/error style
              return
 
@@ -155,19 +149,13 @@ class LogConfigController(BaseController):
         self.view.append_log("正在获取配置...")
 
         # 2. 定义后台任务
-        def search_task(log_callback):
-            # log_callback 可以用来向界面打印进度日志
+        def search_task():
             return self.log_config_service.get_apps(ecu_id, app_id, log_level)
 
         # 3. 定义完成回调
         def on_search_finished(result):
             # 任务结束，释放标志位
             self._is_searching = False
-
-            # 按钮之前被禁用了吗？没有，所以不需要恢复。
-            # self.view.app_search_btn.setEnabled(True)
-            # self.view.app_refresh_btn.setEnabled(True)
-
             if result is None:
                 self.view.show_message("获取配置失败，请检查连接", "error")
                 return
@@ -207,11 +195,6 @@ class LogConfigController(BaseController):
         self.view.update_filter_combos(ecu_ids, app_ids)
 
     def _on_app_refresh(self):
-        # 刷新时清空筛选条件，进行全量查询
-        # self.view.app_filter_ecu_combo.setCurrentIndex(0)
-        # self.view.app_filter_appid_combo.setCurrentIndex(0)
-        # self.view.app_filter_loglevel_combo.setCurrentIndex(0)
-        # 刷新时不用清空筛选条件，直接用现有条件查询
         self._on_app_search()
 
     def _on_prev_page(self):
@@ -248,14 +231,6 @@ class LogConfigController(BaseController):
         if not new_level.strip():
             return
 
-        # 2. 获取当前筛选出的 App ID 列表
-        # 注意: 应该只修改筛选范围内的，还是全量？通常是筛选结果。
-        # self.model.apps 是当前展示的数据 (可能是筛选后的吗？不，Search 只是 Filter 内存数据？)
-        # Check get_apps: it returns filtered list.
-        # But controller self.model.apps stores what?
-        # Model stores whatever `load_apps` put there.
-        # Typically one modifies what is visible.
-
         target_apps = [item[0] for item in self.model.apps if item[1] == "CCUA"]
 
         if not target_apps:
@@ -270,15 +245,8 @@ class LogConfigController(BaseController):
         if not self.view.show_confirm(msg):
             return
 
-        # 连接信号
-        try:
-            self.log_config_service.log_signal.disconnect()
-        except Exception:
-            pass
-        self.log_config_service.log_signal.connect(self.view.append_log)
-
         # 3. Worker 执行
-        def task(log_callback):
+        def task():
             return self.log_config_service.batch_update_ccua_apps(target_apps, new_level, new_mode)
 
         worker = Worker(task)
@@ -314,11 +282,6 @@ class LogConfigController(BaseController):
                 self.view.show_message("重启失败", "error")
 
         worker = Worker(restart_task)
-        # restart_ccu 内部用 print，这里可能需要 service 改成支持 log_callback，或者这里不需要 worker log_signal
-        # Service 代码现在 print，尚未全改成 log callback，不过 worker 会捕获 stdout 吗？
-        # Worker 实现通常不捕获 stdout。
-        # Service 里的 restart_ccu目前只是 print。
-        # 我们稍微修改一下 Service 的 restart_ccu 以支持 log_callback 吧？不改也没事，反正 UI 会提示。
         worker.result_signal.connect(on_restart_finished)
         worker.start()
         self._workers.append(worker)
@@ -340,7 +303,6 @@ class LogConfigController(BaseController):
 
         if not any(options.values()):
              # 使用 Toast 提示
-             from app.common.ui.modern_widgets import MessageToast
              MessageToast(self.view).show_toast("请选择至少一项恢复操作", 1) # 1 for Info/Warning like usage here, or 2 for Warning
              return
 
@@ -386,15 +348,8 @@ class LogConfigController(BaseController):
                      self.view.show_message("设备未连接 (SSH)，无法执行删除日志操作", "error")
                      return
 
-             # 连接信号
-             try:
-                 self.log_config_service.log_signal.disconnect()
-             except Exception:
-                 pass
-             self.log_config_service.log_signal.connect(self.view.append_log)
-
              # 定义任务函数
-             def task(log_callback):
+             def task():
                  return self.log_config_service.restore_config(options)
 
              worker = Worker(task)
@@ -420,17 +375,6 @@ class LogConfigController(BaseController):
              self._workers.append(worker)
              worker.finished.connect(lambda: self._workers.remove(worker) if worker in self._workers else None)
 
-    # def _perform_ccu_reset(self):
-    #     from app.common.utils.worker import Worker
-    #     def reset_task(log_callback):
-    #         return self.log_config_service.reset_ccu(log_callback)
-    #
-    #     worker = Worker(reset_task)
-    #     worker.log_signal.connect(self.view.append_log)
-    #     worker.start()
-    #     self._workers.append(worker)
-    #     worker.finished.connect(lambda: self._workers.remove(worker) if worker in self._workers else None)
-
     def _on_modify_requested(self, row_index):
         if row_index < 0 or row_index >= len(self.model.apps):
             return
@@ -441,7 +385,6 @@ class LogConfigController(BaseController):
         # 限制：仅支持修改 CCUA 的应用日志等级
         if ecu_id != "CCUA":
             # 使用 Toast 而不是弹窗，体验更好
-            from app.common.ui.modern_widgets import MessageToast
             MessageToast(self.view).show_toast("目前只支持修改 CCUA 的应用日志等级", 1)
             # self.view.show_message("目前只支持修改 CCUA 的应用日志等级", "warning")
             return
@@ -458,16 +401,8 @@ class LogConfigController(BaseController):
 
     def _handle_ccua_modification(self, app_id, new_level):
         """处理 CCUA 专用的修改流程：Worker异步写入 -> 重启确认"""
-
-        # 连接信号
-        try:
-            self.log_config_service.log_signal.disconnect()
-        except Exception:
-            pass
-        self.log_config_service.log_signal.connect(self.view.append_log)
-
         # 2. 定义后台任务
-        def task(log_callback):
+        def task():
             return self.log_config_service.update_ccua_app_config(app_id, new_level)
 
         worker = Worker(task)

@@ -8,6 +8,8 @@ from PyQt5.QtWidgets import (
 )
 from app.presentation.views.base_view import BaseView
 from app.common.ui.modern_widgets import MessageToast
+from app.common.ui.log_splitter import LogAreaSplitter
+from app.common.ui.log_panel import LogPanelBuilder
 
 
 class SortableTreeWidgetItem(QTreeWidgetItem):
@@ -207,18 +209,17 @@ class FileTransferView(BaseView):
         top_splitter.setSizes([600, 80, 600])
 
         # --- 下半部分：传输日志 ---
-        bottom_group = QGroupBox("传输日志")
+        bottom_group = QGroupBox("操作日志")
         bottom_layout = QVBoxLayout(bottom_group)
         self.transfer_log = QTextEdit()
         self.transfer_log.setReadOnly(True)
+        LogPanelBuilder.attach_search(bottom_layout, self.transfer_log)
         bottom_layout.addWidget(self.transfer_log)
 
-        main_splitter.addWidget(top_splitter)
-        main_splitter.addWidget(bottom_group)
-        main_splitter.setStretchFactor(0, 3)
-        main_splitter.setStretchFactor(1, 1)
+        self.main_splitter = LogAreaSplitter(self, min_log_height=150, max_log_ratio=0.8)
+        self.main_splitter.set_panels(top_splitter, bottom_group, initial_log_height=120)
 
-        outer_layout.addWidget(main_splitter)
+        outer_layout.addWidget(self.main_splitter)
 
         # 初始化图标
         self.folder_icon = self.style().standardIcon(QStyle.SP_DirIcon)

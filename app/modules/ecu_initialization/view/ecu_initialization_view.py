@@ -12,7 +12,8 @@ class ECUInitView(BaseView):
         self.setAttribute(QtCore.Qt.WA_StyledBackground, True)
         # 设置初始大小，确保尽量显示完整内容
         self.resize(1000, 850)
-        self.setMinimumSize(800, 600)
+        #因此处写死高度，操作日志框无法拖动调整高度，暂时不设置最小高度，允许用户根据需要调整窗口大小
+        # self.setMinimumSize(800, 600)
         self.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Expanding)
 
         self.setStyleSheet("""

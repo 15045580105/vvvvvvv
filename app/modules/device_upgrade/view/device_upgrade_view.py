@@ -4,6 +4,8 @@ from PyQt5.QtCore import pyqtSignal, Qt
 from datetime import datetime
 
 from app.common.ui.widgets import ModernButton, TableButton
+from app.common.ui.log_splitter import LogAreaSplitter
+from app.common.ui.log_panel import LogPanelBuilder
 from app.presentation.views.base_view import BaseView
 
 
@@ -31,43 +33,42 @@ class UpgradeView(BaseView):
 
     def setup_ui(self):
         main_layout = QtWidgets.QVBoxLayout(self)
-        main_layout.setSpacing(12)
-        main_layout.setContentsMargins(12, 12, 12, 12)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.setSpacing(0)
 
-        # Create a splitter for vertical resizing
-        splitter = QtWidgets.QSplitter(Qt.Vertical)
+        splitter = LogAreaSplitter(self, min_log_height=300, max_log_ratio=0.8)
         main_layout.addWidget(splitter)
+
+        content_widget = QtWidgets.QWidget()
+        content_layout = QtWidgets.QVBoxLayout(content_widget)
+        content_layout.setContentsMargins(12, 12, 12, 12)
+        content_layout.setSpacing(12)
 
         # --- Tab widget 包含：常规升级 / 升级压测 ---
         self.tab = QtWidgets.QTabWidget()
         self._init_normal_upgrade_tab()
         self._init_stress_tab()
-        splitter.addWidget(self.tab)
+        content_layout.addWidget(self.tab)
 
-        # --- Log panel ---
-        log_group = QtWidgets.QGroupBox("升级日志")
-        log_layout = QtWidgets.QVBoxLayout()
+        log_group = QtWidgets.QGroupBox("操作日志")
+        log_layout = QtWidgets.QVBoxLayout(log_group)
+        log_layout.setContentsMargins(8, 12, 8, 8)
 
-        tool_row = QtWidgets.QHBoxLayout()
-        tool_row.addStretch(1)
         self.clear_btn = TableButton("清空日志", "#6B7280", "🧹")
-        tool_row.addWidget(self.clear_btn)
-        log_layout.addLayout(tool_row)
 
         self.upgrade_log = QtWidgets.QTextEdit()
         self.upgrade_log.setReadOnly(True)
         self.upgrade_log.setFont(QtGui.QFont("Consolas", 9))
-        self.upgrade_log.setMinimumHeight(100) # Reduced min height for splitter
+        self.upgrade_log.setMinimumHeight(0)
+        LogPanelBuilder.attach_search(log_layout, self.upgrade_log, trailing_widgets=[self.clear_btn])
         log_layout.addWidget(self.upgrade_log)
 
-        log_group.setLayout(log_layout)
-        splitter.addWidget(log_group)
+        splitter.set_panels(content_widget, log_group, initial_log_height=220)
 
         # Set initial sizes (Tab 1/3, Log 2/3)
         splitter.setStretchFactor(0, 1) # Tab
         splitter.setStretchFactor(1, 2) # Log
         splitter.setCollapsible(1, False)
-        splitter.setSizes([300, 600])
 
     # -------------------- 常规升级 Tab --------------------
     def _init_normal_upgrade_tab(self):

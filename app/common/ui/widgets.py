@@ -1,7 +1,7 @@
 from PyQt5 import QtWidgets, QtGui, QtCore
 from PyQt5.QtCore import Qt as _Qt
 
-__all__ = ["ModernButton", "create_icon", "TableButton", "LoadingSpinner", "CheckableComboBox"]
+__all__ = ["ModernButton", "create_icon", "TableButton", "LoadingSpinner", "CheckableComboBox", "ResponsiveButtonFlowPanel"]
 
 # Qt compatibility constants for linters/type checkers
 QT_TRANSPARENT = getattr(_Qt, "transparent", 0)
@@ -120,6 +120,121 @@ class TableButton(QtWidgets.QPushButton):
                 background-color: {pressed};
             }}
         """)
+
+
+class ResponsiveButtonFlowPanel(QtWidgets.QWidget):
+    """表格单元格内的响应式按钮面板：空间不足时自动换行，避免按钮挤压重叠。"""
+
+    heightChanged = QtCore.pyqtSignal()
+
+    def __init__(self, parent=None, *, spacing: int = 8, margins=(4, 4, 4, 4), row_spacing: int = 6):
+        super().__init__(parent)
+        self._buttons = []
+        self._spacing = spacing
+        self._row_spacing = row_spacing
+        self._margins = margins
+        self._last_height = 0
+        self._compact_mode = False
+        self.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Minimum)
+        self.setMinimumHeight(36)
+
+    def add_button(self, button: QtWidgets.QAbstractButton):
+        button.setParent(self)
+        button.show()
+        self._buttons.append(button)
+        self._relayout_buttons()
+
+    def buttons(self):
+        return list(self._buttons)
+
+    def set_compact_mode(self, compact: bool):
+        compact = bool(compact)
+        if self._compact_mode == compact:
+            return
+        self._compact_mode = compact
+        self._spacing = 4 if compact else 8
+        self._row_spacing = 4 if compact else 6
+        self._margins = (2, 2, 2, 2) if compact else (4, 4, 4, 4)
+        for btn in self._buttons:
+            if hasattr(btn, "setText"):
+                full_text = btn.property("full_text")
+                compact_text = btn.property("compact_text")
+                if compact and compact_text:
+                    btn.setText(compact_text)
+                elif full_text:
+                    btn.setText(full_text)
+            btn.updateGeometry()
+        self._relayout_buttons()
+
+    def is_compact_mode(self):
+        return self._compact_mode
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._relayout_buttons()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        QtCore.QTimer.singleShot(0, self._relayout_buttons)
+
+    def minimumSizeHint(self):
+        return QtCore.QSize(220, self._estimate_height(max(220, self.width())))
+
+    def sizeHint(self):
+        return QtCore.QSize(420, self._estimate_height(max(420, self.width())))
+
+    def _estimate_height(self, available_width: int) -> int:
+        left, top, right, bottom = self._margins
+        usable_width = max(80, available_width - left - right)
+        line_width = 0
+        line_height = 0
+        total_height = top + bottom
+        line_count = 0
+        visible_buttons = [btn for btn in self._buttons if btn.isVisible()]
+        if not visible_buttons:
+            return max(36, total_height)
+        for btn in visible_buttons:
+            hint = btn.sizeHint()
+            bw = hint.width()
+            bh = hint.height()
+            next_width = bw if line_width == 0 else line_width + self._spacing + bw
+            if line_width and next_width > usable_width:
+                total_height += line_height
+                line_count += 1
+                line_width = bw
+                line_height = bh
+            else:
+                line_width = next_width
+                line_height = max(line_height, bh)
+        total_height += line_height
+        line_count += 1
+        total_height += max(0, line_count - 1) * self._row_spacing
+        return max(36, total_height)
+
+    def _relayout_buttons(self):
+        left, top, right, bottom = self._margins
+        available_width = max(80, self.width() - left - right)
+        x = left
+        y = top
+        line_height = 0
+        visible_buttons = [btn for btn in self._buttons if btn.isVisible()]
+        for btn in visible_buttons:
+            hint = btn.sizeHint()
+            bw = hint.width()
+            bh = hint.height()
+            if x > left and (x + bw) > (self.width() - right):
+                x = left
+                y += line_height + self._row_spacing
+                line_height = 0
+            btn.setGeometry(x, y, bw, bh)
+            x += bw + self._spacing
+            line_height = max(line_height, bh)
+        total_height = max(36, y + line_height + bottom)
+        self.setMinimumHeight(total_height)
+        if self._last_height != total_height:
+            self._last_height = total_height
+            self.heightChanged.emit()
+        self.updateGeometry()
 
 # 加载动画控件
 class LoadingSpinner(QtWidgets.QWidget):

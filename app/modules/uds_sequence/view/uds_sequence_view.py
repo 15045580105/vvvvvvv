@@ -6,6 +6,8 @@ from PyQt5.QtGui import QStandardItemModel, QStandardItem
 
 from app.common.log.operation_log_manager import OperationLogManager
 from app.common.ui.widgets import ModernButton
+from app.common.ui.log_splitter import LogAreaSplitter
+from app.common.ui.log_panel import LogPanelBuilder
 from app.modules.did_management.view.did_management_view import FullCellDelegate, ComboBoxDelegate
 
 
@@ -216,7 +218,7 @@ class UDSSequenceView(QtWidgets.QWidget):
         layout = QtWidgets.QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
 
-        main_splitter = QtWidgets.QSplitter()
+        main_splitter = LogAreaSplitter(self, min_log_height=150, max_log_ratio=0.6)
         main_splitter.setOrientation(Qt.Vertical)
         main_splitter.setHandleWidth(4)
 
@@ -257,7 +259,7 @@ class UDSSequenceView(QtWidgets.QWidget):
         cmd_layout.addWidget(cmd_splitter)
         main_splitter.addWidget(cmd_group)
 
-        log_group = QtWidgets.QGroupBox("执行日志")
+        log_group = QtWidgets.QGroupBox("操作日志")
         log_layout = QtWidgets.QVBoxLayout(log_group)
         log_layout.setContentsMargins(4, 12, 4, 4)
 
@@ -265,12 +267,10 @@ class UDSSequenceView(QtWidgets.QWidget):
         self.exec_log.setReadOnly(True)
         self.exec_log.setPlaceholderText("UDS指令执行日志将在这里显示...\n包含发送数据、响应数据、时间戳")
         self.exec_log.setStyleSheet("border: 1px solid #E5E7EB; border-radius: 4px;")
+        LogPanelBuilder.attach_search(log_layout, self.exec_log)
         log_layout.addWidget(self.exec_log)
 
-        main_splitter.addWidget(log_group)
-
-        main_splitter.setStretchFactor(0, 2)
-        main_splitter.setStretchFactor(1, 1)
+        main_splitter.set_panels(cmd_group, log_group, initial_log_height=230)
 
         layout.addWidget(main_splitter)
 
