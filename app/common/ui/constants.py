@@ -15,6 +15,7 @@ from app.modules.clock_management.controller.clock_management_controller import 
 from app.modules.bus_data_management.controller.bus_data_download_controller import BusDataDownloadController
 from app.modules.data_format_converter.controller.data_format_converter_controller import DataFormatConverterController
 from app.modules.common_config.controller.common_config_controller import CommonConfigController
+from app.modules.someip_signboard.controller.someip_signboard_controller import SomeIpSignboardController
 
 class PageConfig:
     """页面配置管理类，封装所有页面相关的常量和配置。"""
@@ -42,6 +43,8 @@ class PageConfig:
     EMOJI_DATA_CONVERTER = "🧩"
     # 新增：常用配置 emoji
     EMOJI_COMMON_CONFIG = "🔧"
+    # 新增：SomeIP emoji
+    EMOJI_SOMEIP = "🌐"
 
     # 页面注册名常量
     PAGE_DEVICE = "设备管理"
@@ -59,6 +62,7 @@ class PageConfig:
     PAGE_UDS = "UDS指令编排"
     PAGE_CLOCK = "时钟管理"
     PAGE_DATA_CONVERTER = "数据格式转换"
+    PAGE_SOMEIP = "服务发现信息面板"
     PAGE_DEMO = "示例页面"
 
     # 导航分组常量（之前缺失，补上）
@@ -67,6 +71,7 @@ class PageConfig:
     NAV_GROUP_FILE = "📂 文件管理"
     NAV_GROUP_UPGRADE = "🚀 设备升级"
     NAV_GROUP_CONFIG = "⚙️ 配置中心"
+    NAV_GROUP_SOMEIP = "🌐 Someip功能"
     NAV_GROUP_ADV = "🧬 高级功能"
     NAV_GROUP_DEMO = "🎉 示例"
 
@@ -86,6 +91,7 @@ class PageConfig:
     PAGE_UDS_DISPLAY = f"{EMOJI_UDS} {PAGE_UDS}"
     PAGE_CLOCK_DISPLAY = f"{EMOJI_CLOCK} {PAGE_CLOCK}"
     PAGE_DATA_CONVERTER_DISPLAY = f"{EMOJI_DATA_CONVERTER} {PAGE_DATA_CONVERTER}"
+    PAGE_SOMEIP_DISPLAY = f"{EMOJI_SOMEIP} {PAGE_SOMEIP}"
     PAGE_DEMO_DISPLAY = f"🎉 {PAGE_DEMO}"
 
 
@@ -105,6 +111,7 @@ class PageConfig:
     SCRIPT_EXEC_TAB_NAME = PAGE_SCRIPT_DISPLAY
     CLOCK_MANAGEMENT_TAB_NAME = PAGE_CLOCK_DISPLAY
     DATA_CONVERTER_TAB_NAME = PAGE_DATA_CONVERTER_DISPLAY
+    SOMEIP_SIGNBOARD_TAB_NAME = PAGE_SOMEIP_DISPLAY
     DEMO_TAB_NAME = PAGE_DEMO_DISPLAY
 
     # 统一页面定义：(注册名, 显示名, 控制器类, 是否对话框)
@@ -124,6 +131,7 @@ class PageConfig:
         (PAGE_PERFORMANCE, PAGE_PERFORMANCE_DISPLAY, PerformanceController, PAGE_TYPE_TAB),
         (PAGE_UDS, PAGE_UDS_DISPLAY, UDSSequenceController, PAGE_TYPE_TAB),
         (PAGE_CLOCK, PAGE_CLOCK_DISPLAY, ClockManagementController, PAGE_TYPE_TAB),
+        (PAGE_SOMEIP, PAGE_SOMEIP_DISPLAY, SomeIpSignboardController, PAGE_TYPE_TAB),
         (PAGE_DEMO, PAGE_DEMO_DISPLAY, DemoPageController, PAGE_TYPE_TAB),
     ]
 
@@ -144,6 +152,7 @@ class PageConfig:
         ]},
         NAV_GROUP_UPGRADE: {"children": [PAGE_UPGRADE_DISPLAY]},
         NAV_GROUP_CONFIG: {"children": [PAGE_LOG_CONFIG_DISPLAY, PAGE_COMMON_CONFIG_DISPLAY]},
+        NAV_GROUP_SOMEIP: {"children": [PAGE_SOMEIP_DISPLAY]},
         NAV_GROUP_ADV: {"children": [PAGE_SCRIPT_DISPLAY]},
         NAV_GROUP_DEMO: {"children": [PAGE_DEMO_DISPLAY]},
     }

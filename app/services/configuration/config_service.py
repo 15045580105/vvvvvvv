@@ -70,7 +70,8 @@ class AppConfigurationService(BaseService):
                 "export_module": "All Modules"
             },
             "someip": {
-                "local_ip": ""
+                "local_ip": "",
+                "matrix_file": ""
             }
         }
 

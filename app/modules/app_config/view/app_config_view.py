@@ -23,6 +23,7 @@ class SettingsWindow(QWidget):
         self.setWindowTitle("设置")
         self.resize(1000, 750)
         self.current_page = None
+        self._someip_import_in_progress = False
         self.init_ui()
 
     def showEvent(self, event):
@@ -238,6 +239,7 @@ class SettingsWindow(QWidget):
         if hasattr(self, 'someip_page'):
             settings["someip"] = {
                 "local_ip": self.someip_page.network_combo.currentData(),
+                "matrix_file": self.someip_page.matrix_file_edit.text().strip(),
             }
 
         if hasattr(self, 'diag_layer_page'):
@@ -278,8 +280,21 @@ class SettingsWindow(QWidget):
 
         return settings
 
+    def set_someip_import_in_progress(self, in_progress: bool):
+        self._someip_import_in_progress = in_progress
+        self.ok_button.setEnabled(not in_progress)
+        self.cancel_button.setEnabled(not in_progress)
+
+    def closeEvent(self, event):
+        if self._someip_import_in_progress:
+            event.ignore()
+            return
+        super().closeEvent(event)
+
     def on_ok_clicked(self):
         """OK按钮点击事件 - 保存所有页面设置并关闭窗口"""
+        if self._someip_import_in_progress:
+            return
         # Emit signal to start batch save
         self.save_started.emit()
 
@@ -295,4 +310,6 @@ class SettingsWindow(QWidget):
 
     def on_cancel_clicked(self):
         """Cancel按钮点击事件 - 不保存直接关闭窗口"""
+        if self._someip_import_in_progress:
+            return
         self.close()

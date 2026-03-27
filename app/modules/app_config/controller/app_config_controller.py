@@ -18,11 +18,40 @@ from app.core.dependency_injection import di_container
 from app.modules.app_config.model.app_config_model import AppConfigModel
 from app.modules.app_config.view.app_config_view import SettingsWindow
 from app.services.diagnostic.dpt_service import DPTService
+from app.common.utils.someip_utils import SomeIPMatrixStore
+
+
+class SomeIPImportWorker(QtCore.QThread):
+    progress_signal = QtCore.pyqtSignal(int, str)
+    finished_signal = QtCore.pyqtSignal(bool, str, str)
+
+    def __init__(self, file_path: str):
+        super().__init__()
+        self.file_path = file_path
+
+    def run(self):
+        try:
+            self.progress_signal.emit(10, "正在检查矩阵文件...")
+            if not self.file_path or not os.path.exists(self.file_path):
+                raise FileNotFoundError("矩阵文件不存在")
+
+            self.progress_signal.emit(35, "正在解析 Deployment sheet...")
+            store = SomeIPMatrixStore()
+            result = store.import_matrix(self.file_path, force_reload=True)
+
+            self.progress_signal.emit(85, "正在写入缓存...")
+            count = result.get("count", 0)
+            self.progress_signal.emit(100, f"导入完成，共解析 {count} 条服务记录")
+            self.finished_signal.emit(True, self.file_path, f"导入完成，共解析 {count} 条服务记录")
+        except Exception as e:
+            self.finished_signal.emit(False, self.file_path, f"导入失败: {e}")
 
 
 class AppConfigController(BaseController):
     dpt_status_signal = QtCore.pyqtSignal(str, str)
     ecu_config_loaded_signal = QtCore.pyqtSignal(object)
+    someip_import_progress_signal = QtCore.pyqtSignal(int, str)
+    someip_import_finished_signal = QtCore.pyqtSignal(bool, str, str)
 
     def __init__(self, parent=None):
         self.model = AppConfigModel(parent)
@@ -58,6 +87,12 @@ class AppConfigController(BaseController):
 
         # Delay heavy initialization
         QtCore.QTimer.singleShot(0, self.delayed_init)
+
+        # SomeIP import worker
+        self._someip_import_worker = None
+        self.view.someip_page.import_matrix_signal.connect(self.import_someip_matrix)
+        self.someip_import_progress_signal.connect(self.handle_someip_import_progress)
+        self.someip_import_finished_signal.connect(self.handle_someip_import_finished)
 
     def delayed_init(self):
         dpt_service = di_container.resolve(DPTService)
@@ -212,6 +247,34 @@ class AppConfigController(BaseController):
     def handle_dpt_status(self, status, message):
         if hasattr(self.view.doip_page, "set_dpt_status"):
             self.view.doip_page.set_dpt_status(status, message)
+
+    def import_someip_matrix(self, file_path: str):
+        if not file_path or (self._someip_import_worker and self._someip_import_worker.isRunning()):
+            return
+
+        self.view.set_someip_import_in_progress(True)
+        self.view.someip_page.set_import_in_progress(True, "正在导入矩阵...")
+
+        self._someip_import_worker = SomeIPImportWorker(file_path)
+        self._someip_import_worker.progress_signal.connect(self.someip_import_progress_signal.emit)
+        self._someip_import_worker.finished_signal.connect(self.someip_import_finished_signal.emit)
+        self._someip_import_worker.start()
+
+    def handle_someip_import_progress(self, progress: int, message: str):
+        self.view.someip_page.update_import_progress(progress, message)
+
+    def handle_someip_import_finished(self, success: bool, file_path: str, message: str):
+        self.view.set_someip_import_in_progress(False)
+        self.view.someip_page.handle_import_finished(success, message)
+
+        if success:
+            settings = dict(self.model.someip_settings or {})
+            settings["local_ip"] = self.view.someip_page.network_combo.currentData()
+            settings["matrix_file"] = file_path
+            self.model.save_someip_settings(settings)
+            self.view.someip_page.load_settings(self.model.someip_settings)
+
+        self._someip_import_worker = None
 
 def main():
     app = QApplication(sys.argv)

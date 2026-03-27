@@ -106,7 +106,8 @@ class AppConfigModel(BaseModel):
 
     def reset_someip_defaults(self):
         self.someip_settings = {
-            "local_ip": ""
+            "local_ip": "",
+            "matrix_file": ""
         }
 
     def reset_domain_update_settings(self):

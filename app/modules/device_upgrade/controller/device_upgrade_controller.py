@@ -15,6 +15,8 @@ from app.services.device_manage.device_service import DeviceService
 from app.common.utils.security_access_helper import SecurityAccessHelper
 from app.common.utils.path_utils import get_app_data_path
 from app.common.log.operation_log_manager import OperationLogManager
+from app.common.utils.dpt_manager import DPTManager
+from app.common.repositories.dpt_repository import DPTRepository
 
 
 class UpgradeWorker(QThread):
@@ -28,6 +30,7 @@ class UpgradeWorker(QThread):
         self.file_path = file_path
         self.device_service = device_service
         self.running = True
+        self.dpt_manager = None
 
     def run(self):
         try:
@@ -40,6 +43,16 @@ class UpgradeWorker(QThread):
         self.running = False
 
     def _execute_upgrade(self):
+        # Load DPT Data for status check
+        try:
+            repo = DPTRepository()
+            last_path = repo.load_last_path()
+            if last_path and os.path.exists(last_path):
+                 self.dpt_manager = DPTManager()
+                 self.dpt_manager.load_dpt_from_file(last_path)
+        except:
+             pass
+
         file_size = os.path.getsize(self.file_path)
         file_hash = hashlib.sha256()
 
@@ -251,6 +264,9 @@ class UpgradeWorker(QThread):
         # 12. Poll Install State (22 21 04)
         self.log_signal.emit("等待安装完成...", True)
 
+        initial_status_byte = None
+        status_changed_no_did = False
+
         # Installation has no time limit as per user request
         while self.running:
 
@@ -279,7 +295,47 @@ class UpgradeWorker(QThread):
                     else:
                         time_info_str = f", 时间数据(Hex): {time_hex}"
 
-                log_msg = f"安装中... {progress}% (状态: 0x{status_byte:02X}{time_info_str})"
+                # Check DPT for failure status
+                warning_msg = ""
+                did_found = False
+
+                if self.dpt_manager and self.dpt_manager.dpt_data:
+                    # Look for DID 2104
+                    did_obj = self.dpt_manager.dpt_data.dids.get("2104")
+                    if not did_obj:
+                        did_obj = self.dpt_manager.dpt_data.dids.get("0x2104")
+
+                    if did_obj:
+                        did_found = True
+                        # Assume Status Byte corresponds to the first item (byte "0")
+                        status_item = next((item for item in did_obj.items if item.byte == "0"), None)
+                        if status_item:
+                            conversions = status_item.get_parsed_conversions()
+                            # Try to match byte value
+                            # Keys could be "2", "0x02", "02" etc.
+                            status_key = str(status_byte)
+                            status_desc = conversions.get(status_key)
+                            if not status_desc:
+                                status_desc = conversions.get(f"0x{status_byte:02X}")
+
+                            if status_desc:
+                                # Check for failure keywords
+                                if "失败" in status_desc or "fail" in status_desc.lower():
+                                    self.log_signal.emit(f"检测到安装失败状态: {status_desc} (Code: {status_byte})", True)
+                                    self.finished_signal.emit(False, f"安装失败: {status_desc}")
+                                    return
+
+                # If DID not found, monitor status change
+                if not did_found:
+                    if initial_status_byte is None:
+                        initial_status_byte = status_byte
+                    elif status_byte != initial_status_byte:
+                        status_changed_no_did = True
+
+                    if status_changed_no_did:
+                         warning_msg = "，未查到对应的DID，已检测到状态变化，请确认是否已经安装失败，失败请手动停止升级流程"
+
+                log_msg = f"安装中... {progress}% (状态: 0x{status_byte:02X}{time_info_str}{warning_msg})"
                 self.progress_signal.emit(progress, PHASE_INSTALL, log_msg)
 
                 if progress >= 100:
