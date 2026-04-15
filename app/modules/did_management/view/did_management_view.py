@@ -360,21 +360,24 @@ class DIDView(BaseView):
     def setup_ui(self):
         # 存储待应用的像素宽度（在首次布局完成后应用）
         self._pending_pixel_widths = None
+        self._preferred_log_height = 300
+        self._user_resized_log = False
         """构建 DID 界面布局：上方控制区 + DID 表格 + 请求/响应原始数据。"""
-        main_layout = QtWidgets.QVBoxLayout(self)
-        main_layout.setSpacing(6)
-        main_layout.setContentsMargins(6, 6, 6, 6)
+        self.main_layout = QtWidgets.QVBoxLayout(self)
+        self.main_layout.setSpacing(6)
+        self.main_layout.setContentsMargins(6, 6, 6, 6)
 
-        # 顶部控制条：DPT 导入 + 表格操作 + 读取/响应（全部放在同一行）
-        ctl = QtWidgets.QHBoxLayout()
-        ctl.setSpacing(6)
+        # 顶部控制条：恢复原样子进行布局，只修正按钮挤压
+        self.ctl = QtWidgets.QHBoxLayout()
+        self.ctl.setSpacing(6)
 
         self.ecu_init_btn = ModernButton("ECU初始化", "#8B5CF6", "🔧")
         self.ecu_init_btn.setToolTip("点击切换到 ECU 初始化界面")
-        ctl.addWidget(self.ecu_init_btn)
+        self.ecu_init_btn.setFixedWidth(136)
+        self.ecu_init_btn.setFixedHeight(36)
+        self.ecu_init_btn.setSizePolicy(QtWidgets.QSizePolicy.Fixed, QtWidgets.QSizePolicy.Fixed)
+        self.ctl.addWidget(self.ecu_init_btn)
 
-
-        # 将表格工具按钮合并到顶栏，保持在导入按钮之后
         self.add_btn = ModernButton("+", "#22C55E", "")
         self.add_btn.setToolTip("添加一行新的 DID")
         self.remove_btn = ModernButton("-", "#EF4444", "")
@@ -385,43 +388,49 @@ class DIDView(BaseView):
         self.down_btn.setToolTip("下移选中行")
         self.top_btn = ModernButton("⇈", "#6B7280", "")
         self.top_btn.setToolTip("选中行置顶")
-        for b in (self.add_btn, self.remove_btn, self.up_btn, self.down_btn, self.top_btn):
-            b.setFixedSize(26, 36)
-            ctl.addWidget(b)
 
-        # 搜索框
+        self.add_btn.setFixedSize(44, 36)
+        self.remove_btn.setFixedSize(44, 36)
+        self.up_btn.setFixedSize(44, 36)
+        self.down_btn.setFixedSize(44, 36)
+        self.top_btn.setFixedSize(44, 36)
+        for b in (self.add_btn, self.remove_btn, self.up_btn, self.down_btn, self.top_btn):
+            b.setSizePolicy(QtWidgets.QSizePolicy.Fixed, QtWidgets.QSizePolicy.Fixed)
+            self.ctl.addWidget(b)
+
         self.search_input = QtWidgets.QLineEdit()
         self.search_input.setPlaceholderText("搜索 DID...")
         self.search_input.setToolTip("输入 DID 号或描述进行搜索")
-        self.search_input.setFixedWidth(150)
+        self.search_input.setFixedWidth(160)
+        self.search_input.setMinimumWidth(120)
+        self.search_input.setSizePolicy(QtWidgets.QSizePolicy.Fixed, QtWidgets.QSizePolicy.Fixed)
         self.search_input.setStyleSheet("QLineEdit { border: 1px solid #E5E7EB; border-radius: 4px; padding: 4px; }")
-        ctl.addWidget(self.search_input)
+        self.ctl.addWidget(self.search_input)
 
         self.search_btn = ModernButton("🔍", "#6B7280", "")
         self.search_btn.setToolTip("执行搜索")
-        self.search_btn.setFixedSize(36, 36)
-        ctl.addWidget(self.search_btn)
+        self.search_btn.setFixedSize(44, 36)
+        self.search_btn.setSizePolicy(QtWidgets.QSizePolicy.Fixed, QtWidgets.QSizePolicy.Fixed)
+        self.ctl.addWidget(self.search_btn)
 
-        # 读取/写入 放在最右侧
-        ctl.addStretch()
+        self.ctl.addStretch()
         self.read_btn = ModernButton("读取", "#0EA5E9", "")
         self.read_btn.setToolTip("读取勾选 DID 的值")
         self.write_btn = ModernButton("写入", "#F97316", "")
         self.write_btn.setToolTip("写入值到勾选的 DID")
         self.clear_btn = ModernButton("清除", "#EF4444", "")
         self.clear_btn.setToolTip("清除所有值和日志")
-        self.read_btn.setFixedWidth(70)
-        self.write_btn.setFixedWidth(70)
-        self.clear_btn.setFixedWidth(70)
-        ctl.addWidget(self.read_btn)
-        ctl.addWidget(self.write_btn)
-        ctl.addWidget(self.clear_btn)
+        for btn in (self.read_btn, self.write_btn, self.clear_btn):
+            btn.setFixedWidth(86)
+            btn.setFixedHeight(36)
+            btn.setSizePolicy(QtWidgets.QSizePolicy.Fixed, QtWidgets.QSizePolicy.Fixed)
+            self.ctl.addWidget(btn)
 
-        main_layout.addLayout(ctl)
+        self.main_layout.addLayout(self.ctl)
 
         # Splitter for resizable log window
         self.splitter = LogAreaSplitter(self, min_log_height=150, max_log_ratio=0.8)
-        main_layout.addWidget(self.splitter)
+        self.main_layout.addWidget(self.splitter)
 
         # 使用 QStackedWidget 来切换 DID 表格和 ECU 初始化界面
         self.stack = QtWidgets.QStackedWidget()
@@ -523,6 +532,10 @@ class DIDView(BaseView):
         raw_layout.addWidget(self.raw_text)
 
         self.splitter.set_panels(self.stack, raw_group, initial_log_height=300)
+        try:
+            self.splitter.splitterMoved.connect(self._on_log_splitter_moved)
+        except Exception:
+            pass
 
         # 信号转发（仅界面层）
         self.read_btn.clicked.connect(self.read_requested.emit)
@@ -541,7 +554,7 @@ class DIDView(BaseView):
 
         # 初始布局：延迟应用列宽以便字体度量和视口尺寸可用
         # 使用 singleShot 在事件循环处理完布局后运行一次，防止初始尺寸过窄并确保表头可见
-        QtCore.QTimer.singleShot(0, lambda: self._apply_column_widths(force=True))
+        QtCore.QTimer.singleShot(0, lambda: self._apply_responsive_layout(force=True))
 
     def toggle_ecu_init_panel(self):
         """切换 ECU 初始化面板的显示/隐藏状态（切换 Stack 页面）。"""
@@ -565,8 +578,7 @@ class DIDView(BaseView):
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
-        # 尽量保留用户调整的列宽，但确保满足最小宽度
-        self._apply_column_widths()
+        self._apply_responsive_layout()
 
         # Adjust vertical header width to fit row numbers
         try:
@@ -582,6 +594,71 @@ class DIDView(BaseView):
                 self.table.verticalHeader().setFixedWidth(max(40, width))
         except Exception:
             pass
+
+    def _scale_button_size(self, button, base_w, base_h, ratio, min_w, max_w, min_h, max_h):
+        width = max(min_w, min(max_w, int(base_w * ratio)))
+        height = max(min_h, min(max_h, int(base_h * ratio)))
+        button.setFixedSize(width, height)
+
+    def _scale_button_width(self, button, base_w, ratio, min_w, max_w):
+        width = max(min_w, min(max_w, int(base_w * ratio)))
+        button.setFixedWidth(width)
+
+    def _on_log_splitter_moved(self, pos, index):
+        try:
+            sizes = self.splitter.sizes()
+            if len(sizes) > 1:
+                self._preferred_log_height = sizes[1]
+                self._user_resized_log = True
+        except Exception:
+            pass
+
+    def _apply_responsive_layout(self, force: bool = False):
+        view_width = max(1, self.width())
+        bucket = view_width // 80
+        if not force and getattr(self, '_last_layout_bucket', None) == bucket:
+            self._apply_column_widths()
+            return
+        self._last_layout_bucket = bucket
+
+        spacing = 4 if view_width < 1500 else 6
+        margin = 4 if view_width < 1500 else 6
+
+        self.main_layout.setSpacing(spacing)
+        self.main_layout.setContentsMargins(margin, margin, margin, margin)
+        self.ctl.setSpacing(spacing)
+
+        # 文字按钮固定，不再参与压缩
+        self.ecu_init_btn.setFixedWidth(136)
+        self.ecu_init_btn.setFixedHeight(36)
+        for btn in (self.read_btn, self.write_btn, self.clear_btn):
+            btn.setFixedWidth(86)
+            btn.setFixedHeight(36)
+
+        # 这 5 个按钮宽度直接锁定，避免符号显示不全
+        self.add_btn.setFixedSize(44, 36)
+        self.remove_btn.setFixedSize(44, 36)
+        self.up_btn.setFixedSize(44, 36)
+        self.down_btn.setFixedSize(44, 36)
+        self.top_btn.setFixedSize(44, 36)
+
+        # 搜索区域也给足显示空间，避免占位符和图标被截断
+        self.search_btn.setFixedSize(44, 36)
+        self.search_input.setFixedWidth(120 if view_width < 1500 else 160)
+
+        try:
+            split_sizes = self.splitter.sizes()
+            if len(split_sizes) > 1:
+                total_h = max(1, sum(split_sizes))
+                if self._user_resized_log:
+                    desired_log = max(150, min(int(total_h * 0.8), self._preferred_log_height))
+                else:
+                    desired_log = max(180, min(int(total_h * 0.42), 320))
+                self.splitter.setSizes([max(240, total_h - desired_log), desired_log])
+        except Exception:
+            pass
+
+        self._apply_column_widths(force=True)
 
     def _apply_column_widths(self, force: bool = False) -> None:
         if not hasattr(self, "table"):
@@ -599,13 +676,19 @@ class DIDView(BaseView):
             header_text = self.table.horizontalHeaderItem(i).text() if self.table.horizontalHeaderItem(i) else ""
             # 增加填充以降低表头被截断的概率（保守处理）
             header_min = fm.horizontalAdvance(header_text) + 36
-            # 如果表头文本较长，给予额外填充
-            if len(header_text) > 12:
-                header_min += 24
-            # 针对 DiagnosticSession(5) 和 SecurityAccess(6) 的额外最小保护
-            if i in (5, 6):
-                header_min = max(header_min, 150)
-            if i == 0:  # 复选框列需要稍大一点的最小宽度
+            if i == 1:
+                header_min = max(header_min, 180)
+            elif i == 2:
+                header_min = max(header_min, 88)
+            elif i == 3:
+                header_min = max(header_min, 92)
+            elif i == 4:
+                header_min = max(header_min, 110)
+            elif i in (5, 6):
+                header_min = max(header_min, 135)
+            elif i == 7:
+                header_min = max(header_min, 220)
+            elif i == 0:
                 header_min = max(header_min, 40)
 
             # 如果 controller 提供了显式的像素最小值，则应用

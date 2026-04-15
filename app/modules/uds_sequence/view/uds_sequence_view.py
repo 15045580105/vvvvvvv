@@ -210,6 +210,9 @@ class UDSSequenceView(QtWidgets.QWidget):
         super().__init__(parent)
         self.model = model
         self.current_edit_index = -1
+        self._last_resize_bucket = None
+        self._preferred_splitter_ratio = 0.20
+        self._user_resized_splitter = False
         self.setWindowTitle("UDS指令编排")
         self.resize(900, 700)
         self.setup_ui()
@@ -227,36 +230,31 @@ class UDSSequenceView(QtWidgets.QWidget):
         cmd_layout.setSpacing(0)
         cmd_layout.setContentsMargins(4, 12, 4, 4)
 
-        cmd_splitter = QtWidgets.QSplitter()
-        cmd_splitter.setOrientation(Qt.Horizontal)
-        cmd_splitter.setHandleWidth(4)
+        self.cmd_splitter = QtWidgets.QSplitter()
+        self.cmd_splitter.setOrientation(Qt.Horizontal)
+        self.cmd_splitter.setHandleWidth(4)
 
         # left side: tree view
         self.cmd_tree = QtWidgets.QTreeView()
+        self.cmd_tree.setMinimumWidth(180)
         self._build_tree_model()
         self.cmd_tree.clicked.connect(self._on_tree_item_clicked)
         self.cmd_tree.setContextMenuPolicy(Qt.CustomContextMenu)
         self.cmd_tree.customContextMenuRequested.connect(self._on_tree_context_menu)
-        cmd_splitter.addWidget(self.cmd_tree)
+        self.cmd_splitter.addWidget(self.cmd_tree)
 
         self.editor_widget = self.create_editor_widget()
+        self.editor_widget.setMinimumWidth(0)
+        self.cmd_splitter.addWidget(self.editor_widget)
 
-        # Wrap editor_widget in a ScrollArea to handle small widths
-        self.scroll_area = QtWidgets.QScrollArea()
-        self.scroll_area.setWidget(self.editor_widget)
-        self.scroll_area.setWidgetResizable(True)
-        self.scroll_area.setFrameShape(QtWidgets.QFrame.NoFrame)
+        self.cmd_splitter.setStretchFactor(0, 1)
+        self.cmd_splitter.setStretchFactor(1, 4)
+        self.cmd_splitter.setSizes([220, 980])
+        self.cmd_splitter.setCollapsible(0, False)
+        self.cmd_splitter.setCollapsible(1, False)
+        self.cmd_splitter.splitterMoved.connect(self._on_splitter_moved)
 
-        cmd_splitter.addWidget(self.scroll_area)
-
-        cmd_splitter.setStretchFactor(0, 1)
-        cmd_splitter.setStretchFactor(1, 3)
-        cmd_splitter.setSizes([250, 650])
-        # Prevent collapsing to ensure both sides remain visible and draggable
-        cmd_splitter.setCollapsible(0, False)
-        cmd_splitter.setCollapsible(1, False)
-
-        cmd_layout.addWidget(cmd_splitter)
+        cmd_layout.addWidget(self.cmd_splitter)
         main_splitter.addWidget(cmd_group)
 
         log_group = QtWidgets.QGroupBox("操作日志")
@@ -275,6 +273,7 @@ class UDSSequenceView(QtWidgets.QWidget):
         layout.addWidget(main_splitter)
 
         self.clear_editor()
+        QtCore.QTimer.singleShot(0, self._apply_responsive_layout)
 
     def _build_tree_model(self):
         # ...existing code...
@@ -429,113 +428,122 @@ class UDSSequenceView(QtWidgets.QWidget):
             editor.setStyleSheet('background: #FFFFFF;')
         except Exception:
             pass
-        layout = QtWidgets.QVBoxLayout(editor)
-        layout.setSpacing(8)
-        layout.setContentsMargins(8, 0, 0, 0)
+        editor.setMinimumWidth(0)
+        editor.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Preferred)
+        self.editor_layout = QtWidgets.QVBoxLayout(editor)
+        self.editor_layout.setSpacing(8)
+        self.editor_layout.setContentsMargins(8, 0, 0, 0)
 
         # Request Row
-        req_row_layout = QtWidgets.QHBoxLayout()
-        req_label = QtWidgets.QLabel("Request:")
-        req_label.setStyleSheet("font-weight: 600; color: #374151;")
-        req_label.setFixedWidth(70)
+        self.req_row_layout = QtWidgets.QHBoxLayout()
+        self.req_label = QtWidgets.QLabel("Request:")
+        self.req_label.setStyleSheet("font-weight: 600; color: #374151;")
+        self.req_label.setMinimumWidth(70)
 
         self.request_edit = QtWidgets.QTextEdit()
         self.request_edit.setPlaceholderText("输入请求数据，如: 10 03")
         self.request_edit.setMaximumHeight(50)
+        self.request_edit.setMinimumHeight(50)
+        self.request_edit.setMinimumWidth(260)
+        self.request_edit.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
         self.request_edit.setStyleSheet("border: 1px solid #D1D5DB; border-radius: 4px;")
 
         self.send_btn = ModernButton("发送", "#059669")
         self.send_btn.setToolTip("发送请求数据")
         self.send_btn.clicked.connect(self._on_send_clicked_internal)
-        self.send_btn.setFixedWidth(80)
+        self.send_btn.setMinimumWidth(80)
         self.send_btn.setFixedHeight(50)
+        self.send_btn.setSizePolicy(QtWidgets.QSizePolicy.Fixed, QtWidgets.QSizePolicy.Fixed)
 
-        req_row_layout.addWidget(req_label)
-        req_row_layout.addWidget(self.request_edit)
-        req_row_layout.addWidget(self.send_btn)
+        self.req_row_layout.addWidget(self.req_label)
+        self.req_row_layout.addWidget(self.request_edit, 1)
+        self.req_row_layout.addWidget(self.send_btn, 0)
 
         # Response Row
-        resp_row_layout = QtWidgets.QHBoxLayout()
-        resp_label = QtWidgets.QLabel("Response:")
-        resp_label.setStyleSheet("font-weight: 600; color: #374151;")
-        resp_label.setFixedWidth(70)
+        self.resp_row_layout = QtWidgets.QHBoxLayout()
+        self.resp_label = QtWidgets.QLabel("Response:")
+        self.resp_label.setStyleSheet("font-weight: 600; color: #374151;")
+        self.resp_label.setMinimumWidth(70)
 
         self.response_edit = QtWidgets.QTextEdit()
         self.response_edit.setPlaceholderText("预期响应数据，如: 50 03")
         self.response_edit.setMaximumHeight(50)
+        self.response_edit.setMinimumHeight(50)
+        self.response_edit.setMinimumWidth(260)
+        self.response_edit.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
         self.response_edit.setStyleSheet("border: 1px solid #D1D5DB; border-radius: 4px;")
 
         self.insert_btn = ModernButton("插入", "#3B82F6")
         self.insert_btn.setToolTip("将响应数据插入到下方表格")
         self.insert_btn.clicked.connect(self._on_insert_clicked_internal)
-        self.insert_btn.setFixedWidth(80)
+        self.insert_btn.setMinimumWidth(80)
         self.insert_btn.setFixedHeight(50)
+        self.insert_btn.setSizePolicy(QtWidgets.QSizePolicy.Fixed, QtWidgets.QSizePolicy.Fixed)
 
-        resp_row_layout.addWidget(resp_label)
-        resp_row_layout.addWidget(self.response_edit)
-        resp_row_layout.addWidget(self.insert_btn)
+        self.resp_row_layout.addWidget(self.resp_label)
+        self.resp_row_layout.addWidget(self.response_edit, 1)
+        self.resp_row_layout.addWidget(self.insert_btn, 0)
 
-        # Toolbar Row (Config + Operations + Run)
-        btn_row_layout = QtWidgets.QHBoxLayout()
-        btn_row_layout.setSpacing(6)
-        btn_row_layout.setContentsMargins(0, 6, 0, 6)
-        btn_row_layout.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        # Toolbar Row (single line, preserve original appearance)
+        self.toolbar_widget = QtWidgets.QWidget()
+        self.toolbar_widget.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
+        self.toolbar_layout = QtWidgets.QHBoxLayout(self.toolbar_widget)
+        self.toolbar_layout.setContentsMargins(0, 6, 0, 6)
+        self.toolbar_layout.setSpacing(6)
 
         # --- Config Section ---
         self.config_combo = QtWidgets.QComboBox()
         self.config_combo.setEditable(False)
-        self.config_combo.setMinimumWidth(120)
+        self.config_combo.setMinimumWidth(96)
+        self.config_combo.setMaximumWidth(180)
         self.config_combo.setFixedHeight(32)
+        self.config_combo.setSizePolicy(QtWidgets.QSizePolicy.Fixed, QtWidgets.QSizePolicy.Fixed)
         self.config_combo.currentTextChanged.connect(lambda text: self.config_load_requested.emit(text) if text else None)
 
         self.save_config_btn = ModernButton("保存", "#3B82F6")
         self.save_config_btn.setToolTip("保存当前配置序列")
-        self.save_config_btn.setFixedWidth(60)
+        self.save_config_btn.setMinimumWidth(60)
         self.save_config_btn.setFixedHeight(32)
+        self.save_config_btn.setSizePolicy(QtWidgets.QSizePolicy.Fixed, QtWidgets.QSizePolicy.Fixed)
         self.save_config_btn.clicked.connect(self._on_save_config_clicked)
 
         self.del_config_btn = ModernButton("删除", "#EF4444")
         self.del_config_btn.setToolTip("删除当前配置序列")
-        self.del_config_btn.setFixedWidth(60)
+        self.del_config_btn.setMinimumWidth(60)
         self.del_config_btn.setFixedHeight(32)
+        self.del_config_btn.setSizePolicy(QtWidgets.QSizePolicy.Fixed, QtWidgets.QSizePolicy.Fixed)
         self.del_config_btn.clicked.connect(self._on_del_config_clicked)
 
         self.import_config_btn = ModernButton("导入", "#10B981")
         self.import_config_btn.setToolTip("导入外部配置文件")
-        self.import_config_btn.setFixedWidth(60)
+        self.import_config_btn.setMinimumWidth(60)
         self.import_config_btn.setFixedHeight(32)
+        self.import_config_btn.setSizePolicy(QtWidgets.QSizePolicy.Fixed, QtWidgets.QSizePolicy.Fixed)
         self.import_config_btn.clicked.connect(self.config_import_requested.emit)
 
         self.export_config_btn = ModernButton("导出", "#8B5CF6")
         self.export_config_btn.setToolTip("导出配置到文件")
-        self.export_config_btn.setFixedWidth(60)
+        self.export_config_btn.setMinimumWidth(60)
         self.export_config_btn.setFixedHeight(32)
+        self.export_config_btn.setSizePolicy(QtWidgets.QSizePolicy.Fixed, QtWidgets.QSizePolicy.Fixed)
         self.export_config_btn.clicked.connect(self.config_export_requested.emit)
 
-        btn_row_layout.addWidget(self.config_combo)
-        btn_row_layout.addWidget(self.save_config_btn)
-        btn_row_layout.addWidget(self.del_config_btn)
-        btn_row_layout.addWidget(self.import_config_btn)
-        btn_row_layout.addWidget(self.export_config_btn)
-
-        # Separator
-        line = QtWidgets.QFrame()
-        line.setFrameShape(QtWidgets.QFrame.VLine)
-        line.setFrameShadow(QtWidgets.QFrame.Sunken)
-        line.setStyleSheet("color: #E5E7EB;")
-        btn_row_layout.addWidget(line)
+        self.toolbar_layout.addWidget(self.config_combo, 0)
+        self.toolbar_layout.addWidget(self.save_config_btn, 0)
+        self.toolbar_layout.addWidget(self.del_config_btn, 0)
+        self.toolbar_layout.addWidget(self.import_config_btn, 0)
+        self.toolbar_layout.addWidget(self.export_config_btn, 0)
+        self.toolbar_layout.addSpacing(6)
 
         # --- Operation Buttons ---
         self.icon_btn_add = self.create_icon_button("➕", "添加参数", "#10B981", "添加")
         self.icon_btn_delete = self.create_icon_button("➖", "删除选中参数", "#EF4444", "删除")
         self.icon_btn_up = self.create_icon_button("↑", "上移", "#0EA5E9", "上移")
-        self.icon_btn_down = self.create_icon_button("↓", "下移", "#0EA5E9", "下移")
+        self.icon_btn_down = self.create_icon_button("↓", "下移", "#0EA5E9", "上移")
 
-        # styled icon button similar to create_icon_button
         def create_styled_button(icon_text: str, tooltip: str, color: str) -> QtWidgets.QPushButton:
             btn = QtWidgets.QPushButton(icon_text)
             btn.setToolTip(tooltip)
-            # minimal padding so text/icon is centered in fixedSize
             btn.setStyleSheet(f"""
                 QPushButton {{
                     background-color: {color};
@@ -563,76 +571,71 @@ class UDSSequenceView(QtWidgets.QWidget):
                 }}
             """)
             btn.setFixedSize(32, 32)
+            btn.setSizePolicy(QtWidgets.QSizePolicy.Fixed, QtWidgets.QSizePolicy.Fixed)
             return btn
 
         delay_color = "#F59E0B"
         self.delay_icon_btn = create_styled_button("⏱", "插入延迟指令 (默认 1000 ms)", delay_color)
         self.delay_icon_btn.clicked.connect(lambda: self.delay_insert_requested.emit('1000'))
 
-        for b in (self.icon_btn_add, self.icon_btn_delete, self.delay_icon_btn, self.icon_btn_up, self.icon_btn_down):
-            btn_row_layout.addWidget(b, 0, Qt.AlignVCenter)
-
-        # Separator 2
-        line2 = QtWidgets.QFrame()
-        line2.setFrameShape(QtWidgets.QFrame.VLine)
-        line2.setFrameShadow(QtWidgets.QFrame.Sunken)
-        line2.setStyleSheet("color: #E5E7EB;")
-        btn_row_layout.addWidget(line2)
-
-        # 3E Toggle
         self.btn_3e = QtWidgets.QPushButton("3E")
         self.btn_3e.setCheckable(True)
         self.btn_3e.setToolTip("Tester Present: 3E 80 (点击切换 3E 00)")
         self.btn_3e.setFixedSize(40, 32)
-        self._apply_toggle_style(self.btn_3e, "#6366F1") # Indigo
-        btn_row_layout.addWidget(self.btn_3e)
+        self.btn_3e.setSizePolicy(QtWidgets.QSizePolicy.Fixed, QtWidgets.QSizePolicy.Fixed)
+        self._apply_toggle_style(self.btn_3e, "#6366F1")
 
-        # Stop on Fail Toggle
         self.btn_stop_fail = QtWidgets.QPushButton("⚠")
         self.btn_stop_fail.setCheckable(True)
         self.btn_stop_fail.setToolTip("遇错停止: 选中后遇到错误将停止执行")
         self.btn_stop_fail.setFixedSize(40, 32)
         self.btn_stop_fail.setChecked(True)
-        self._apply_toggle_style(self.btn_stop_fail, "#EF4444") # Red
-        btn_row_layout.addWidget(self.btn_stop_fail)
+        self.btn_stop_fail.setSizePolicy(QtWidgets.QSizePolicy.Fixed, QtWidgets.QSizePolicy.Fixed)
+        self._apply_toggle_style(self.btn_stop_fail, "#EF4444")
 
-        btn_row_layout.addStretch()
+        self.toolbar_layout.addWidget(self.icon_btn_add, 0)
+        self.toolbar_layout.addWidget(self.icon_btn_delete, 0)
+        self.toolbar_layout.addWidget(self.delay_icon_btn, 0)
+        self.toolbar_layout.addWidget(self.icon_btn_up, 0)
+        self.toolbar_layout.addWidget(self.icon_btn_down, 0)
+        self.toolbar_layout.addSpacing(6)
+        self.toolbar_layout.addWidget(self.btn_3e, 0)
+        self.toolbar_layout.addWidget(self.btn_stop_fail, 0)
+        self.toolbar_layout.addSpacing(10)
 
-        # --- Run Section ---
         self.send_times_label = QtWidgets.QLabel("次数:")
         self.send_times_label.setStyleSheet("color: #374151; font-weight: 600;")
+        self.send_times_label.setSizePolicy(QtWidgets.QSizePolicy.Fixed, QtWidgets.QSizePolicy.Fixed)
 
         self.send_times_spin = QtWidgets.QSpinBox()
         self.send_times_spin.setRange(1, 9999)
         self.send_times_spin.setValue(1)
-        self.send_times_spin.setFixedWidth(60)
+        self.send_times_spin.setMinimumWidth(60)
+        self.send_times_spin.setMaximumWidth(90)
         self.send_times_spin.setFixedHeight(32)
+        self.send_times_spin.setSizePolicy(QtWidgets.QSizePolicy.Fixed, QtWidgets.QSizePolicy.Fixed)
 
         self.run_sequence_btn = ModernButton("执行序列", "#8B5CF6")
         self.run_sequence_btn.setToolTip("按顺序执行下方列表中的所有勾选指令")
         self.run_sequence_btn.setFixedHeight(32)
-        self.run_sequence_btn.setFixedWidth(90)
+        self.run_sequence_btn.setMinimumWidth(90)
+        self.run_sequence_btn.setSizePolicy(QtWidgets.QSizePolicy.Fixed, QtWidgets.QSizePolicy.Fixed)
         self.run_sequence_btn.clicked.connect(lambda: self.run_sequence_requested.emit(self.send_times_spin.value()))
 
-        btn_row_layout.addWidget(self.send_times_label)
-        btn_row_layout.addWidget(self.send_times_spin)
-        btn_row_layout.addWidget(self.run_sequence_btn)
-
-        # Wrap the button row into a fixed-height toolbar widget
-        toolbar_widget = QtWidgets.QWidget()
-        toolbar_widget.setLayout(btn_row_layout)
-        toolbar_widget.setFixedHeight(44)
-        # Set minimum width to ensure buttons don't get crushed; scrollbar will appear if smaller
-        toolbar_widget.setMinimumWidth(750)
+        self.toolbar_layout.addWidget(self.send_times_label, 0)
+        self.toolbar_layout.addWidget(self.send_times_spin, 0)
+        self.toolbar_layout.addWidget(self.run_sequence_btn, 0)
+        self.toolbar_layout.addStretch(1)
 
         self.data_table = QtWidgets.QTableWidget()
+        self.data_table.setMinimumWidth(0)
+        self.data_table.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Expanding)
         self.setup_table()
-        # self.data_table.setMinimumHeight(200)
 
-        layout.addLayout(req_row_layout)
-        layout.addLayout(resp_row_layout)
-        layout.addWidget(toolbar_widget)
-        layout.addWidget(self.data_table)
+        self.editor_layout.addLayout(self.req_row_layout)
+        self.editor_layout.addLayout(self.resp_row_layout)
+        self.editor_layout.addWidget(self.toolbar_widget)
+        self.editor_layout.addWidget(self.data_table)
 
         return editor
 
@@ -684,7 +687,7 @@ class UDSSequenceView(QtWidgets.QWidget):
 
         # Allow user to resize columns
         header.setSectionResizeMode(QtWidgets.QHeaderView.Interactive)
-        header.setStretchLastSection(True)
+        header.setStretchLastSection(False)
 
         header.setSectionsClickable(True)
         header.setHighlightSections(True)
@@ -748,19 +751,122 @@ class UDSSequenceView(QtWidgets.QWidget):
             pass
 
         # Set initial column widths
-        self.data_table.setColumnWidth(0, 40)   # Checkbox - slightly narrower
-        self.data_table.setColumnWidth(1, 350)  # Name
-        self.data_table.setColumnWidth(2, 150)  # Request
-        self.data_table.setColumnWidth(3, 100)  # AddrType
-        # Last column (Response) will stretch
+        self._apply_column_widths(force=True)
 
     def _apply_column_widths(self, force: bool = False):
-        # Deprecated: we use Interactive mode now
-        pass
+        if not hasattr(self, 'data_table') or not self.data_table:
+            return
+
+        viewport_width = self.data_table.viewport().width()
+        if viewport_width <= 0:
+            return
+
+        bucket = viewport_width // 80
+        if not force and bucket == self._last_resize_bucket:
+            return
+        self._last_resize_bucket = bucket
+
+        header = self.data_table.horizontalHeader()
+        fixed_widths = {
+            0: 40,
+            2: 140,
+            3: 96,
+        }
+        for col, width in fixed_widths.items():
+            header.setSectionResizeMode(col, QtWidgets.QHeaderView.Interactive)
+            self.data_table.setColumnWidth(col, width)
+
+        available = max(260, viewport_width - sum(fixed_widths.values()))
+        name_width = max(180, int(available * 0.42))
+        response_width = max(220, available - name_width)
+
+        self.data_table.setColumnWidth(1, name_width)
+        header.setSectionResizeMode(4, QtWidgets.QHeaderView.Stretch)
+        self.data_table.setColumnWidth(4, response_width)
+
+    def _on_splitter_moved(self, pos, index):
+        self._user_resized_splitter = True
+        total_width = max(1, self.cmd_splitter.size().width())
+        self._preferred_splitter_ratio = max(0.16, min(0.32, pos / total_width))
+        self._apply_responsive_layout(update_splitter=False)
+
+    def _apply_responsive_layout(self, update_splitter=True):
+        if hasattr(self, 'cmd_splitter') and self.cmd_splitter and update_splitter:
+            total_width = max(0, self.cmd_splitter.size().width())
+            if total_width > 0:
+                ratio = self._preferred_splitter_ratio if self._user_resized_splitter else 0.20
+                tree_width = max(180, min(300, int(total_width * ratio)))
+                editor_width = max(420, total_width - tree_width)
+                self.cmd_splitter.setSizes([tree_width, editor_width])
+
+        editor_width = self.editor_widget.width() if hasattr(self, 'editor_widget') else 0
+        if editor_width <= 0 and hasattr(self, 'cmd_splitter'):
+            sizes = self.cmd_splitter.sizes()
+            if len(sizes) > 1:
+                editor_width = sizes[1]
+        if editor_width <= 0:
+            editor_width = self.width()
+
+        ratio = max(0.78, min(1.08, editor_width / 1100.0))
+        spacing = max(4, min(8, int(6 * ratio)))
+        side_margin = max(4, min(8, int(8 * ratio)))
+        row_height = max(40, min(50, int(50 * ratio)))
+        tool_height = max(28, min(32, int(32 * ratio)))
+        icon_size = max(28, min(32, int(32 * ratio)))
+        toggle_width = max(34, min(40, int(40 * ratio)))
+        label_width = max(60, min(70, int(70 * ratio)))
+
+        self.editor_layout.setSpacing(max(6, spacing))
+        self.editor_layout.setContentsMargins(side_margin, 0, 0, 0)
+        self.req_row_layout.setSpacing(spacing)
+        self.resp_row_layout.setSpacing(spacing)
+        self.toolbar_layout.setSpacing(spacing)
+        self.toolbar_layout.setContentsMargins(0, max(4, int(6 * ratio)), 0, max(4, int(6 * ratio)))
+
+        self.req_label.setFixedWidth(label_width)
+        self.resp_label.setFixedWidth(label_width)
+        self.request_edit.setMinimumWidth(max(220, int(260 * ratio)))
+        self.response_edit.setMinimumWidth(max(220, int(260 * ratio)))
+
+        self._scale_widget_width(self.send_btn, 80, ratio, 72, 88)
+        self._scale_widget_height(self.send_btn, 50, ratio, 40, 50)
+        self._scale_widget_width(self.insert_btn, 80, ratio, 72, 88)
+        self._scale_widget_height(self.insert_btn, 50, ratio, 40, 50)
+
+        self._scale_widget_width(self.config_combo, 120, ratio, 88, 180)
+        self._scale_widget_height(self.config_combo, 32, ratio, 28, 32)
+        for btn in (self.save_config_btn, self.del_config_btn, self.import_config_btn, self.export_config_btn):
+            self._scale_widget_width(btn, 72, ratio, 56, 80)
+            self._scale_widget_height(btn, 32, ratio, 28, 32)
+
+        for btn in (self.icon_btn_add, self.icon_btn_delete, self.delay_icon_btn, self.icon_btn_up, self.icon_btn_down):
+            btn.setFixedSize(icon_size, icon_size)
+
+        self.btn_3e.setFixedSize(toggle_width, tool_height)
+        self.btn_stop_fail.setFixedSize(toggle_width, tool_height)
+        self.send_times_label.setStyleSheet(f"color: #374151; font-weight: 600; font-size: {max(10, min(12, int(12 * ratio)))}px;")
+        self._scale_widget_width(self.send_times_spin, 68, ratio, 54, 88)
+        self._scale_widget_height(self.send_times_spin, 32, ratio, 28, 32)
+        self._scale_widget_width(self.run_sequence_btn, 110, ratio, 88, 120)
+        self._scale_widget_height(self.run_sequence_btn, 32, ratio, 28, 32)
+
+        self._apply_column_widths(force=True)
+
+    def _scale_widget_width(self, widget, base_width, ratio, min_width, max_width=None):
+        width = max(min_width, int(base_width * ratio))
+        if max_width is not None:
+            width = min(max_width, width)
+        widget.setFixedWidth(width)
+
+    def _scale_widget_height(self, widget, base_height, ratio, min_height, max_height=None):
+        height = max(min_height, int(base_height * ratio))
+        if max_height is not None:
+            height = min(max_height, height)
+        widget.setFixedHeight(height)
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
-        # No longer forcing column widths on resize
+        self._apply_responsive_layout(update_splitter=not self._user_resized_splitter)
 
 
     # --- View API for controller ---

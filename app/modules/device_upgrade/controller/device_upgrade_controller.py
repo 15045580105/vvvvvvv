@@ -42,6 +42,28 @@ class UpgradeWorker(QThread):
     def stop(self):
         self.running = False
 
+    def _wait_for_ecu_ready(self):
+        self.log_signal.emit("正在轮询检测并等待 ECU 网络重连与诊断服务就绪...", True)
+        wait_start = time.time()
+        timeout = 60 # 最大等待60秒
+        
+        while self.running and (time.time() - wait_start) < timeout:
+            doip_client = self.device_service.get_doip_client()
+            if doip_client and doip_client.connected:
+                try:
+                    # 使用进入默认会话(10 01)试探ECU是否已经能处理诊断请求
+                    payload = bytes([0x10, 0x01])
+                    resp = self.device_service.send_doip_payload(payload, timeout=1.0)
+                    if resp and len(resp) > 0:
+                         self.log_signal.emit("ECU 诊断服务已就绪，准备开始升级", True)
+                         return True
+                except:
+                    pass
+            time.sleep(1)
+            
+        self.log_signal.emit("警告: 等待 ECU 就绪超时，尝试强制继续...", True)
+        return False
+
     def _execute_upgrade(self):
         # Load DPT Data for status check
         try:
@@ -62,6 +84,9 @@ class UpgradeWorker(QThread):
         PHASE_INSTALL = "INSTALL"
 
         self.log_signal.emit(f"开始升级流程, 文件: {os.path.basename(self.file_path)}, 大小: {file_size} bytes", True)
+
+        # 0. Wait for ECU Ready Phase (轮询等待复位和重连完成)
+        self._wait_for_ecu_ready()
 
         # Retrieve package config early
         pkg_config = {}
@@ -802,6 +827,7 @@ class UpgradeController(BaseController):
                      pass
 
                  # Proceed to next package or next loop
+                 self._log("升级完成，准备自动进入下一轮...", is_info=True)
                  QTimer.singleShot(2000, self._run_next_stress_step) # 2s delay
              else:
                  self._stop_stress_upgrade() # Error stops stress

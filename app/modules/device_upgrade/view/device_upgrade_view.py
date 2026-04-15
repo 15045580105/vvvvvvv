@@ -36,7 +36,7 @@ class UpgradeView(BaseView):
         main_layout.setContentsMargins(0, 0, 0, 0)
         main_layout.setSpacing(0)
 
-        splitter = LogAreaSplitter(self, min_log_height=300, max_log_ratio=0.8)
+        splitter = LogAreaSplitter(self, min_log_height=300, max_log_ratio=0.9)
         main_layout.addWidget(splitter)
 
         content_widget = QtWidgets.QWidget()
@@ -63,11 +63,11 @@ class UpgradeView(BaseView):
         LogPanelBuilder.attach_search(log_layout, self.upgrade_log, trailing_widgets=[self.clear_btn])
         log_layout.addWidget(self.upgrade_log)
 
-        splitter.set_panels(content_widget, log_group, initial_log_height=220)
+        splitter.set_panels(content_widget, log_group, initial_log_height=800)
 
-        # Set initial sizes (Tab 1/3, Log 2/3)
-        splitter.setStretchFactor(0, 1) # Tab
-        splitter.setStretchFactor(1, 2) # Log
+        # Set initial sizes (Tab minimum, Log maximum)
+        splitter.setStretchFactor(0, 0) # Tab
+        splitter.setStretchFactor(1, 1) # Log
         splitter.setCollapsible(1, False)
 
     # -------------------- 常规升级 Tab --------------------

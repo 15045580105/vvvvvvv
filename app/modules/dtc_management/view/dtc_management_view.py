@@ -168,8 +168,15 @@ class DTCView(BaseView):
         self.fault_table.verticalHeader().setVisible(False)
         self.fault_table.setAlternatingRowColors(True)
         self.fault_table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
-        self.fault_table.horizontalHeader().setSectionResizeMode(QtWidgets.QHeaderView.Interactive)
-        self.fault_table.horizontalHeader().setSectionResizeMode(0, QtWidgets.QHeaderView.ResizeToContents)
+        header = self.fault_table.horizontalHeader()
+        header.setSectionResizeMode(QtWidgets.QHeaderView.Interactive)
+        header.setSectionResizeMode(0, QtWidgets.QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(self.fault_table.columnCount() - 1, QtWidgets.QHeaderView.Stretch)
+        header.setStretchLastSection(False)
+        header.setSectionsClickable(True)
+        header.setHighlightSections(True)
+        header.setSectionsMovable(True)
+        header.sectionResized.connect(lambda *_: self.adjust_column_widths())
 
         # Install event filter for adaptive column resizing
         self.fault_table.installEventFilter(self)
@@ -259,15 +266,45 @@ class DTCView(BaseView):
         self.freeze_table.setColumnCount(len(cols))
         self.freeze_table.setHorizontalHeaderLabels(cols)
         self.freeze_table.verticalHeader().setVisible(False)
-        self.freeze_table.horizontalHeader().setSectionResizeMode(QtWidgets.QHeaderView.Stretch)
-        self.freeze_table.horizontalHeader().setSectionResizeMode(5, QtWidgets.QHeaderView.ResizeToContents) # Byte
-        self.freeze_table.horizontalHeader().setSectionResizeMode(6, QtWidgets.QHeaderView.ResizeToContents) # Bit
-        self.freeze_table.horizontalHeader().setSectionResizeMode(4, QtWidgets.QHeaderView.ResizeToContents) # Length
+
+        freeze_header = self.freeze_table.horizontalHeader()
+        freeze_header.setSectionResizeMode(QtWidgets.QHeaderView.Interactive)
+        freeze_header.setSectionsClickable(True)
+        freeze_header.setHighlightSections(True)
+        freeze_header.setSectionsMovable(True)
+        freeze_header.setStretchLastSection(False)
+
+        self._freeze_column_weights = {
+            0: 12,  # 故障码
+            1: 22,  # 故障描述
+            2: 11,  # 类型
+            3: 10,  # DID
+            4: 7,   # 长度
+            5: 7,   # Byte
+            6: 7,   # Bit
+            7: 18,  # 参数名称
+            8: 12,  # 数值
+            9: 9,   # 单位（最后一列填充）
+        }
+        self._freeze_min_widths = {
+            0: 110,
+            1: 200,
+            2: 100,
+            3: 90,
+            4: 70,
+            5: 70,
+            6: 70,
+            7: 160,
+            8: 110,
+            9: 90,
+        }
+        self._freeze_widths_initialized = False
 
         self.freeze_table.setShowGrid(True)
         self.freeze_table.setFrameShape(QtWidgets.QFrame.NoFrame)
 
         layout.addWidget(self.freeze_table)
+        QtCore.QTimer.singleShot(0, lambda: self._apply_freeze_table_widths(force=True))
 
     def append_log(self, message: str):
         OperationLogManager.instance().append_log("DTC故障诊断", message)
@@ -428,6 +465,7 @@ class DTCView(BaseView):
     def showEvent(self, event):
         super().showEvent(event)
         QtCore.QTimer.singleShot(0, self.adjust_column_widths)
+        QtCore.QTimer.singleShot(0, lambda: self._apply_freeze_table_widths(force=not self._freeze_widths_initialized))
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
@@ -495,39 +533,89 @@ class DTCView(BaseView):
         if not self.fault_table or self.fault_table.columnCount() == 0:
             return
 
-        # Total available width
+        header = self.fault_table.horizontalHeader()
         total_width = self.fault_table.viewport().width()
         if total_width <= 0:
             return
 
-        # Column 0 is ResizeToContents, get its current width
-        col0_width = self.fault_table.columnWidth(0)
+        last_col = self.fault_table.columnCount() - 1
 
-        # Remaining width to distribute
-        # Subtract a small buffer (2px) to prevent horizontal scrollbar flickering
-        available = total_width - col0_width - 2
-        if available <= 0:
+        try:
+            header.setSectionResizeMode(0, QtWidgets.QHeaderView.ResizeToContents)
+            for col in range(1, last_col):
+                header.setSectionResizeMode(col, QtWidgets.QHeaderView.Interactive)
+            header.setSectionResizeMode(last_col, QtWidgets.QHeaderView.Stretch)
+        except Exception:
+            pass
+
+        # 不再重算前面列宽，保持原有列宽/用户拖动结果；最后一列自动填满剩余空间
+        try:
+            header.resizeSection(0, self.fault_table.columnWidth(0))
+        except Exception:
+            pass
+
+    def _apply_freeze_table_widths(self, force: bool = False):
+        if not hasattr(self, 'freeze_table') or not self.freeze_table:
+            return
+        header = self.freeze_table.horizontalHeader()
+        column_count = self.freeze_table.columnCount()
+        if column_count == 0:
             return
 
-        # Ratios (approximate based on users fixed widths: 300, 700, 300...)
-        # 1: 3, 2: 7, 3: 3, 4: 3, 5: 3, 6: 3, 7: 3
-        # Total parts = 25
-        parts = {1: 3, 2: 7, 3: 3, 4: 3, 5: 3, 6: 3, 7: 3}
-        total_parts = sum(parts.values())
+        total_width = self.freeze_table.viewport().width()
+        if total_width <= 0:
+            return
 
-        used_width = 0
+        last_col = column_count - 1
+        try:
+            for col in range(column_count):
+                header.setSectionResizeMode(col, QtWidgets.QHeaderView.Interactive)
+            header.setSectionResizeMode(last_col, QtWidgets.QHeaderView.Stretch)
+        except Exception:
+            pass
 
-        # Set all except description (Col 2) first
-        cols_to_set = [1, 3, 4, 5, 6, 7]
-        for col in cols_to_set:
-            part = parts.get(col, 0)
-            if part > 0:
-                width = int((part / total_parts) * available)
-                self.fault_table.setColumnWidth(col, width)
-                used_width += width
+        if not force and self._freeze_widths_initialized:
+            return
 
-        # Give remaining to Description (Col 2)
-        desc_width = available - used_width
-        # Ensure it's not negative
-        if desc_width > 0:
-            self.fault_table.setColumnWidth(2, desc_width)
+        weights = self._freeze_column_weights
+        mins = self._freeze_min_widths
+        total_weight = sum(weights.get(col, 1) for col in range(column_count))
+
+        widths = {}
+        used = 0
+        for col in range(column_count - 1):
+            weight = weights.get(col, 1)
+            target = int(total_width * weight / total_weight)
+            width = max(mins.get(col, 70), target)
+            widths[col] = width
+            used += width
+
+        remaining = total_width - used
+        last_min = mins.get(last_col, 80)
+        if remaining < last_min:
+            deficit = last_min - remaining
+            shrink_candidates = [1, 7, 8, 2, 3, 0, 4, 5, 6]
+            for col in shrink_candidates:
+                if deficit <= 0 or col not in widths:
+                    break
+                current = widths[col]
+                min_width = mins.get(col, 70)
+                reducible = max(0, current - min_width)
+                if reducible <= 0:
+                    continue
+                reduce_by = min(deficit, reducible)
+                widths[col] = current - reduce_by
+                used -= reduce_by
+                deficit -= reduce_by
+
+        try:
+            for col, width in widths.items():
+                self.freeze_table.setColumnWidth(col, width)
+            self._freeze_widths_initialized = True
+        except Exception:
+            pass
+
+
+
+
+

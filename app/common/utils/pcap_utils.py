@@ -33,6 +33,9 @@ class PcapUtils:
         try:
             file_size = max(os.path.getsize(file_path), 1)
             is_pcapng = file_path.lower().endswith('.pcapng')
+            capture_start_timestamp = None
+            capture_start_timestamp_raw = None
+            capture_start_timestamp_resolution = None
             if is_pcapng:
                 from scapy.utils import RawPcapNgReader
                 reader_cls = RawPcapNgReader
@@ -52,8 +55,19 @@ class PcapUtils:
 
                     pkt_data = pkt_tuple[0]
                     metadata = pkt_tuple[1]
+                    packet_timestamp_info = PcapUtils._extract_packet_timestamp_info(metadata, is_pcapng) or {}
+                    packet_timestamp = packet_timestamp_info.get('timestamp')
+                    if capture_start_timestamp is None and packet_timestamp is not None:
+                        capture_start_timestamp = packet_timestamp
+                        capture_start_timestamp_raw = packet_timestamp_info.get('timestamp_raw')
+                        capture_start_timestamp_resolution = packet_timestamp_info.get('timestamp_resolution')
                     parsed = PcapUtils._parse_packet(pkt_data, metadata, is_pcapng)
                     if parsed:
+                        if capture_start_timestamp is not None:
+                            for entry in parsed:
+                                entry['capture_start_timestamp'] = capture_start_timestamp
+                                entry['capture_start_timestamp_raw'] = capture_start_timestamp_raw
+                                entry['capture_start_timestamp_resolution'] = capture_start_timestamp_resolution
                         findings.extend(parsed)
 
             if progress_callback:
@@ -61,6 +75,42 @@ class PcapUtils:
         except Exception as e:
             print(f"Error parsing PCAP: {e}")
         return findings
+
+    @staticmethod
+    def _extract_packet_timestamp_info(metadata, is_pcapng: bool) -> Optional[Dict[str, float]]:
+        try:
+            if is_pcapng and hasattr(metadata, 'tshigh'):
+                ts_resolution = getattr(metadata, 'tsresol', None)
+                if ts_resolution in (None, 0):
+                    ts_resolution = getattr(metadata, 'resol', None)
+                if ts_resolution in (None, 0):
+                    ts_resolution = 1_000_000.0
+                raw_value = int(metadata.tshigh) * (2 ** 32) + int(metadata.tslow)
+                resolution_value = int(ts_resolution)
+                return {
+                    'timestamp': raw_value / float(resolution_value),
+                    'timestamp_raw': raw_value,
+                    'timestamp_resolution': resolution_value,
+                }
+            if not is_pcapng:
+                seconds = int(metadata[0])
+                microseconds = int(metadata[1])
+                raw_value = seconds * 1_000_000 + microseconds
+                return {
+                    'timestamp': seconds + microseconds / 1_000_000.0,
+                    'timestamp_raw': raw_value,
+                    'timestamp_resolution': 1_000_000,
+                }
+        except Exception:
+            return None
+        return None
+
+    @staticmethod
+    def _extract_packet_timestamp(metadata, is_pcapng: bool) -> Optional[float]:
+        info = PcapUtils._extract_packet_timestamp_info(metadata, is_pcapng)
+        if not info:
+            return None
+        return info.get('timestamp')
 
     @staticmethod
     def _parse_packet(pkt_data: bytes, metadata, is_pcapng: bool) -> List[Dict]:
@@ -94,14 +144,8 @@ class PcapUtils:
         if payload[0:2] != b'\xFF\xFF' or payload[2:4] != b'\x81\x00':
             return []
 
-        timestamp = 0.0
-        try:
-            if is_pcapng and hasattr(metadata, 'tshigh'):
-                timestamp = (float(metadata.tshigh) * 2 ** 32 + float(metadata.tslow)) / float(metadata.resol)
-            elif not is_pcapng:
-                timestamp = float(metadata[0]) + float(metadata[1]) / 1_000_000.0
-        except Exception:
-            pass
+        timestamp_info = PcapUtils._extract_packet_timestamp_info(metadata, is_pcapng) or {}
+        timestamp = timestamp_info.get('timestamp')
 
         sd_offset = 16
         if len(payload) < sd_offset + 8:
@@ -128,6 +172,8 @@ class PcapUtils:
         packet_dst = f"{dst_ip}:{dst_port}"
         for entry in entries:
             entry['timestamp'] = timestamp
+            entry['timestamp_raw'] = timestamp_info.get('timestamp_raw')
+            entry['timestamp_resolution'] = timestamp_info.get('timestamp_resolution')
             entry['packet_src_ip'] = src_ip
             entry['packet_src_endpoint'] = packet_src
             entry['packet_dst_ip'] = dst_ip
