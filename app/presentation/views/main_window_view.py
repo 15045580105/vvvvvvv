@@ -4,6 +4,7 @@ from PyQt5.QtCore import Qt
 from app.modules.app_config.controller.app_config_controller import AppConfigController
 from app.presentation.views.welcome_view import WelcomeWidget
 from app.common.ui.guide_overlay import GuideOverlay
+from app.presentation.views.common_service_convert_dialog import CommonServiceConvertDialog
 from app.presentation.views.dpt_convert_dialog import DPTConvertDialog
 
 
@@ -51,6 +52,10 @@ class MainView(QtWidgets.QMainWindow):
         dpt_action = QtWidgets.QAction("DPT文件转换", self)
         dpt_action.triggered.connect(self.show_dpt_convert_tool)
         tools_menu.addAction(dpt_action)
+
+        common_service_action = QtWidgets.QAction("常用服务文件转换", self)
+        common_service_action.triggered.connect(self.show_common_service_convert_tool)
+        tools_menu.addAction(common_service_action)
 
         # --- 预留功能 (Marked for future dev) ---
         # 高级功能（脚本执行）
@@ -216,6 +221,11 @@ class MainView(QtWidgets.QMainWindow):
     def show_dpt_convert_tool(self):
         """显示DPT文件转换工具"""
         dialog = DPTConvertDialog(self)
+        dialog.exec_()
+
+    def show_common_service_convert_tool(self):
+        """显示常用服务文件转换工具"""
+        dialog = CommonServiceConvertDialog(self)
         dialog.exec_()
 
     def start_guide(self):

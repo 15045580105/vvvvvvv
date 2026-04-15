@@ -6,9 +6,6 @@ from app.modules.common_config.model.common_config_model import CommonConfigMode
 from app.services.configuration.common_config_service import CommonConfigService
 from app.services.device_manage.device_service import DeviceService
 from app.common.utils.worker import Worker
-from app.modules.common_config.view.service_config_dialog import ServiceConfigDialog
-import json
-import os
 
 class CommonConfigController(BaseController):
     def __init__(self, parent=None):
@@ -30,71 +27,19 @@ class CommonConfigController(BaseController):
         self._init_data()
 
     def _bind_signals(self):
-        # 绑定表格按钮点击事件等
-        # 由于表格按钮是动态生成的，我们需要在生成时绑定，或者使用代理
-        # 这里我们假设 View 提供了一个信号或者我们直接操作 View 的组件
         self.view.import_json_btn.clicked.connect(self._on_import_json)
-        self.view.routine_config_import_btn.clicked.connect(self._on_import_routine_json)
-        self.view.add_json_form_btn.clicked.connect(self._on_add_json_form)
-        self.view.add_json_form_btn_routine.clicked.connect(self._on_add_routine_json_form)
         self.view.prev_page_btn.clicked.connect(self._on_prev_page)
         self.view.next_page_btn.clicked.connect(self._on_next_page)
 
         if hasattr(self.view, 'page_size_combo'):
             self.view.page_size_combo.currentTextChanged.connect(self._on_page_size_changed)
 
-        # 绑定常用例程相关信号
-        # self.view.routine_config_import_btn.clicked.connect(self._on_import_routine_json) # Duplicate
-        # self.view.add_json_form_btn_routine.clicked.connect(self._on_add_routine_json_form) # Duplicate
         self.view.routine_prev_page_btn.clicked.connect(self._on_routine_prev_page)
         self.view.routine_next_page_btn.clicked.connect(self._on_routine_next_page)
         self.view.routine_page_size_combo.currentTextChanged.connect(self._on_routine_page_size_changed)
 
-        # 绑定 DPT 导入按钮信号
-        # self.view.dpt_import_btn_2e.clicked.connect(self._on_import_dpt_2e)
-        # self.view.dpt_import_btn_routine.clicked.connect(self._on_import_dpt_routine)
-
     def _init_data(self):
-        # 加载上次保存的路径
-        self.config_path_2e = self.common_config_service.get_config_path("2E")
-        self.config_path_routine = self.common_config_service.get_config_path("ROUTINE")
-
-        self.dpt_path_2e = self.common_config_service.get_config_path("DPT_2E")
-        self.dpt_path_routine = self.common_config_service.get_config_path("DPT_ROUTINE")
-
-        # 更新视图显示路径
-        if self.config_path_2e:
-            self.view.config_path_input.setText(self.config_path_2e)
-
-        if self.config_path_routine:
-            self.view.routine_config_path_input.setText(self.config_path_routine)
-
-        if self.dpt_path_2e:
-            self.view.dpt_path_input_2e.setText(self.dpt_path_2e)
-
-        if self.dpt_path_routine:
-            self.view.dpt_path_input_routine.setText(self.dpt_path_routine)
-
-        # 加载 DPT 路径到 Service
-        if self.dpt_path_2e:
-            self.common_config_service.set_dpt_file_path(self.dpt_path_2e)
-        if self.dpt_path_routine:
-            self.common_config_service.set_dpt_file_path(self.dpt_path_routine)
-
-        # 1. 初始化常用 $2E 服务配置
         self.services_2e = []
-        last_config_path = self.common_config_service.get_last_2e_config_path()
-
-        if last_config_path:
-            # 尝试加载上次保存的配置
-            loaded_services = self.common_config_service.load_2e_config(last_config_path)
-            if loaded_services:
-                self.services_2e = loaded_services
-                self.view.config_path_input.setText(last_config_path)
-                self.view.append_param_log(f"已自动加载上次配置: {last_config_path}")
-            else:
-                self.view.append_param_log(f"无法加载上次配置: {last_config_path}")
-
         self.current_page = 1
         try:
             if hasattr(self.view, 'page_size_combo'):
@@ -104,106 +49,67 @@ class CommonConfigController(BaseController):
         except ValueError:
             self.page_size = 10
 
-        self._update_2e_view()
-
-        # 2. 初始化常用 $31/$2F 例程配置
         self.services_routine = []
-        last_routine_path = self.common_config_service.get_last_routine_config_path()
-
-        if last_routine_path:
-            loaded_routines = self.common_config_service.load_routine_config(last_routine_path)
-            if loaded_routines:
-                self.services_routine = loaded_routines
-                self.view.routine_config_path_input.setText(last_routine_path)
-                self.view.append_routine_log(f"已自动加载上次例程配置: {last_routine_path}")
-            else:
-                self.view.append_routine_log(f"无法加载上次例程配置: {last_routine_path}")
-
         self.routine_current_page = 1
         try:
             self.routine_page_size = int(self.view.routine_page_size_combo.currentText())
         except ValueError:
             self.routine_page_size = 10
 
+        shared_config_path = self.common_config_service.get_config_path("COMMON")
+        if shared_config_path:
+            if self._load_shared_config(shared_config_path, auto_load=True):
+                return
+            self.view.append_param_log(f"无法加载上次配置: {shared_config_path}")
+            self.view.append_routine_log(f"无法加载上次配置: {shared_config_path}")
+
+        self._update_2e_view()
         self._update_routine_view()
 
-        # Load saved DPT paths
-        dpt_path_2e = self.common_config_service.get_config_path("DPT_2E")
-        if dpt_path_2e:
-           self.view.dpt_path_input_2e.setText(dpt_path_2e)
-           self.common_config_service.set_dpt_file_path(dpt_path_2e, config_type="2E")
-
-        dpt_path_routine = self.common_config_service.get_config_path("DPT_ROUTINE")
-        if dpt_path_routine:
-           self.view.dpt_path_input_routine.setText(dpt_path_routine)
-           self.common_config_service.set_dpt_file_path(dpt_path_routine, config_type="Routine")
-
     def _on_import_json(self):
-        """导入 JSON 配置文件"""
+        """导入统一 JSON 配置文件，并同时刷新两个标签页。"""
         file_path, _ = QtWidgets.QFileDialog.getOpenFileName(
             self.view, "选择配置文件", "", "JSON Files (*.json)"
         )
         if file_path:
-            self.view.config_path_input.setText(file_path)
-            self.services_2e = self.common_config_service.load_2e_config(file_path)
+            if self._load_shared_config(file_path):
+                self.view.show_message(
+                    f"成功加载 $2E: {len(self.services_2e)} 条，$31/$2F: {len(self.services_routine)} 条配置",
+                    "success",
+                )
+            else:
+                self.view.show_message("配置文件中未找到可用的常用服务定义", "warning")
 
-            # 保存路径
-            self.common_config_service.save_last_2e_config_path(file_path)
+    def _load_shared_config(self, file_path: str, auto_load: bool = False) -> bool:
+        """加载统一 JSON 配置，并把两类服务分别灌入两个表格。
 
-            self.current_page = 1
-            self._update_2e_view()
-            self.view.show_message(f"成功加载 {len(self.services_2e)} 条配置", "success")
+        这是 JSON -> 界面渲染 的 controller 入口：
+        - service 层负责解析/标准化 JSON
+        - controller 负责保存结果、处理分页并通知 view 刷新
+        """
+        services_2e, services_routine = self.common_config_service.load_shared_config(file_path)
+        self.services_2e = services_2e
+        self.services_routine = services_routine
+        self.view.config_path_input.setText(file_path)
+        self.common_config_service.save_config_path("COMMON", file_path)
 
-    def _on_add_json_form(self):
-        """显示添加JSON表单对话框 (常用$2E服务)"""
-        self._show_json_form_dialog("2E")
+        self.current_page = 1
+        self.routine_current_page = 1
+        self._update_2e_view()
+        self._update_routine_view()
 
-    def _on_add_routine_json_form(self):
-        """显示添加JSON表单对话框 (常用$31&2F服务)"""
-        self._show_json_form_dialog("31_2F")
+        if auto_load and (services_2e or services_routine):
+            self.view.append_param_log(f"已自动加载上次配置: {file_path}")
+            self.view.append_routine_log(f"已自动加载上次配置: {file_path}")
 
-    def _show_json_form_dialog(self, config_type="2E"):
-        """显示JSON内容编辑对话框"""
-
-        dialog = ServiceConfigDialog(self.view, config_type)
-        if dialog.exec_() == QtWidgets.QDialog.Accepted:
-            new_obj = dialog.result_json
-            if new_obj:
-                try:
-                     # 插入逻辑
-                    target_list = self.services_2e if config_type == "2E" else self.services_routine
-                    current_file_path = self.view.config_path_input.text() if config_type == "2E" else self.view.routine_config_path_input.text()
-
-                    # 更新内存数据
-                    new_obj["index"] = len(target_list) + 1 # 自动生成 index
-                    target_list.append(new_obj)
-
-                    # 保存到文件
-                    if current_file_path:
-                        if os.path.exists(current_file_path):
-                             with open(current_file_path, 'r+', encoding='utf-8') as f:
-                                  data = json.load(f)
-                                  if "services" in data:
-                                       data["services"].append(new_obj)
-                                       f.seek(0)
-                                       json.dump(data, f, ensure_ascii=False, indent=2)
-                                       f.truncate()
-
-                             self.view.show_message("添加成功", "success")
-                             if config_type == "2E":
-                                 self._update_2e_view()
-                             else:
-                                 self._update_routine_view()
-                        else:
-                             self.view.show_message("文件不存在，无法保存", "error")
-                    else:
-                        self.view.show_message("未加载配置文件，无法保存", "error")
-
-                except Exception as e:
-                    self.view.show_message(f"保存失败: {str(e)}", "error")
+        return bool(services_2e or services_routine)
 
     def _update_2e_view(self):
-        """更新 2E 服务视图（含分页）"""
+        """更新 `$2E` 服务视图（含分页）。
+
+        `services_2e` 已经是标准化后的运行期数据，
+        view 会直接读取其中的 `paramObject/paramState/...` 配置创建控件。
+        """
         total_items = len(self.services_2e)
         total_pages = (total_items + self.page_size - 1) // self.page_size if total_items > 0 else 1
 
@@ -243,13 +149,13 @@ class CommonConfigController(BaseController):
 
         # 更宽松的校验：只要对象或状态有一个是有效的即可尝试执行
         # 若两者都是无效值 (---, /, "") 则拦截
-        invalid_values = ["---", "", "/"]
+        invalid_values = ["---", "", "/", "N/A"]
 
         is_obj_invalid = param_obj_val in invalid_values or (isinstance(param_obj_val, list) and not param_obj_val)
         is_state_invalid = param_state_val in invalid_values
 
         if is_obj_invalid and is_state_invalid:
-            self.view.show_message("��先选择参数对象或参数状态", "warning")
+            self.view.show_message("先选择参数对象或参数状态", "warning")
             return
 
         # 临时连接信号到 param_log (注意：并发执行可能导致日志混淆，但在单用户界面操作下通常可接受)
@@ -261,9 +167,9 @@ class CommonConfigController(BaseController):
 
         def task():
             # 获取当前用户输入的值
-            # 注意：service_info 是引用，View 中的控件更新会直接修改 service_info 中的 paramObject_val 和 paramStateVal
+            # 注意：service_info 是引用，View 中的控件更新会直接回写
+            # `paramObject_val` / `paramState_val`，这里直接拿最新值去拼 UDS。
             try:
-                # 忽略 log_callback，使用 Service 内部信号
                 return self.common_config_service.execute_2e_service(service_info)
             except TypeError as e:
                 # 重新抛出非调用签名的 TypeError，防止 Worker 误判
@@ -272,13 +178,11 @@ class CommonConfigController(BaseController):
                 raise Exception(f"TypeError inside task: {e}") from e
 
         worker = Worker(task)
-        # 仍然连接 Worker 的 log_signal 以防万一 (虽然 task 不怎么用它了)
         worker.log_signal.connect(self.view.append_param_log)
 
-        def on_finished(success):
-            # 1. 2E table status update
-            self.view.set_button_status(self.view.param_table, row_index, "executing")
+        self.view.set_button_status(self.view.param_table, row_index, "executing")
 
+        def on_finished(success):
             if not self._device_service or not self._device_service.get_doip_client():
                  self.view.show_message("设备未连接 (DoIP)", "error")
                  self.view.set_button_status(self.view.param_table, row_index, "failed")
@@ -319,6 +223,8 @@ class CommonConfigController(BaseController):
             pass
         self.common_config_service.log_signal.connect(self.view.append_routine_log)
 
+        self.view.set_button_status(self.view.routine_table, row_index, "executing")
+
         def task():
              # 提取 paramObject_val 和 paramState_val
             param_obj_val = service_info.get("paramObject_val", "---")
@@ -328,17 +234,14 @@ class CommonConfigController(BaseController):
             return self.common_config_service.execute_routine_v2(service_info, param_obj_val, param_state_val, service_info.get("routineControlType_val", "---"))
 
         worker = Worker(task)
-        # 使用 append_routine_log
         worker.log_signal.connect(self.view.append_routine_log)
 
         def on_finished(success):
-            status = "执行成功" if success else "执行失败"
-            self.view.update_routine_status(row_index, status, success)
-
-            # 更新最后读取时间
-            import datetime
-            now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            self.view.set_routine_last_read_time(now_str)
+            self.view.update_routine_status(row_index, "执行成功" if success else "执行失败", success)
+            if success:
+                import datetime
+                now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                self.view.set_routine_last_read_time(now_str)
 
         worker.result_signal.connect(on_finished)
         worker.start()
@@ -353,24 +256,13 @@ class CommonConfigController(BaseController):
         except ValueError:
             pass
 
-    def _on_import_routine_json(self):
-        """导入常用例程 JSON 配置文件"""
-        file_path, _ = QtWidgets.QFileDialog.getOpenFileName(
-            self.view, "选择配置文件", "", "JSON Files (*.json)"
-        )
-        if file_path:
-            self.view.routine_config_path_input.setText(file_path)
-            self.services_routine = self.common_config_service.load_routine_config(file_path)
-
-            # 保存路径
-            self.common_config_service.save_last_routine_config_path(file_path)
-
-            self.routine_current_page = 1
-            self._update_routine_view()
-            self.view.show_message(f"成功加载 {len(self.services_routine)} 条例程配置", "success")
 
     def _update_routine_view(self):
-        """更新常用例程视图（含分页）"""
+        """更新 `$31/$2F` 服务视图（含分页）。
+
+        例程页相比 `$2E` 多了 `routineControlType` 控件，
+        view 在渲染后还会根据控制类型联动禁用/启用对象与状态选择器。
+        """
         total_items = len(self.services_routine)
         total_pages = (total_items + self.routine_page_size - 1) // self.routine_page_size if total_items > 0 else 1
 
@@ -382,7 +274,8 @@ class CommonConfigController(BaseController):
 
         current_services = self.services_routine[start_idx:end_idx]
 
-        # 传递回调函数给 view
+        # 把当前页的数据交给 view；view 会为每行创建下拉框/输入框/执行按钮，
+        # 并把用户选择直接写回每个 service dict。
         self.view.update_routine_table(current_services, self._on_execute_routine_service)
         # self.view.set_routine_page_info(self.routine_current_page, total_pages, total_items)
         if hasattr(self.view, 'set_routine_page_info'):
@@ -413,12 +306,13 @@ class CommonConfigController(BaseController):
 
     def _on_execute_routine_service(self, service_info, row_index):
         """执行 31&2F 请求 (闭包适配)"""
-        # 临时连接信号到 routine_log
         try:
             self.common_config_service.log_signal.disconnect()
         except Exception:
             pass
         self.common_config_service.log_signal.connect(self.view.append_routine_log)
+
+        self.view.set_button_status(self.view.routine_table, row_index, "executing")
 
         def task():
             return self.common_config_service.execute_routine_service(service_info)
@@ -427,11 +321,11 @@ class CommonConfigController(BaseController):
         worker.log_signal.connect(self.view.append_routine_log)
 
         def on_finished(success):
-             # ... (Copy logic if needed or just status update)
-             pass
-        # This wrapper seems incomplete in original code regarding UI update, but fixing the call is priority.
-        # Original: return self.common_config_service.execute_routine_service(service_info, log_callback)
-        # We assume Worker mechanism handles it.
+            self.view.update_routine_status(row_index, "执行成功" if success else "执行失败", success)
+            if success:
+                import datetime
+                now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                self.view.set_routine_last_read_time(now_str)
 
         worker.result_signal.connect(on_finished)
         worker.start()

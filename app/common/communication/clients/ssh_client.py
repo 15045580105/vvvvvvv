@@ -29,7 +29,20 @@ class SSHClient:
         self._password = None
         self._initialized = True
 
-    def connect(self, hostname: str, port: int = 22, username: str = None, password: str = None, timeout: int = 20) -> bool:
+    def connect(
+        self,
+        hostname: str,
+        port: int = 22,
+        username: str = None,
+        password: str = None,
+        timeout: float = 20,
+        *,
+        auth_timeout: float | None = None,
+        banner_timeout: float | None = None,
+        look_for_keys: bool = False,
+        allow_agent: bool = False,
+        **extra_connect_args,
+    ) -> bool:
         """
         建立SSH连接。如果当前已有连接，会先断开旧连接，确保系统只有一条连接。
         """
@@ -50,12 +63,20 @@ class SSHClient:
                 connect_args = {
                     "hostname": hostname,
                     "port": port,
-                    "timeout": timeout
+                    "timeout": timeout,
+                    "look_for_keys": look_for_keys,
+                    "allow_agent": allow_agent,
                 }
                 if username:
                     connect_args["username"] = username
                 if password:
                     connect_args["password"] = password
+                if auth_timeout is not None:
+                    connect_args["auth_timeout"] = auth_timeout
+                if banner_timeout is not None:
+                    connect_args["banner_timeout"] = banner_timeout
+                if extra_connect_args:
+                    connect_args.update(extra_connect_args)
 
                 self._client.connect(**connect_args)
                 self._connected = True

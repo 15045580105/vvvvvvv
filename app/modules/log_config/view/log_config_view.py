@@ -448,9 +448,7 @@ class LogConfigView(BaseView):
 
     def show_message(self, message, type="info"):
         """重写 show_message 以同时记录到日志"""
-        # super().show_message(message, type) # 移除弹框
         self.append_log(f"[{type.upper()}] {message}")
-
         # 使用 Toast 提示
         msg_type = 2 # info
         if type == "info":

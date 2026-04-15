@@ -187,6 +187,9 @@ class TopologyWidget(QGraphicsView):
         self._auto_fit_enabled = True
         self._fit_padding = 12
 
+        if not hasattr(self, '_fit_topology_to_view'):
+            self._fit_topology_to_view = self._fallback_fit_topology_to_view
+
         self.setRenderHints(QPainter.Antialiasing | QPainter.TextAntialiasing)
         self.setTransformationAnchor(QGraphicsView.AnchorUnderMouse)
         self.setResizeAnchor(QGraphicsView.AnchorViewCenter)
@@ -1207,6 +1210,18 @@ class TopologyWidget(QGraphicsView):
             center_y += max(0, top_offset - self._fit_padding) / max(scale_factor, 0.001) / 2
         self.centerOn(QPointF(fit_rect.center().x(), center_y))
 
+    def _fallback_fit_topology_to_view(self, force=False):
+        """运行时兜底：在异常热更新/旧缓存场景下，至少保证拓扑图可显示。"""
+        if self.scene is None or not self.scene.items():
+            return
+        rect = self.sceneRect()
+        if rect.isEmpty():
+            return
+        try:
+            self.fitInView(rect, Qt.KeepAspectRatio)
+        except Exception:
+            pass
+
     def calculate_main_node_size(self):
         child_count = len(self.child_nodes)
         if child_count == 0:
@@ -1685,5 +1700,7 @@ class CanLinTopologyWindow(QWidget):
 
 
 if __name__ == "__main__":
-    main()
-
+    app = QApplication(sys.argv)
+    window = SimpleTopologyWindow()
+    window.show()
+    sys.exit(app.exec_())

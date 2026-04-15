@@ -8,6 +8,18 @@ QT_TRANSPARENT = getattr(_Qt, "transparent", 0)
 QT_NO_PEN = getattr(_Qt, "NoPen", 0)
 QT_ALIGN_CENTER = getattr(_Qt, "AlignCenter", 0)
 QT_CURSOR_POINTING = getattr(_Qt, "PointingHandCursor", 13)
+QT_CURSOR_ARROW = getattr(_Qt, "ArrowCursor", 0)
+QT_WINDOW_POPUP = getattr(_Qt, "Popup", 0)
+QT_WINDOW_FRAMELESS = getattr(_Qt, "FramelessWindowHint", 0)
+QT_WINDOW_NO_SHADOW = getattr(_Qt, "NoDropShadowWindowHint", 0)
+QT_ATTR_TRANSLUCENT_BG = getattr(_Qt, "WA_TranslucentBackground", 0)
+QT_ITEM_IS_ENABLED = getattr(_Qt, "ItemIsEnabled", 1 << 5)
+QT_ITEM_IS_USER_CHECKABLE = getattr(_Qt, "ItemIsUserCheckable", 1 << 4)
+QT_CHECKSTATE_ROLE = getattr(_Qt, "CheckStateRole", 10)
+QT_CHECKED = getattr(_Qt, "Checked", 2)
+QT_UNCHECKED = getattr(_Qt, "Unchecked", 0)
+QT_EVENT_MOUSE_BUTTON_PRESS = getattr(QtCore.QEvent, "MouseButtonPress", 2)
+QT_EVENT_MOUSE_BUTTON_RELEASE = getattr(QtCore.QEvent, "MouseButtonRelease", 3)
 
 
 def create_icon(emoji: str, color: str):
@@ -272,11 +284,13 @@ class LoadingSpinner(QtWidgets.QWidget):
 
 #多选下拉框
 class CheckableComboBox(QtWidgets.QComboBox):
+    checkedItemsChanged = QtCore.pyqtSignal(list, str)
+
     def __init__(self, parent=None):
         super(CheckableComboBox, self).__init__(parent)
         self.setView(QtWidgets.QListView())
-        self.view().window().setWindowFlags(QtCore.Qt.Popup | QtCore.Qt.FramelessWindowHint | QtCore.Qt.NoDropShadowWindowHint)
-        self.view().window().setAttribute(QtCore.Qt.WA_TranslucentBackground)
+        self.view().window().setWindowFlags(QT_WINDOW_POPUP | QT_WINDOW_FRAMELESS | QT_WINDOW_NO_SHADOW)
+        self.view().window().setAttribute(QT_ATTR_TRANSLUCENT_BG)
 
         self.setEditable(True)
         self.lineEdit().setReadOnly(True)
@@ -294,13 +308,49 @@ class CheckableComboBox(QtWidgets.QComboBox):
 
         # Add Select All item
         self.selectAllItem = QtGui.QStandardItem("(全选)")
-        self.selectAllItem.setFlags(QtCore.Qt.ItemIsEnabled | QtCore.Qt.ItemIsUserCheckable)
-        self.selectAllItem.setData(QtCore.Qt.Unchecked, QtCore.Qt.CheckStateRole)
+        self.selectAllItem.setFlags(QT_ITEM_IS_ENABLED | QT_ITEM_IS_USER_CHECKABLE)
+        self.selectAllItem.setData(QT_UNCHECKED, QT_CHECKSTATE_ROLE)
         self.model.appendRow(self.selectAllItem)
 
         # Clear text initially
         self.setCurrentIndex(-1)
         self.lineEdit().setText("")
+
+    def _checked_items(self):
+        texts = []
+        for i in range(1, self.model.rowCount()):
+            item = self.model.item(i)
+            if item.checkState() == QT_CHECKED:
+                texts.append(item.text())
+        return texts
+
+    def _compose_display_text(self, texts):
+        if len(texts) == 0:
+            return "---"
+        return ", ".join(texts)
+
+    def _sync_line_edit_text(self):
+        texts = self._checked_items()
+        text_str = self._compose_display_text(texts)
+        self.lineEdit().blockSignals(True)
+        self.lineEdit().setText(text_str)
+        self.lineEdit().blockSignals(False)
+        self.setCurrentIndex(-1)
+        self.checkedItemsChanged.emit(texts, text_str)
+
+    def setEnabled(self, enabled):
+        super(CheckableComboBox, self).setEnabled(enabled)
+        if self.lineEdit() is not None:
+            self.lineEdit().setEnabled(enabled)
+            cursor_shape = QT_CURSOR_POINTING if enabled else QT_CURSOR_ARROW
+            self.lineEdit().setCursor(cursor_shape)
+        if self.view() is not None:
+            self.view().setEnabled(enabled)
+
+    def showPopup(self):
+        if not self.isEnabled():
+            return
+        super(CheckableComboBox, self).showPopup()
 
     def onItemChanged(self, item):
         if self._is_updating:
@@ -328,41 +378,28 @@ class CheckableComboBox(QtWidgets.QComboBox):
 
         checked_count = 0
         for i in range(1, self.model.rowCount()):
-            if self.model.item(i).checkState() == QtCore.Qt.Checked:
+            if self.model.item(i).checkState() == QT_CHECKED:
                 checked_count += 1
 
         all_checked = (checked_count == total_items)
-        if self.selectAllItem.checkState() == QtCore.Qt.Checked and not all_checked:
-             self.selectAllItem.setCheckState(QtCore.Qt.Unchecked)
-        elif self.selectAllItem.checkState() == QtCore.Qt.Unchecked and all_checked:
-             self.selectAllItem.setCheckState(QtCore.Qt.Checked)
+        if self.selectAllItem.checkState() == QT_CHECKED and not all_checked:
+             self.selectAllItem.setCheckState(QT_UNCHECKED)
+        elif self.selectAllItem.checkState() == QT_UNCHECKED and all_checked:
+             self.selectAllItem.setCheckState(QT_CHECKED)
 
     def updateText(self):
-        texts = []
-        for i in range(1, self.model.rowCount()):
-            item = self.model.item(i)
-            if item.checkState() == QtCore.Qt.Checked:
-                texts.append(item.text())
-
-        if len(texts) == self.model.rowCount() - 1 and len(texts) > 0:
-             text_str = "已全选"
-        elif len(texts) == 0:
-             text_str = ""
-        else:
-             text_str = ", ".join(texts)
-
-        self.lineEdit().setText(text_str)
+        self._sync_line_edit_text()
 
     def addItem(self, text, data=None):
         item = QtGui.QStandardItem(text)
         item.setData(data)
-        item.setFlags(QtCore.Qt.ItemIsEnabled | QtCore.Qt.ItemIsUserCheckable)
-        item.setData(QtCore.Qt.Unchecked, QtCore.Qt.CheckStateRole)
+        item.setFlags(QT_ITEM_IS_ENABLED | QT_ITEM_IS_USER_CHECKABLE)
+        item.setData(QT_UNCHECKED, QT_CHECKSTATE_ROLE)
         self.model.appendRow(item)
         # Manually trigger update text just in case, but usually checkSelectAllState handles logic
         # Adding an unchecked item while 'Select All' is checked should uncheck 'Select All'
-        if self.selectAllItem.checkState() == QtCore.Qt.Checked:
-            self.selectAllItem.setCheckState(QtCore.Qt.Unchecked)
+        if self.selectAllItem.checkState() == QT_CHECKED:
+            self.selectAllItem.setCheckState(QT_UNCHECKED)
         else:
             self.updateText()
 
@@ -374,7 +411,7 @@ class CheckableComboBox(QtWidgets.QComboBox):
         checkedItems = []
         for i in range(1, self.model.rowCount()):
             item = self.model.item(i)
-            if item.checkState() == QtCore.Qt.Checked:
+            if item.checkState() == QT_CHECKED:
                 checkedItems.append(item.text())
         return checkedItems
 
@@ -382,24 +419,27 @@ class CheckableComboBox(QtWidgets.QComboBox):
         checkedData = []
         for i in range(1, self.model.rowCount()):
             item = self.model.item(i)
-            if item.checkState() == QtCore.Qt.Checked:
+            if item.checkState() == QT_CHECKED:
                 checkedData.append(item.data())
         return checkedData
 
     def eventFilter(self, widget, event):
+        if not self.isEnabled():
+            return False
         if widget == self.lineEdit():
-            if event.type() == QtCore.QEvent.MouseButtonPress:
+            if event.type() == QT_EVENT_MOUSE_BUTTON_PRESS:
                 self.showPopup()
                 return True
         elif widget == self.view().viewport():
-            if event.type() == QtCore.QEvent.MouseButtonRelease:
+            if event.type() == QT_EVENT_MOUSE_BUTTON_RELEASE:
                 index = self.view().indexAt(event.pos())
                 if index.isValid():
                     item = self.model.itemFromIndex(index)
-                    if item.flags() & QtCore.Qt.ItemIsUserCheckable:
+                    if item.flags() & QT_ITEM_IS_USER_CHECKABLE:
                         # Toggle state
-                        new_state = QtCore.Qt.Unchecked if item.checkState() == QtCore.Qt.Checked else QtCore.Qt.Checked
+                        new_state = QT_UNCHECKED if item.checkState() == QT_CHECKED else QT_CHECKED
                         item.setCheckState(new_state)
+                        QtCore.QTimer.singleShot(0, self._sync_line_edit_text)
                         return True
         return super(CheckableComboBox, self).eventFilter(widget, event)
 

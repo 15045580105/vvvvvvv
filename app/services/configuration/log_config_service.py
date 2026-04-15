@@ -14,6 +14,20 @@ from app.services.device_manage.topology_service import TopologyService
 
 class LogConfigService(BaseService):
     log_signal = pyqtSignal(str) # Add log_signal
+    LOG_LEVEL_MAP = {
+        "OFF": 0x0,
+        "FATAL": 0x1,
+        "ERROR": 0x2,
+        "WARN": 0x3,
+        "INFO": 0x4,
+        "DEBUG": 0x5,
+        "VERBOSE": 0x6,
+    }
+    ECU_DID_MAP = {
+        "CCU0": 0xBE02,
+        "CCU1": 0xBE03,
+        "CCUA": 0xBE17,
+    }
 
     def __init__(self):
         super().__init__()
@@ -33,130 +47,208 @@ class LogConfigService(BaseService):
         """Set the path to process_log_config_map.json."""
         self._map_file_path = path
 
-    def set_ecu_log_level(self, ecus: List[str], level: str) -> bool:
-        """为指定的 ECU 设置日志等级。"""
-        _log = self.log_signal.emit
+    def _get_log_emit(self):
+        emit = getattr(self.log_signal, "emit", None)
+        return emit if callable(emit) else print
+
+    @staticmethod
+    def _format_hex(data: Optional[bytes]) -> str:
+        if not data:
+            return "无响应"
+        return data.hex(' ').upper()
+
+    @staticmethod
+    def _format_byte(value: Optional[int]) -> str:
+        return "--" if value is None else f"{value:02X}"
+
+    @staticmethod
+    def _get_negative_response_text(resp: Optional[bytes]) -> str:
+        if not resp:
+            return "无响应"
+        if len(resp) >= 3 and resp[0] == 0x7F:
+            return f"{resp.hex(' ').upper()} (NRC=0x{resp[2]:02X})"
+        return resp.hex(' ').upper()
+
+    def _read_single_byte_did(self, did: int) -> tuple[Optional[int], Optional[bytes], str]:
         if not self._device_service:
-            _log("DeviceService 未注入")
+            return None, None, "DeviceService 未注入"
+
+        read_cmd = bytes([0x22]) + did.to_bytes(2, 'big')
+        resp = self._device_service.send_doip_payload(read_cmd, target_did=did)
+        if not resp:
+            return None, None, "22 服务无响应"
+        if resp[0] == 0x7F:
+            return None, resp, f"22 服务负响应: {self._get_negative_response_text(resp)}"
+        if len(resp) < 4 or resp[0] != 0x62:
+            return None, resp, f"22 服务响应异常: {self._format_hex(resp)}"
+
+        resp_did = int.from_bytes(resp[1:3], 'big')
+        if resp_did != did:
+            return None, resp, f"22 服务 DID 不匹配: 期望 0x{did:04X}，实际 0x{resp_did:04X}"
+
+        return resp[3], resp, ""
+
+    def _is_factory_mode_active(self, log_emit) -> bool:
+        if not self._topology_service:
+            log_emit("TopologyService 未就绪，默认执行安全访问")
             return False
 
-        # 将日志等级字符串映射为整数值
-        level_map = {
-            "OFF": 0,
-            "FATAL": 1,
-            "ERROR": 2,
-            "WARN": 3,
-            "INFO": 4,
-            "DEBUG": 5,
-            "VERBOSE": 6
-        }
-        level_val = level_map.get(level, 4)  # 如果未知默认使用 INFO
+        try:
+            factory_mode_str = self._topology_service._get_factory_mode()
+        except Exception as exc:
+            log_emit(f"读取工厂模式失败，默认执行安全访问: {exc}")
+            return False
 
-        # 将 ECU 名称映射到 DID
-        ecu_did_map = {
-            "CCU0": 0xBE02,
-            "CCU1": 0xBE03,
-            "CCUA": 0xBE17  # 根据用户请求假设 CCUA 映射到 BE17
+        if "工厂模式" in factory_mode_str:
+            log_emit("检测到工厂模式，跳过安全访问")
+            return True
+
+        log_emit("检测到非工厂模式，执行安全访问")
+        return False
+
+    def _write_single_byte_did(self, did: int, value: int, log_emit) -> tuple[Optional[bytes], str]:
+        if not self._device_service:
+            return None, "DeviceService 未注入"
+
+        write_cmd = bytes([0x2E]) + did.to_bytes(2, 'big') + bytes([value])
+        is_factory_mode = self._is_factory_mode_active(log_emit)
+
+        if not is_factory_mode:
+            resp = self._device_service.execute_secure_routine(write_cmd, sec_level=0x01, log_signal=self.log_signal)
+        else:
+            session_cmd = bytes.fromhex("10 03")
+            log_emit(f"发送会话控制: {session_cmd.hex(' ').upper()}")
+            rx_sess = self._device_service.send_doip_payload(session_cmd)
+            if not rx_sess or rx_sess[0] != 0x50:
+                return rx_sess, f"会话控制失败: {self._get_negative_response_text(rx_sess)}"
+            log_emit(f"发送写指令: {write_cmd.hex(' ').upper()}")
+            resp = self._device_service.send_doip_payload(write_cmd)
+
+        if not resp:
+            return None, "2E 服务无响应"
+        if resp[0] != 0x6E:
+            return resp, f"2E 服务失败: {self._get_negative_response_text(resp)}"
+        return resp, ""
+
+    def set_ecu_log_level(self, ecus: List[str], level: str) -> Dict[str, Any]:
+        """为指定 ECU 执行 22 读取 -> 2E 写入 -> 22 回读验证。"""
+        _log = self._get_log_emit()
+        normalized_level = str(level or "").strip().upper()
+        level_val = self.LOG_LEVEL_MAP.get(normalized_level)
+        result: Dict[str, Any] = {
+            "success": False,
+            "requested_level": normalized_level,
+            "requested_level_value": level_val,
+            "results": [],
         }
 
-        success_all = True
+        if not self._device_service:
+            result["error"] = "DeviceService 未注入"
+            _log(result["error"])
+            return result
+
+        if not ecus:
+            result["error"] = "未选择 ECU"
+            _log(result["error"])
+            return result
+
+        if level_val is None:
+            result["error"] = f"不支持的日志等级: {level}"
+            _log(result["error"])
+            return result
+
+        doip_client = self._device_service.get_doip_client()
+        is_connected = False
+        if doip_client:
+            is_connected = doip_client.is_connected() if hasattr(doip_client, "is_connected") else bool(getattr(doip_client, "connected", False))
+        if not is_connected:
+            result["error"] = "DoIP 客户端未连接"
+            _log(result["error"])
+            return result
 
         for ecu in ecus:
-            did = ecu_did_map.get(ecu)
-            if not did:
-                _log(f"未知 ECU: {ecu}")
+            did = self.ECU_DID_MAP.get(ecu)
+            ecu_result = {
+                "ecu": ecu,
+                "did": f"{did:04X}" if did is not None else "----",
+                "requested_level": normalized_level,
+                "requested_level_value": level_val,
+                "read_value": None,
+                "write_value": None,
+                "verify_value": None,
+                "success": False,
+                "warning": "",
+                "error": "",
+            }
+
+            result["results"].append(ecu_result)
+
+            if did is None:
+                ecu_result["error"] = f"未知 ECU: {ecu}"
+                _log(ecu_result["error"])
                 continue
 
-            did_bytes = did.to_bytes(2, 'big')
-
-            # 我们需要从设备服务获取 DoIP 客户端
-            doip_client = self._device_service.get_doip_client()
-            if not doip_client:
-                _log("DoIP 客户端未连接")
-                return False
-
-            # --- 第一步：读取当前值 ---
-            _log(f"读取当前日志配置 (22 {did:X})...")
-            read_cmd = bytes([0x22]) + did_bytes
-            resp = doip_client.send_doip_message(read_cmd)
-
-            if not resp or resp[0] != 0x62:
-                _log(f"读取失败: {resp.hex(' ').upper() if resp else '无响应'}")
-                success_all = False
+            _log(f"[{ecu}] 第1步：读取当前日志配置 (22 {did:04X})")
+            current_value, read_resp, read_error = self._read_single_byte_did(did)
+            if read_error:
+                ecu_result["error"] = read_error
+                _log(f"[{ecu}] 读取失败: {read_error}")
                 continue
-            _log(f"当前配置: {resp.hex(' ').upper()}")
 
-            # --- 第二步：写入新配置 (2E DID VAL) ---
-            # 2E BE 02 06 (示例)
-            # 注意：level_val 可能是 int 或 bytes([val])
-            # level_map get returns int
-            write_cmd = bytes([0x2E]) + did_bytes + bytes([level_val])
+            ecu_result["read_value"] = current_value
+            target_value = (current_value & 0xF0) | (level_val & 0x0F)
+            ecu_result["write_value"] = target_value
 
-            _log(f"设置日志等级为 {level} ({level_val}) (2E {did:X} {level_val:02X})...")
+            _log(
+                f"[{ecu}] 当前值={self._format_hex(read_resp)}，保留高4位 0x{(current_value & 0xF0) >> 4:X}，"
+                f"目标等级 {normalized_level} -> 低4位 0x{level_val:X}，准备写入 2E {did:04X} {target_value:02X}"
+            )
 
-            # 读取是否为工厂模式，工厂模式不需要走2701安全认证
-            is_factory_mode = False
-            if self._topology_service:
-                factory_mode_str = self._topology_service._get_factory_mode()
-                if "工厂模式" in factory_mode_str:
-                    is_factory_mode = True
-                    _log("检测到用户模式，跳过安全访问")
+            write_resp, write_error = self._write_single_byte_did(did, target_value, _log)
+            if write_error:
+                ecu_result["error"] = write_error
+                _log(f"[{ecu}] 写入失败: {write_error}")
+                continue
+
+            _log(f"[{ecu}] 写入响应: {self._format_hex(write_resp)}")
+            _log(f"[{ecu}] 第3步：回读验证 (22 {did:04X})")
+
+            verify_value, verify_resp, verify_error = self._read_single_byte_did(did)
+            if verify_error:
+                ecu_result["error"] = f"回读失败: {verify_error}"
+                _log(f"[{ecu}] 回读失败: {verify_error}")
+                continue
+
+            ecu_result["verify_value"] = verify_value
+            same_low_nibble = (verify_value & 0x0F) == level_val
+            exact_match = verify_value == target_value
+
+            if same_low_nibble:
+                ecu_result["success"] = True
+                if exact_match:
+                    _log(f"[{ecu}] 回读成功: {self._format_hex(verify_resp)}，日志等级已生效")
                 else:
-                    _log("检测到非工厂模式，执行安全访问")
-
+                    ecu_result["warning"] = (
+                        f"回读低4位匹配目标等级，但完整字节与期望值不一致: 期望 {target_value:02X}，实际 {verify_value:02X}"
+                    )
+                    _log(f"[{ecu}] {ecu_result['warning']}")
             else:
-                _log("TopologyService 未就绪，默认执行安全访问")
+                ecu_result["error"] = (
+                    f"回读校验失败: 期望低4位 0x{level_val:X}，实际回读 {self._format_hex(verify_resp)}"
+                )
+                _log(f"[{ecu}] {ecu_result['error']}")
 
-            if not is_factory_mode:
-                # 非工厂模式：走完整安全访问流程 (10 03 -> 27 01 -> 2E)
-                # execute_secure_routine also updated to not take callback
-                write_resp = self._device_service.execute_secure_routine(write_cmd, sec_level=0x01, log_signal=self.log_signal)
-            else:
-                # 工厂模式：直接发送 10 03 然后 2E 指令
-                # 1. 10 03
-                session_cmd = bytes.fromhex("10 03")
-                _log(f"发送会话控制: {session_cmd.hex(' ').upper()}")
-                rx_sess = self._device_service.send_doip_payload(session_cmd)
-                if not rx_sess or rx_sess[0] != 0x50:
-                    _log(f"会话控制失败: {rx_sess.hex(' ').upper() if rx_sess else '无响应'}")
-                    success_all = False
-                    continue
-
-                _log(f"发送写指令: {write_cmd.hex(' ').upper()}")
-                write_resp = self._device_service.send_doip_payload(write_cmd)
-
-            if not write_resp:
-                _log("设置失败")
-                success_all = False
-                continue
-
-            # 检查 2E 的正响应是否为 6E
-            if write_resp[0] != 0x6E:
-                _log(f"设置失败，响应: {write_resp.hex(' ').upper()}")
-                success_all = False
-                continue
-
-            # --- 第三步：回读验证 (22 DID) ---
-            _log(f"回读验证配置 (22 {did:X})...")
-            verify_resp = doip_client.send_doip_message(read_cmd)
-            if not verify_resp or verify_resp[0] != 0x62:
-                _log(f"回读失败: {verify_resp.hex(' ').upper() if verify_resp else '无响应'}")
-                success_all = False
-                continue
-
-            # 验证值 (假设格式为 62 DID VAL)
-            # resp: 62 BE 02 06
-            if len(verify_resp) >= 4 and verify_resp[3] == level_val:
-                _log(f"当前值: {verify_resp.hex(' ').upper()}, 配置成功！")
-            else:
-                _log(f"验证失败，当前值: {verify_resp.hex(' ').upper()}")
-                success_all = False
-
-        return success_all
+        success_count = sum(1 for item in result["results"] if item.get("success"))
+        total_count = len(result["results"])
+        result["success"] = total_count > 0 and success_count == total_count
+        result["success_count"] = success_count
+        result["total_count"] = total_count
+        result["failed_count"] = total_count - success_count
+        return result
 
     def _ensure_ccua_mode_enabled(self) -> bool:
         """确保 CCUA 处于个性化配置模式 (DID 0xBE17 Bit7 = 1)"""
-        _log = self.log_signal.emit
+        _log = self._get_log_emit()
 
         if not self._device_service:
             _log("DeviceService 未注入")
@@ -203,7 +295,7 @@ class LogConfigService(BaseService):
         2. UDS 修改 0xBE17 Bit7 = 1
         3. Sync
         """
-        _log = self.log_signal.emit
+        _log = self._get_log_emit()
 
         _log(f"开始修改 CCUA 应用 {app_id} 配置...")
 
@@ -335,7 +427,7 @@ class LogConfigService(BaseService):
 
     def restart_ccu(self, ecu="CCUA"):
         """重启 CCU (UDS 11 03)"""
-        _log = self.log_signal.emit
+        _log = self._get_log_emit()
 
         if not self._device_service:
             _log("DeviceService 未就绪")
@@ -386,7 +478,7 @@ class LogConfigService(BaseService):
         2. SSH 批量修改所有 APP 的 JSON 文件
         3. SSH Sync - 只做一次
         """
-        _log = self.log_signal.emit
+        _log = self._get_log_emit()
 
         if not app_list:
             _log("应用列表为空")
@@ -530,8 +622,8 @@ class LogConfigService(BaseService):
 
 
     def _map_val_to_level_str(self, val: int) -> str:
-        clean_val = val & 0x7F  # 按位与运算，二进制是 0111 1111
-        # 0x00: OFF, 0x01: FATAL, 0x02: ERROR, 0x03: WARN, 0x04: INFO, 0x05: DEBUG, 0x06: VERBOSE
+        clean_val = val & 0x0F
+        # 低4位表示 DID 日志等级：0x00 OFF, 0x01 FATAL, 0x02 ERROR, 0x03 WARN, 0x04 INFO, 0x05 DEBUG, 0x06 VERBOSE
         mapping = {
             0: "OFF", 1: "FATAL", 2: "ERROR", 3: "WARN",
             4: "INFO", 5: "DEBUG", 6: "VERBOSE"
@@ -543,16 +635,11 @@ class LogConfigService(BaseService):
         '''根据 DID 读取单字节 UDS 值'''
         if not self._device_service:
             return None
-        client = self._device_service.get_doip_client()
-        if not client:
-            return None
         # 构造 UDS 22 读 DID 请求
         did_bytes = did_int.to_bytes(2, 'big')
         req = bytes([0x22]) + did_bytes
         print("发送 UDS 读 DID 请求:", req.hex(' ').upper())
-        # 假设 send_doip_message 返回以 SID 开头的 UDS 负载
-        # 响应格式: 62 DID_H DID_L VAL ...
-        resp = client.send_doip_message(req)
+        resp = self._device_service.send_doip_payload(req, target_did=did_int)
         print("收到 UDS 响应:", resp.hex(' ').upper() if resp else "无响应")
 
         if resp and len(resp) >= 4 and resp[0] == 0x62:  # 正响应
@@ -739,7 +826,7 @@ class LogConfigService(BaseService):
     def restore_config(self, options: Dict[str, bool]) -> Dict[str, Any]:
         """Restore default configuration based on options."""
         # Helper to log
-        _log = self.log_signal.emit
+        _log = self._get_log_emit()
 
         result = {"success": True, "restart_required": False}
 
@@ -796,7 +883,7 @@ class LogConfigService(BaseService):
 
     def _set_did_byte(self, did: int, val: int, ecu_name: str) -> bool:
         """Helper to set a single byte DID value via UDS."""
-        _log = self.log_signal.emit
+        _log = self._get_log_emit()
 
         doip_client = self._device_service.get_doip_client()
         if not doip_client:
@@ -832,7 +919,7 @@ class LogConfigService(BaseService):
 
     def reset_ccu(self):
         """UDS 11 03 (Soft Reset)"""
-        _log = self.log_signal.emit
+        _log = self._get_log_emit()
 
         _log("正在执行 CCU 软复位 (11 03)...")
         # 11 03 usually requires session?

@@ -1,8 +1,8 @@
 import time
-import warnings
 import socket
+import threading
 import psutil
-from typing import Dict, Any, Callable, Optional
+from typing import Dict, Any, Optional
 
 from PyQt5.QtCore import QObject, pyqtSignal
 from paramiko.ssh_exception import AuthenticationException, SSHException
@@ -12,7 +12,7 @@ from app.common.communication.clients.Someip_Client import SomeIPClient
 from app.common.communication.clients.ssh_client import SSHClient
 from app.common.utils.security_access_helper import SecurityAccessHelper
 from app.core.dependency_injection import di_container
-from app.modules.device_management.models.device_model import CONNECTING, DISCONNECTED, CONNECT_FAILED
+from app.modules.device_management.models.device_model import CONNECTING, DISCONNECTED, CONNECT_FAILED, OFFLINE
 from app.services.configuration.config_service import AppConfigurationService
 
 
@@ -42,41 +42,154 @@ class DeviceService(QObject):
             self._config_service = AppConfigurationService()
             di_container.register_singleton(AppConfigurationService, self._config_service)
 
-    def connect_device(self, device: Dict[str, Any], log_signal: Optional[pyqtSignal] = None) -> None:
-        """连接单个设备：按 SSH/DoIP/SomeIP 三种协议尝试建链，并统一发出状态信号。
-        """
-        # 保存设备配置以便重连使用
-        self._last_connected_device = device
+    def _get_log_emit(self, log_signal: Optional[object] = None):
+        """统一返回日志输出函数，兼容 PyQtBoundSignal / callable。"""
+        if log_signal is not None:
+            emit = getattr(log_signal, "emit", None)
+            if callable(emit):
+                return emit
+            if callable(log_signal):
+                return log_signal
+        return getattr(self.log_signal, "emit")
 
-        # 设置初始状态为 CONNECTING
+    def _emit_protocol_status(self, payload: Dict[str, Any]) -> None:
+        emit = getattr(self.protocol_status_changed_signal, "emit", None)
+        if callable(emit):
+            emit(payload)
+
+    def _emit_reconnect_request(self, device: Dict[str, Any], log_signal: Optional[object] = None) -> None:
+        emit = getattr(self.reconnect_requested_signal, "emit", None)
+        if callable(emit):
+            emit(device, log_signal)
+
+    def connect_device(
+        self,
+        device: Dict[str, Any],
+        log_signal: Optional[object] = None,
+        *,
+        cancel_event: Optional[threading.Event] = None,
+        reconnect: bool = False,
+    ) -> None:
+        """连接单个设备：按 SomeIP / DoIP / SSH 顺序尝试建链，支持取消与重连。"""
+        _log = self._get_log_emit(log_signal)
+
+        # 保存设备配置以便重连使用；保留副本避免外部在连接过程中修改。
+        self._last_connected_device = device.copy()
+
+        if reconnect:
+            _log("开始执行重连：先断开旧连接并清理客户端实例")
+            self.disconnect_device(device, log_signal=log_signal)
+            self._reset_connection_clients()
+            if self._is_cancelled(cancel_event):
+                self._mark_connection_cancelled(device, log_signal, reason="用户已取消重连")
+                return
+
+        detail_text = "连接中，请稍候..."
         device["ssh_connect_status"] = CONNECTING
         device["doip_connect_status"] = CONNECTING
         device["someip_connect_status"] = CONNECTING
+        device["ssh_connect_info"] = detail_text
+        device["doip_connect_info"] = detail_text
+        device["someip_connect_info"] = detail_text
         self._change_status(device)
 
-        # 强制等待，确保UI有时间渲染所有协议的转圈状态
-        time.sleep(0.5)
+        if self._is_cancelled(cancel_event):
+            self._mark_connection_cancelled(device, log_signal)
+            return
 
-        # 1. SomeIP 客户端准备
-        time.sleep(1.0)
         self._connect_someip(device, log_signal)
         self._change_status(device)
+        if self._is_cancelled(cancel_event):
+            self._reset_connection_clients()
+            self._mark_connection_cancelled(device, log_signal)
+            return
 
-        # 2. DoIP 连接
-        # 模拟连接过程，避免瞬间完成导致看不到转圈
-        time.sleep(1.0)
         self._connect_doip(device, log_signal)
         self._change_status(device)
+        if self._is_cancelled(cancel_event):
+            self._reset_connection_clients()
+            self._mark_connection_cancelled(device, log_signal)
+            return
 
-        # 3. SSH 连接：通过执行激活DoIP激活命令，才能连接ssh服务
-        time.sleep(0.5)
-        self.active_ssh_command(log_signal)
-        self._connect_ssh(device, log_signal=log_signal)
-        self._change_status(device)
-        if log_signal is not None:
-            log_signal.emit("设备连接成功")
+        doip_connected = "建链成功" in str(device.get("doip_connect_status", ""))
+        if doip_connected:
+            self.active_ssh_command(log_signal, cancel_event=cancel_event)
+            if self._is_cancelled(cancel_event):
+                self._reset_connection_clients()
+                self._mark_connection_cancelled(device, log_signal)
+                return
         else:
-            self.log_signal.emit("设备连接成功")
+            _log("DoIP 未建链成功，跳过 SSH 激活指令，直接尝试 SSH 连接")
+
+        self._connect_ssh(device, timeout=8, log_signal=log_signal, cancel_event=cancel_event)
+        if self._is_cancelled(cancel_event):
+            self._reset_connection_clients()
+            self._mark_connection_cancelled(device, log_signal)
+            return
+
+        self._change_status(device)
+
+        success_protocols = []
+        for protocol in ("ssh", "doip", "someip"):
+            if "建链成功" in str(device.get(f"{protocol}_connect_status", "")):
+                success_protocols.append(protocol.upper())
+
+        if success_protocols:
+            _log(f"设备连接流程完成，成功协议: {', '.join(success_protocols)}")
+        else:
+            _log("设备连接流程结束，但未建立成功的协议连接")
+
+    def request_cancel_connection(
+        self,
+        device: Dict[str, Any],
+        log_signal: Optional[object] = None,
+        *,
+        reason: str = "用户取消连接",
+    ) -> None:
+        """响应用户主动断开：尽快清理底层客户端，并将界面状态回滚为已断开。"""
+        _log = self._get_log_emit(log_signal)
+        _log(f"收到取消连接请求 -> {device.get('ip', '')}:{device.get('port', 22)}")
+        self._reset_connection_clients()
+        self._mark_connection_cancelled(device, log_signal, reason=reason)
+
+    def _is_cancelled(self, cancel_event: Optional[threading.Event]) -> bool:
+        return bool(cancel_event and cancel_event.is_set())
+
+    def _mark_connection_cancelled(
+        self,
+        device: Dict[str, Any],
+        log_signal: Optional[object] = None,
+        *,
+        reason: str = "用户取消连接",
+    ) -> None:
+        for protocol in ("ssh", "doip", "someip"):
+            device[f"{protocol}_connect_status"] = DISCONNECTED
+            device[f"{protocol}_connect_info"] = reason
+        self._change_status(device)
+
+    def _wait_for_ssh_port(
+        self,
+        host: str,
+        port: int,
+        cancel_event: Optional[threading.Event] = None,
+        max_wait: float = 8.0,
+        probe_timeout: float = 0.8,
+        interval: float = 0.35,
+    ) -> bool:
+        """在短时间内轮询 SSH 端口是否就绪，避免 Paramiko 长时间阻塞。"""
+        deadline = time.monotonic() + max(0.5, max_wait)
+        while time.monotonic() < deadline:
+            if self._is_cancelled(cancel_event):
+                return False
+            try:
+                with socket.create_connection((host, port), timeout=probe_timeout):
+                    return True
+            except OSError:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                time.sleep(min(interval, remaining))
+        return False
 
     def reset_connection_clients(self) -> None:
         """强制关闭并清理当前客户端实例，确保后续重连为全新连接。(公开版本，供Controller调用)"""
@@ -103,10 +216,10 @@ class DeviceService(QObject):
         self._someip_client = None
         self._doip_handler = None
 
-    def reconnect_device(self, log_signal: Optional[pyqtSignal] = None) -> None:
+    def reconnect_device(self, log_signal: Optional[object] = None) -> None:
         """请求重连最后一次连接的设备。逻辑委托给 Controller 层处理。"""
         if not self._last_connected_device:
-            self.log_signal.emit("无上次连接设备记录，无法重连")
+            self._get_log_emit()("无上次连接设备记录，无法重连")
             return
 
         # 发送重连请求信号，由 Controller 接收并执行 _do_disconnect / _do_connect
@@ -114,60 +227,159 @@ class DeviceService(QObject):
         device = self._last_connected_device.copy()
 
         # 发送信号，通知上层 UI 控制器执行重连流程
-        self.reconnect_requested_signal.emit(device, log_signal)
+        self._emit_reconnect_request(device, log_signal)
 
 
-    def disconnect_device(self, device: Dict[str, Any], log_signal: Optional[pyqtSignal] = None) -> None:
-        """断开设备三种协议连接，并发出状态信号。"""
-        # 1. 主动关闭 DoIP 连接
-        self._disconnect_doip(device, log_signal)
-        # 2.停止 SOME/IP 客户端
-        self._disconnect_someip(device, log_signal)
-        # 3.断开ssh连接
-        self._disconnect_ssh(device, log_signal)
+    def disconnect_device(self, device: Dict[str, Any], log_signal: Optional[object] = None) -> Dict[str, Any]:
+        """按协议选择性断开设备连接，并清理残留客户端实例。"""
+        _log = self._get_log_emit(log_signal)
+
+        status_map = {
+            "ssh": str(device.get("ssh_connect_status", OFFLINE)),
+            "doip": str(device.get("doip_connect_status", OFFLINE)),
+            "someip": str(device.get("someip_connect_status", OFFLINE)),
+        }
+        already_disconnected = {name: self._is_disconnected_status(status) for name, status in status_map.items()}
+        all_already_disconnected = all(already_disconnected.values())
+
+        result = {
+            "all_already_disconnected": all_already_disconnected,
+            "disconnected_protocols": [],
+            "skipped_protocols": [name for name, is_done in already_disconnected.items() if is_done],
+            "cleaned_instances": [],
+        }
+
+        disconnect_actions = [
+            ("doip", self._disconnect_doip),
+            ("someip", self._disconnect_someip),
+            ("ssh", self._disconnect_ssh),
+        ]
+
+        if not all_already_disconnected:
+            for protocol, handler in disconnect_actions:
+                if already_disconnected[protocol]:
+                    continue
+                changed, cleaned = handler(device, log_signal, force_cleanup=False)
+                if changed:
+                    result["disconnected_protocols"].append(protocol)
+                if cleaned:
+                    result["cleaned_instances"].append(protocol)
+        else:
+            _log("检测到 SSH、DoIP、SomeIP 当前状态均已断开，执行后台残留实例清理检查")
+
+        for protocol, handler in disconnect_actions:
+            if protocol in result["cleaned_instances"]:
+                continue
+            _, cleaned = handler(device, log_signal, force_cleanup=True)
+            if cleaned:
+                result["cleaned_instances"].append(protocol)
+
         self._change_status(device)
+        return result
 
+    def _is_disconnected_status(self, status: str) -> bool:
+        status = str(status or "").strip()
+        return status in {OFFLINE, DISCONNECTED, "已断开", "断开", "未连接"}
 
-    def _disconnect_ssh(self, device, log_signal: Optional[pyqtSignal] = None):
-        _log = log_signal.emit if log_signal else self.log_signal.emit
+    def _disconnect_ssh(self, device, log_signal: Optional[object] = None, force_cleanup: bool = False):
+        _log = self._get_log_emit(log_signal)
+        cleaned = False
+        should_disconnect = force_cleanup or not self._is_disconnected_status(device.get("ssh_connect_status", OFFLINE))
+        if not should_disconnect:
+            return False, cleaned
+
+        if self._ssh_client is None:
+            if force_cleanup:
+                return False, False
+            device["ssh_connect_status"] = DISCONNECTED
+            device["ssh_connect_info"] = "SSH已断链成功"
+            return True, False
+
         _log("正在通过SSH断开设备...")
         try:
-            if not self._ssh_client is None and self._ssh_client.is_connected():
+            if hasattr(self._ssh_client, "is_connected") and self._ssh_client.is_connected():
                 self._ssh_client.disconnect()
+            elif force_cleanup and hasattr(self._ssh_client, "disconnect"):
+                self._ssh_client.disconnect()
+            cleaned = True
+            self._ssh_client = None
+            if not force_cleanup:
                 device["ssh_connect_status"] = DISCONNECTED
                 device["ssh_connect_info"] = "SSH已断链成功"
+                return True, cleaned
+            _log("检测到残留 SSH 实例，已清理并置空")
         except Exception as e:
             msg = f"SSH 断开异常: {e}"
             _log(msg)
-            device["ssh_connect_status"] = CONNECT_FAILED
-            device["ssh_connect_info"] = msg
+            if not force_cleanup:
+                device["ssh_connect_status"] = CONNECT_FAILED
+                device["ssh_connect_info"] = msg
+                return True, cleaned
+        return False, cleaned
 
-    def _disconnect_someip(self, device, log_signal: Optional[pyqtSignal] = None):
-        _log = log_signal.emit if log_signal else self.log_signal.emit
-        if self._someip_client is not None:
-            try:
-                self._someip_client.stop()
+    def _disconnect_someip(self, device, log_signal: Optional[object] = None, force_cleanup: bool = False):
+        _log = self._get_log_emit(log_signal)
+        cleaned = False
+        should_disconnect = force_cleanup or not self._is_disconnected_status(device.get("someip_connect_status", OFFLINE))
+        if not should_disconnect:
+            return False, cleaned
+
+        if self._someip_client is None:
+            if force_cleanup:
+                return False, False
+            device["someip_connect_status"] = DISCONNECTED
+            device["someip_connect_info"] = "SomeIP已断链成功"
+            return True, False
+
+        try:
+            self._someip_client.stop()
+            cleaned = True
+            self._someip_client = None
+            if not force_cleanup:
                 device["someip_connect_status"] = DISCONNECTED
                 device["someip_connect_info"] = "SomeIP已断链成功"
-            except Exception as e:
-                msg = f"SomeIP 断开异常: {e}"
-                _log(msg)
+                return True, cleaned
+            _log("检测到残留 SomeIP 实例，已清理并置空")
+        except Exception as e:
+            msg = f"SomeIP 断开异常: {e}"
+            _log(msg)
+            if not force_cleanup:
                 device["someip_connect_status"] = CONNECT_FAILED
                 device["someip_connect_info"] = msg
+                return True, cleaned
+        return False, cleaned
 
+    def _disconnect_doip(self, device, log_signal: Optional[object] = None, force_cleanup: bool = False):
+        _log = self._get_log_emit(log_signal)
+        cleaned = False
+        should_disconnect = force_cleanup or not self._is_disconnected_status(device.get("doip_connect_status", OFFLINE))
+        if not should_disconnect:
+            return False, cleaned
 
-    def _disconnect_doip(self, device, log_signal: Optional[pyqtSignal] = None):
-        _log = log_signal.emit if log_signal else self.log_signal.emit
-        if self._doip_handler is not None:
-            try:
-                self._doip_handler.disconnect()
+        if self._doip_handler is None:
+            if force_cleanup:
+                return False, False
+            device["doip_connect_status"] = DISCONNECTED
+            device["doip_connect_info"] = "DoIP已断链成功"
+            return True, False
+
+        try:
+            self._doip_handler.disconnect()
+            cleaned = True
+            self._doip_handler = None
+            if not force_cleanup:
                 device["doip_connect_status"] = DISCONNECTED
                 device["doip_connect_info"] = "DoIP已断链成功"
-            except Exception as e:
-                msg = f"SomeIP 断开异常: {e}"
-                _log(msg)
+                return True, cleaned
+            _log("检测到残留 DoIP 实例，已清理并置空")
+        except Exception as e:
+            msg = f"DoIP 断开异常: {e}"
+            _log(msg)
+            if not force_cleanup:
                 device["doip_connect_status"] = CONNECT_FAILED
                 device["doip_connect_info"] = msg
+                return True, cleaned
+        return False, cleaned
 
     def is_ssh_connected(self, device: Dict[str, Any]) -> bool:
         """检查指定设备的 SSH 是否连接成功。"""
@@ -177,13 +389,13 @@ class DeviceService(QObject):
             return False
         return self._ssh_client.is_connected()
 
-    def _connect_doip(self, device: Dict[str, Any], log_signal: Optional[pyqtSignal] = None) -> None:
+    def _connect_doip(self, device: Dict[str, Any], log_signal: Optional[object] = None) -> None:
         """内部辅助：为当前设备建立 DoIP 连接，并在 device 上写入状态字段。
         约定使用字段：
           - doip_connect_status: 建链成功 / 连接失败 / 离线
           - doip_connect_info: 失败原因或成功提示
         """
-        _log = log_signal.emit if log_signal else self.log_signal.emit
+        _log = self._get_log_emit(log_signal)
         ip = device.get("ip") or ""
         # 默认使用经典 DoIP 端口 13400，如有特殊端口可后续通过 device 字段扩展
         tcp_port = int(device.get("doip_port", 13400))
@@ -261,9 +473,9 @@ class DeviceService(QObject):
             device["doip_connect_status"] = "连接失败"
             device["doip_connect_info"] = f"DoIP 连接 {ip}:{tcp_port} 失败"
 
-    def _get_mac_address(self, ip_address: str, log_signal: Optional[pyqtSignal] = None) -> str:
+    def _get_mac_address(self, ip_address: str, log_signal: Optional[object] = None) -> str:
         """获取指定 IP 地址对应的网卡 MAC 地址"""
-        _log = log_signal.emit if log_signal else self.log_signal.emit
+        _log = self._get_log_emit(log_signal)
         try:
             for interface, snics in psutil.net_if_addrs().items():
                 for snic in snics:
@@ -277,7 +489,7 @@ class DeviceService(QObject):
             _log(f"获取 MAC 地址失败: {e}")
         return ""
 
-    def _ensure_someip_client(self, device: Dict[str, Any], log_signal: Optional[pyqtSignal] = None) -> SomeIPClient | None:
+    def _ensure_someip_client(self, device: Dict[str, Any], log_signal: Optional[object] = None) -> SomeIPClient | None:
         """内部辅助：创建并启动 SomeIPClient。
 
         使用设备配置中的参数进行连接：
@@ -287,7 +499,7 @@ class DeviceService(QObject):
         - vlan_id: VLAN ID
         - client_id: 客户端 ID (用于 SomeIP header)
         """
-        _log = log_signal.emit if log_signal else self.log_signal.emit
+        _log = self._get_log_emit(log_signal)
         if self._someip_client is not None:
             # TODO: 如果参数变化是否需要重启？目前假定单例
             return self._someip_client
@@ -353,8 +565,8 @@ class DeviceService(QObject):
         self._someip_client = client
         return self._someip_client
 
-    def _connect_someip(self, device: Dict[str, Any], log_signal: Optional[pyqtSignal] = None) -> None:
-        _log = log_signal.emit if log_signal else self.log_signal.emit
+    def _connect_someip(self, device: Dict[str, Any], log_signal: Optional[object] = None) -> None:
+        _log = self._get_log_emit(log_signal)
         _log(f"正在通过SomeIP连接设备...")
         """内部辅助：为当前设备准备 SOME/IP 通信客户端，并更新状态字段。
         注意：SOME/IP 多数场景是无连接 UDP，这里仅表示“本地客户端已就绪”。
@@ -379,28 +591,70 @@ class DeviceService(QObject):
             "someip_connect_status": device.get("someip_connect_status"),
             "someip_connect_info": device.get("someip_connect_info"),
         }
-        self.protocol_status_changed_signal.emit(payload)
+        self._emit_protocol_status(payload)
 
     def _connect_ssh(
         self,
         device: Dict[str, Any],
-        timeout: int = 30,
-        log_signal: Optional[pyqtSignal] = None
+        timeout: int = 8,
+        log_signal: Optional[object] = None,
+        cancel_event: Optional[threading.Event] = None,
     ) -> tuple[str, str, int] | None:
-        _log = log_signal.emit if log_signal else self.log_signal.emit
+        _log = self._get_log_emit(log_signal)
         host = device.get("ip")
         port = int(device.get("port", 22))
         username = device.get("user") or device.get("username") or "root"
         password = device.get("password")
-        key_file = device.get("key_file")
+        if not host:
+            device["ssh_connect_status"] = "连接失败"
+            device["ssh_connect_info"] = "缺少 SSH 目标 IP"
+            return "", "缺少 SSH 目标 IP", 255
+
+        if self._is_cancelled(cancel_event):
+            return None
+
+        ssh_ready = self._wait_for_ssh_port(
+            host,
+            port,
+            cancel_event,
+            float(timeout),
+            0.8,
+            0.35,
+        )
+        if self._is_cancelled(cancel_event):
+            return None
+        if not ssh_ready:
+            msg = f"SSH 端口 {port} 未就绪或连接超时"
+            _log(msg)
+            device["ssh_connect_status"] = "连接失败"
+            device["ssh_connect_info"] = msg
+            return "", msg, 255
+
         try:
-            # register_host 幂等，重复调用安全
             self._ssh_client = SSHClient()
-            connect_result = self._ssh_client.connect(host, port, username, password)
+            connect_kwargs = {
+                "auth_timeout": 3.5,
+                "banner_timeout": 2.5,
+                "look_for_keys": False,
+                "allow_agent": False,
+            }
+            connect_callable = getattr(self._ssh_client, "connect")
+            connect_result = connect_callable(
+                host,
+                port,
+                username,
+                password,
+                min(float(timeout), 3.0),
+                **connect_kwargs,
+            )
+            if self._is_cancelled(cancel_event):
+                self._ssh_client.disconnect()
+                self._ssh_client = None
+                return None
             if not connect_result:
                 device["ssh_connect_status"] = "连接失败"
-                device["ssh_connect_info"] = "SSH 认证失败"
-                return "", "SSH 认证失败", 255
+                device["ssh_connect_info"] = "SSH 建链失败或认证失败"
+                return "", "SSH 建链失败或认证失败", 255
             device["ssh_connect_status"] = "建链成功"
             device["ssh_connect_info"] = f"SSH 已连接到 {host}:{port}"
             _log(f"SSH 已连接到 {host}:{port}")
@@ -457,15 +711,20 @@ class DeviceService(QObject):
             self._doip_handler.disconnect()
 
 
-    def active_ssh_command(self, log_signal: Optional[pyqtSignal] = None):
+    def active_ssh_command(
+        self,
+        log_signal: Optional[object] = None,
+        *,
+        cancel_event: Optional[threading.Event] = None,
+    ):
         """
         发送 DoIP 指令激活 SSH (或其他功能)
         """
-        _log = log_signal.emit if log_signal else self.log_signal.emit
+        _log = self._get_log_emit(log_signal)
         _log("开始发送激活 SSH 指令...")
         # 31 01 BE E9
         routine = bytes.fromhex("31 01 BE E9")
-        self.execute_secure_routine(routine, sec_level=0x21, log_signal=log_signal)
+        self.execute_secure_routine(routine, sec_level=0x21, log_signal=log_signal, cancel_event=cancel_event)
 
     def send_doip_payload(
             self,
@@ -480,7 +739,7 @@ class DeviceService(QObject):
         # 1. 获取客户端实例
         client = self.get_doip_client()
         if client is None:
-            self.log_signal.emit("错误：DoIP 客户端实例为 None")
+            self._get_log_emit()("错误：DoIP 客户端实例为 None")
             return None
 
         # 计算超时
@@ -495,10 +754,10 @@ class DeviceService(QObject):
         # 如果未连接，且有上次连接记录，先尝试重连一次
         if not client.connected:
             if self._last_connected_device:
-                self.log_signal.emit("发现 DoIP 未连接，尝试利用上次记录重连...")
+                self._get_log_emit()("发现 DoIP 未连接，尝试利用上次记录重连...")
                 self._connect_doip(self._last_connected_device)
                 if not client.connected:
-                    self.log_signal.emit("重连失败，放弃发送")
+                    self._get_log_emit()("重连失败，放弃发送")
                     return None
             else:
                 # self.log_signal.emit("DoIP 未连接且无历史连接记录，无法自动重连")
@@ -520,13 +779,13 @@ class DeviceService(QObject):
             # 检查连接状态
             # 如果 send_doip_message 遇到了 IO 错误，它会将 connected 置为 False
             if not client.connected:
-                self.log_signal.emit("发送报文时连接断开")
+                self._get_log_emit()("发送报文时连接断开")
                 if self._last_connected_device:
-                    self.log_signal.emit("尝试通过断线重连恢复并重发...")
+                    self._get_log_emit()("尝试通过断线重连恢复并重发...")
                     self._connect_doip(self._last_connected_device)
 
                     if client.connected:
-                        self.log_signal.emit("断线重连成功，正在重发报文...")
+                        self._get_log_emit()("断线重连成功，正在重发报文...")
                         resp = client.send_doip_message(
                             payload,
                             timeout=timeout,
@@ -535,9 +794,9 @@ class DeviceService(QObject):
                             prefer_last=prefer_last,
                         )
                     else:
-                        self.log_signal.emit("断线重连失败")
+                        self._get_log_emit()("断线重连失败")
                 else:
-                    self.log_signal.emit("连接断开且无重连信息")
+                    self._get_log_emit()("连接断开且无重连信息")
             else:
                 # 状态仍为 Connected，说明是单纯的超时，未发生断链
                 # self.log_signal.emit("发送等到超时（未收到响应），连接保持正常")
@@ -545,7 +804,15 @@ class DeviceService(QObject):
 
         return resp
 
-    def execute_secure_routine(self, routine_command: bytes, sec_level: int = 0x21, return_on_auth_fail: bool = False, log_signal: Optional[pyqtSignal] = None) -> bool | bytes:
+    def execute_secure_routine(
+        self,
+        routine_command: bytes,
+        sec_level: int = 0x21,
+        return_on_auth_fail: bool = False,
+        log_signal: Optional[object] = None,
+        *,
+        cancel_event: Optional[threading.Event] = None,
+    ) -> bool | bytes:
         """
         执行带安全访问的 UDS 例程序列:
         1. 10 03 (Extended Session)
@@ -559,11 +826,15 @@ class DeviceService(QObject):
         :return: 成功返回 响应数据(bytes)，失败返回 False。
         """
         # 确定使用的日志信号或emit函数
-        log_emit = log_signal.emit if log_signal else self.log_signal.emit
+        log_emit = self._get_log_emit(log_signal)
 
         client = self.get_doip_client()
         if not client:
             log_emit("DoIP 未连接，无法发送指令")
+            return False
+
+        if self._is_cancelled(cancel_event):
+            log_emit("激活 SSH 流程已取消")
             return False
 
         # 1. 诊断会话控制 (10 03)
@@ -574,6 +845,9 @@ class DeviceService(QObject):
             log_emit(f"会话控制失败: {rx_session.hex(' ').upper() if rx_session else '无响应'}")
             return False
         log_emit(f"会话控制成功: {rx_session.hex(' ').upper()}")
+        if self._is_cancelled(cancel_event):
+            log_emit("激活 SSH 流程已取消")
+            return False
 
         # 2. 安全访问
         tx_seed = bytes([0x27, sec_level])
@@ -584,6 +858,9 @@ class DeviceService(QObject):
             log_emit(f"请求种子失败: {rx_seed.hex(' ').upper() if rx_seed else '无响应'}")
             return False
         log_emit(f"收到种子: {rx_seed.hex(' ').upper()}")
+        if self._is_cancelled(cancel_event):
+            log_emit("激活 SSH 流程已取消")
+            return False
 
         # 计算密钥
         if len(rx_seed) < 3:
@@ -608,6 +885,9 @@ class DeviceService(QObject):
                 return False
         else:
             log_emit(f"安全访问成功: {rx_key.hex(' ').upper()}")
+        if self._is_cancelled(cancel_event):
+            log_emit("激活 SSH 流程已取消")
+            return False
 
         # 3. 例程控制
         log_emit(f"发送例程: {routine_command.hex(' ').upper()}")

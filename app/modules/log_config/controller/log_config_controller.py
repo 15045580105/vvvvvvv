@@ -41,6 +41,7 @@ class LogConfigController(BaseController):
             self.view.append_log(f"已恢复配置文件路径: {saved_path}")
 
         self._workers = []
+        self._is_ecu_executing = False
         self._bind_signals()
 
         # 进入界面后自动触发一次全量刷新，避免下拉框为空
@@ -77,6 +78,43 @@ class LogConfigController(BaseController):
         self.view.append_log(message)
         logger.info(message)
 
+    def _format_ecu_execute_result_text(self, result):
+        def fmt_byte(value):
+            return "--" if value is None else f"{int(value):02X}"
+
+        requested_level = result.get("requested_level", "")
+        requested_level_value = result.get("requested_level_value")
+        success_count = result.get("success_count", 0)
+        total_count = result.get("total_count", 0)
+        lines = [
+            f"目标日志等级: {requested_level} ({requested_level_value if requested_level_value is not None else '--'})",
+            f"执行结果: {success_count}/{total_count} 成功",
+            "",
+        ]
+
+        for item in result.get("results", []):
+            ecu = item.get("ecu", "未知ECU")
+            did = item.get("did", "----")
+            read_value = item.get("read_value")
+            write_value = item.get("write_value")
+            verify_value = item.get("verify_value")
+            warning = item.get("warning") or ""
+            error = item.get("error") or ""
+
+            if item.get("success"):
+                line = (
+                    f"✓ {ecu} (DID {did}) | 读: {fmt_byte(read_value)} | "
+                    f"写: {fmt_byte(write_value)} | 回读: {fmt_byte(verify_value)}"
+                )
+                if warning:
+                    line += f"\n  提示: {warning}"
+            else:
+                line = f"✗ {ecu} (DID {did}) | {error or '执行失败'}"
+
+            lines.append(line)
+
+        return "\n".join(lines)
+
     def _on_import_map(self):
         from PyQt5 import QtWidgets
         file_path, _ = QtWidgets.QFileDialog.getOpenFileName(
@@ -92,18 +130,32 @@ class LogConfigController(BaseController):
             # self._on_app_refresh()
 
     def _on_ecu_execute(self):
-        selected_ecus = self.view.ecu_select_combo.currentSelection()
-        log_level = self.view.ecu_log_level_combo.currentText()
+        if self._is_ecu_executing:
+            self.view.show_message("ECU 日志等级配置执行中，请稍候...", "info")
+            return
+
+        selected_ecus = list(self.view.ecu_select_combo.currentSelection())
+        log_level = self.view.ecu_log_level_combo.currentText().strip().upper()
         if not selected_ecus:
-            # 使用 Toast 提示而不是弹窗
-            MessageToast(self.view).show_toast("请选择至少一个ECU", 1)
+            self.view.show_message("请选择至少一个 ECU", "warning")
             return
 
         # 检查设备是否连接
-        if not self.log_config_service._device_service or not self.log_config_service._device_service.get_doip_client():
-             # 尝试恢复 Toast 提示
-             MessageToast(self.view).show_toast("设备未连接 (DoIP)，无法执行配置", 2)
-             return
+        device_service = self.log_config_service._device_service
+        doip_client = device_service.get_doip_client() if device_service else None
+        is_connected = False
+        if doip_client:
+            is_connected = doip_client.is_connected() if hasattr(doip_client, "is_connected") else bool(getattr(doip_client, "connected", False))
+        if not is_connected:
+            self.view.show_message("设备未连接 (DoIP)，无法执行配置", "error")
+            return
+
+        self._is_ecu_executing = True
+        self.view.ecu_execute_btn.setEnabled(False)
+        self.view.show_message(f"开始执行 {len(selected_ecus)} 个 ECU 的日志等级配置", "info")
+        self.view.append_log(
+            f"[ECU执行开始] 目标等级={log_level} | 目标ECU={', '.join(selected_ecus)} | 数量={len(selected_ecus)}"
+        )
 
         def task():
             return self.log_config_service.set_ecu_log_level(selected_ecus, log_level)
@@ -112,11 +164,33 @@ class LogConfigController(BaseController):
         # 连接日志信号到 View 的 append_log
         worker.log_signal.connect(self.view.append_log)
 
-        def on_finished(success):
-            if success:
-                self.view.show_message(f"已设置 {selected_ecus} 日志等级为 {log_level}", "success")
+        def on_finished(result):
+            self._is_ecu_executing = False
+            self.view.ecu_execute_btn.setEnabled(True)
+
+            if not isinstance(result, dict):
+                self.view.append_log("ECU 日志等级配置执行失败：返回结果为空或格式异常")
+                self.view.show_message("执行失败，请检查操作日志", "error")
+                return
+
+            summary = self._format_ecu_execute_result_text(result)
+            self.view.append_log("ECU 日志等级配置结果汇总：")
+            for line in summary.splitlines():
+                if line.strip():
+                    self.view.append_log(line)
+
+            if result.get("success"):
+                self.view.show_message(
+                    f"已完成 {result.get('success_count', 0)}/{result.get('total_count', 0)} 个 ECU 的日志等级配置",
+                    "info"
+                )
+            elif result.get("success_count", 0) > 0:
+                self.view.show_message(
+                    f"部分 ECU 配置成功：{result.get('success_count', 0)}/{result.get('total_count', 0)}",
+                    "warning"
+                )
             else:
-                self.view.show_message("设置失败，请检查日志", "error")
+                self.view.show_message("所有 ECU 日志等级配置均失败，请检查日志", "error")
 
         worker.result_signal.connect(on_finished)
         worker.start()

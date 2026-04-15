@@ -13,7 +13,7 @@ class ServiceConfigDialog(QtWidgets.QDialog):
     def __init__(self, parent=None, config_type="2E"):
         super().__init__(parent)
         self.setWindowTitle(f"添加服务配置 ({config_type})")
-        self.resize(1000, 700)
+        self.resize(1100, 760)
         self.config_type = config_type
         self.result_json = None
 
@@ -34,11 +34,11 @@ class ServiceConfigDialog(QtWidgets.QDialog):
         basic_layout = QtWidgets.QFormLayout(basic_group)
 
         self.content_edit = QtWidgets.QLineEdit()
-        self.content_edit.setPlaceholderText("例如: VIN码写入(0xF190)")
+        self.content_edit.setPlaceholderText("例如: VIN码写入(0xF190) / $31_使用模式切换(0x34D1)")
         self.content_edit.textChanged.connect(self.update_preview)
 
         self.service_id_edit = QtWidgets.QLineEdit()
-        self.service_id_edit.setPlaceholderText("例如: 0xF190")
+        self.service_id_edit.setPlaceholderText("例如: 0xF190 / 0xBEE7")
         self.service_id_edit.textChanged.connect(self.update_preview)
 
         self.help_edit = QtWidgets.QLineEdit()
@@ -46,11 +46,11 @@ class ServiceConfigDialog(QtWidgets.QDialog):
         self.help_edit.textChanged.connect(self.update_preview)
 
         self.help_image_edit = QtWidgets.QLineEdit()
-        self.help_image_edit.setPlaceholderText("可选，图片路径")
+        self.help_image_edit.setPlaceholderText("可选，图片绝对路径")
         self.help_image_edit.textChanged.connect(self.update_preview)
 
         basic_layout.addRow("内容描述 (content):", self.content_edit)
-        basic_layout.addRow("服务ID (serviceId):", self.service_id_edit)
+        basic_layout.addRow("DID (did):", self.service_id_edit)
         basic_layout.addRow("帮助说明 (help):", self.help_edit)
         basic_layout.addRow("图片路径 (helpImage):", self.help_image_edit)
 
@@ -64,43 +64,36 @@ class ServiceConfigDialog(QtWidgets.QDialog):
         self.param_state_group = self.create_param_group("选择参数状态 (paramState)")
         self.form_layout.addWidget(self.param_state_group)
 
-        # 4. Start Routine (startRoutine) - Only for 31_2F
+        # 4. 例程控制类型 (routineControlType) - Only for 31_2F
+        self.routine_control_group = None
         if self.config_type == "31_2F":
-            self.start_routine_group = self.create_param_group("Start Routine (startRoutine)")
-            self.form_layout.addWidget(self.start_routine_group)
+            self.routine_control_group = self.create_param_group("例程控制类型 (routineControlType)", default_type="dropdown")
+            self.form_layout.addWidget(self.routine_control_group)
 
-        # 5. 请求配置 (requestConfig)
-        req_group = QtWidgets.QGroupBox("请求配置 (requestConfig)")
+        # 5. 请求元数据（扁平字段）
+        req_group = QtWidgets.QGroupBox("请求元数据（Root Fields）")
         req_layout = QtWidgets.QFormLayout(req_group)
 
-        self.req_service_edit = QtWidgets.QLineEdit()
-        if self.config_type == "2E":
-            self.req_service_edit.setText("0x2E")
-        elif self.config_type == "31_2F":
-            self.req_service_edit.setText("0x31")
+        self.req_service_edit = QtWidgets.QLineEdit("0x2E" if self.config_type == "2E" else "0x31")
         self.req_service_edit.textChanged.connect(self.update_preview)
 
-        self.req_subfunc_edit = QtWidgets.QLineEdit()
-        self.req_subfunc_edit.setPlaceholderText("例如: 0x01 (可选)")
+        self.req_subfunc_edit = QtWidgets.QLineEdit("00" if self.config_type == "2E" else "0x01")
+        self.req_subfunc_edit.setPlaceholderText("例如: 0x01")
         self.req_subfunc_edit.textChanged.connect(self.update_preview)
 
-        self.req_did_edit = QtWidgets.QLineEdit()
-        self.req_did_edit.setPlaceholderText("例如: 0xF190")
-        self.req_did_edit.textChanged.connect(self.update_preview)
+        self.req_param_len_spin = QtWidgets.QSpinBox()
+        self.req_param_len_spin.setRange(0, 4096)
+        self.req_param_len_spin.setValue(1)
+        self.req_param_len_spin.valueChanged.connect(self.update_preview)
 
         self.req_source_combo = NoScrollComboBox()
-        self.req_source_combo.addItems(["raw", "ascii", "DPT"])
+        self.req_source_combo.addItems(["calculated", "ascii", "fixed", "manual"])
         self.req_source_combo.currentTextChanged.connect(self.update_preview)
-
-        self.req_conversion_combo = NoScrollComboBox()
-        self.req_conversion_combo.addItems(["none", "ip_le", "u32_le", "u16_le"])
-        self.req_conversion_combo.currentTextChanged.connect(self.update_preview)
 
         req_layout.addRow("Service:", self.req_service_edit)
         req_layout.addRow("SubFunction:", self.req_subfunc_edit)
-        req_layout.addRow("DataIdentifier:", self.req_did_edit)
-        req_layout.addRow("Value Source:", self.req_source_combo)
-        req_layout.addRow("Conversion:", self.req_conversion_combo)
+        req_layout.addRow("paramByteLength:", self.req_param_len_spin)
+        req_layout.addRow("source:", self.req_source_combo)
 
         self.form_layout.addWidget(req_group)
         self.form_layout.addStretch()
@@ -132,7 +125,7 @@ class ServiceConfigDialog(QtWidgets.QDialog):
 
         main_layout.addWidget(right_panel, stretch=2)
 
-    def create_param_group(self, title):
+    def create_param_group(self, title, default_type="fixed"):
         group = QtWidgets.QGroupBox(title)
         layout = QtWidgets.QFormLayout(group)
         widgets = {}
@@ -140,19 +133,18 @@ class ServiceConfigDialog(QtWidgets.QDialog):
         # Type Dropdown
         type_combo = NoScrollComboBox()
         type_combo.addItems(["fixed", "input", "dropdown", "checkabledropdown"])
+        type_combo.setCurrentText(default_type)
         layout.addRow("类型 (Type):", type_combo)
         widgets["type"] = type_combo
 
         # Default Value
-        default_edit = QtWidgets.QLineEdit()
-        default_edit.setPlaceholderText("默认值")
-        default_edit.setText("---")  # Set default value to '---'
+        default_edit = QtWidgets.QLineEdit("---")
         layout.addRow("默认值 (default):", default_edit)
         widgets["default"] = default_edit
 
         # Options (for dropdown)
         options_edit = QtWidgets.QPlainTextEdit()
-        options_edit.setPlaceholderText("选项列表，每行一个\n例如:\n选项A\n选项B")
+        options_edit.setPlaceholderText("选项列表，每行一个")
         options_edit.setFixedHeight(80)
         options_label = QtWidgets.QLabel("选项 (options):")
         layout.addRow(options_label, options_edit)
@@ -166,6 +158,14 @@ class ServiceConfigDialog(QtWidgets.QDialog):
         layout.addRow(placeholder_label, placeholder_edit)
         widgets["placeholder"] = placeholder_edit
         widgets["placeholder_label"] = placeholder_label
+
+        # Validation (for input)
+        validation_combo = NoScrollComboBox()
+        validation_combo.addItems(["", "ip", "port", "string"])
+        validation_label = QtWidgets.QLabel("校验 (validation):")
+        layout.addRow(validation_label, validation_combo)
+        widgets["validation"] = validation_combo
+        widgets["validation_label"] = validation_label
 
         # Value (for fixed)
         value_edit = QtWidgets.QLineEdit()
@@ -187,43 +187,29 @@ class ServiceConfigDialog(QtWidgets.QDialog):
             placeholder_edit.setVisible(is_input)
             placeholder_label.setVisible(is_input)
 
+            validation_combo.setVisible(is_input)
+            validation_label.setVisible(is_input)
+
             value_edit.setVisible(is_fixed)
             value_label.setVisible(is_fixed)
 
             if is_fixed:
-                default_edit.setText("N/A")
-                value_edit.setText("N/A")
-                default_edit.setReadOnly(True)
-                value_edit.setReadOnly(True)
-            else:
-                default_edit.setReadOnly(False)
-                value_edit.setReadOnly(False)
-                if default_edit.text() == "N/A":
-                    default_edit.setText("---")
-                if value_edit.text() == "N/A":
-                    value_edit.clear()
+                if not value_edit.text():
+                    value_edit.setText("N/A")
+            elif value_edit.text() == "N/A":
+                value_edit.clear()
 
-            # Only update preview if UI setup is complete (or roughly complete)
-            # Simplest check: check if attributes exist if they are needed in get_current_data
-            if hasattr(self, 'param_obj_group') and hasattr(self, 'param_state_group'):
-                # For 31_2F, start_routine_group might be needed if setup is done
-                if self.config_type != "31_2F" or hasattr(self, 'start_routine_group'):
-                    self.update_preview()
+            self.update_preview()
 
         type_combo.currentTextChanged.connect(update_visibility)
         default_edit.textChanged.connect(self.update_preview)
         options_edit.textChanged.connect(self.update_preview)
         placeholder_edit.textChanged.connect(self.update_preview)
+        validation_combo.currentTextChanged.connect(self.update_preview)
         value_edit.textChanged.connect(self.update_preview)
 
         # Init visibility
-        # Temporarily disconnect or just don't call update_preview inside update_visibility if not ready
-        # But update_visibility logic above handles it with the hasattr check.
-        # However, update_preview also gets called by textChanged signals which are connected above.
-        # But those signals won't fire during init.
-
-        # Manually set visibility without triggering preview update loop during init
-        update_visibility("fixed")
+        update_visibility(default_type)
 
         # Store widgets in group property to access later
         group.widgets = widgets
@@ -233,92 +219,72 @@ class ServiceConfigDialog(QtWidgets.QDialog):
         if not group_box:
             return {}
         widgets = getattr(group_box, "widgets", {})
-        data = {}
-
         ptype = widgets["type"].currentText()
-        data["type"] = ptype
+        data = {"type": ptype}
 
-        default_val = widgets["default"].text()
-        if default_val:
-            data["default"] = default_val
-
-        if "dropdown" in ptype:
-            raw_opts = widgets["options"].toPlainText()
-            opts = [line.strip() for line in raw_opts.split('\n') if line.strip()]
+        if ptype in {"dropdown", "checkabledropdown"}:
+            opts = [line.strip() for line in widgets["options"].toPlainText().splitlines() if line.strip()]
             data["options"] = opts
+            if widgets["default"].text().strip():
+                data["default"] = widgets["default"].text().strip()
         elif ptype == "input":
-            ph = widgets["placeholder"].text()
-            if ph:
-                data["placeholder"] = ph
-        elif ptype == "fixed":
-            val = widgets["value"].text()
-            if val:
-                data["value"] = val
+            if widgets["placeholder"].text().strip():
+                data["placeholder"] = widgets["placeholder"].text().strip()
+            if widgets["validation"].currentText().strip():
+                data["validation"] = widgets["validation"].currentText().strip()
+        else:
+            data["value"] = widgets["value"].text().strip() or "N/A"
 
         return data
 
     def get_current_data(self):
-        # Safety check for early calls
-        if not hasattr(self, 'param_obj_group') or not hasattr(self, 'param_state_group'):
-            return {}
-
         data = {
-            # Index will be determined by controller
-            "content": self.content_edit.text() or "新建服务",
-            "serviceId": self.service_id_edit.text(),
+            "content": self.content_edit.text().strip() or "新建服务",
+            "did": self.service_id_edit.text().strip(),
+            "service": self.req_service_edit.text().strip(),
+            "subFunction": self.req_subfunc_edit.text().strip(),
+            "paramByteLength": int(self.req_param_len_spin.value()),
+            "help": self.help_edit.text().strip(),
+            "helpImage": self.help_image_edit.text().strip(),
             "paramObject": self.get_param_data(self.param_obj_group),
             "paramState": self.get_param_data(self.param_state_group),
-            "requestConfig": {
-                "service": self.req_service_edit.text(),
-                "dataIdentifier": self.req_did_edit.text()
-            }
         }
-
-        # Optional fields
-        if self.help_edit.text():
-            data["help"] = self.help_edit.text()
-        if self.help_image_edit.text():
-            data["helpImage"] = self.help_image_edit.text()
-
-        sub_func = self.req_subfunc_edit.text()
-        if sub_func:
-            data["requestConfig"]["subFunction"] = sub_func
-
-        source = self.req_source_combo.currentText()
-        if source != "raw":
-             data["requestConfig"]["paramValueSource"] = source
-
-        conversion = self.req_conversion_combo.currentText()
-        if conversion != "none":
-             data["requestConfig"]["conversion"] = conversion
-
+        selected_source = self.req_source_combo.currentText().strip().lower()
+        if selected_source == "manual":
+            data["source"] = "manual"
+            data["rawRequest"] = True
+        if self.config_type == "31_2F" and self.routine_control_group is not None:
+            data["routineControlType"] = self.get_param_data(self.routine_control_group)
         return data
 
     def update_preview(self):
         if not hasattr(self, 'preview_edit'):
             return
-        data = self.get_current_data()
+        try:
+            data = self.get_current_data()
+        except Exception as e:
+            data = {"previewError": str(e)}
         self.preview_edit.setText(json.dumps(data, indent=2, ensure_ascii=False))
 
     def on_insert(self):
         # Validation
         service_id = self.service_id_edit.text().strip()
         if not service_id:
-             self.show_toast("校验失败: 服务ID不能为空", "error")
+             self.show_toast("校验失败: DID不能为空", "error")
              return
 
-        # 1. Hex validation for Service ID
+        # 1. Hex validation for DID
         if not re.match(r'^0x[0-9A-Fa-f]+$', service_id):
-             self.show_toast("校验失败: 服务ID必须是十六进制 (如 0xF190)", "error")
+             self.show_toast("校验失败: DID必须是十六进制 (如 0xF190)", "error")
              return
 
         try:
              val = int(service_id, 16)
              if val < 0 or val > 0xFFFF:
-                 self.show_toast("校验失败: 服务ID超出有效范围 (0x0000 - 0xFFFF)", "error")
+                 self.show_toast("校验失败: DID超出有效范围 (0x0000 - 0xFFFF)", "error")
                  return
         except ValueError:
-             self.show_toast("校验失败: 服务ID无效", "error")
+             self.show_toast("校验失败: DID无效", "error")
              return
 
         # 2. Help Image validation
@@ -330,10 +296,6 @@ class ServiceConfigDialog(QtWidgets.QDialog):
             if not os.path.exists(help_img) or not os.path.isfile(help_img):
                  self.show_toast("校验失败: 图片文件不存在", "error")
                  return
-
-        if not self.req_did_edit.text():
-             self.show_toast("校验失败: DataIdentifier不能为空", "error")
-             return
 
         self.result_json = self.get_current_data()
         self.accept()
