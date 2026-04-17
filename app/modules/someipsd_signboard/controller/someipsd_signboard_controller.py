@@ -523,13 +523,19 @@ class SomeIpSignboardController(BaseController):
 
             # Search logic
             if self.search_query:
-                # Naive search check
-                found = False
-                if self.search_query in item['service_name'].lower(): found = True
-                if self.search_query in item['service_id'].lower(): found = True
-                if self.search_query == str(item['index']): found = True
+                keywords = [k.strip() for k in self.search_query.split() if k.strip()]
+                all_found = True
+                for kw in keywords:
+                    kw_found = False
+                    if kw in item['service_name'].lower(): kw_found = True
+                    elif kw in item['service_id'].lower(): kw_found = True
+                    elif kw == str(item.get('index', '')): kw_found = True
+                    
+                    if not kw_found:
+                        all_found = False
+                        break
 
-                if not found:
+                if not all_found:
                     continue
 
             filtered.append(item)

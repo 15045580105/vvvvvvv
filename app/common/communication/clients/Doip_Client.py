@@ -228,19 +228,22 @@ class DoIPClientHandler:
                     flattened = self._flatten_responses(resp)
                     if flattened:
                         responses.extend(flattened)
-                        # 如果不需要收集所有响应，且已经收到响应，则提前退出
-                        if not return_all:
-                            # 简单判断：如果收到肯定响应或否定响应，且不是 0x78 (RCRRP)，则认为交互完成
-                            # 这里简化处理：只要收到数据就退出，除非是 Pending
-                            # 检查是否包含 0x7F ... 0x78
-                            has_pending = False
-                            for r in flattened:
-                                if len(r) >= 3 and r[0] == 0x7F and r[2] == 0x78:
-                                    has_pending = True
-                                    break
-
-                            if not has_pending:
+                        
+                        has_pending = False
+                        for r in flattened:
+                            if len(r) >= 3 and r[0] == 0x7F and r[2] == 0x78:
+                                has_pending = True
+                                # 将通过 logger 打印的信息同时作为 info 级别的显示，如果有外接 logger 适配器就能看到
+                                logger.info(f"收到挂起状态 (Pending): {r.hex()}")
                                 break
+                                
+                        if has_pending:
+                            # 收到 NRC 0x78 (Pending)，根据 UDS 规范，应重新开始计时等待
+                            start_recv = time.time()
+
+                        # 如果不需要收集所有响应，且已经收到非Pending响应，则提前退出
+                        if not return_all and not has_pending:
+                            break
                     # 继续循环，直到 timeout
                 except TimeoutError:
                     # 没有更多响应，退出循环
@@ -268,11 +271,15 @@ class DoIPClientHandler:
             for i, r in enumerate(responses):
                 logger.info(f"  [{i}] {r.hex()}")
 
+            # 过滤真正的最终响应，排除掉 0x78 (Pending)，防止默认情况下意外返回 0x78
+            final_candidates = [r for r in responses if not (len(r) >= 3 and r[0] == 0x7F and r[2] == 0x78)]
+            candidates = final_candidates if final_candidates else responses
+
             selected = None
 
             # 1) 如果指定了 target_did，优先查找能成功解析且 DID 匹配的响应
-            if target_did is not None and responses:
-                for r in responses:
+            if target_did is not None and candidates:
+                for r in candidates:
                     parsed = parse_read_did_response(r, target_did)
                     if parsed.get("ok"):
                         selected = r
@@ -280,21 +287,21 @@ class DoIPClientHandler:
                         break
 
             # 2) 如果指定了 response_index，则按索引选择
-            if selected is None and response_index is not None and responses:
+            if selected is None and response_index is not None and candidates:
                 try:
-                    selected = responses[response_index]
+                    selected = candidates[response_index]
                     logger.info(f"按 response_index={response_index} 选中响应: {selected.hex()}")
                 except Exception:
                     logger.warning(f"response_index={response_index} 超出范围")
 
             # 3) 若未指定，且 prefer_last 为 True，则返回最后一条
-            if selected is None and prefer_last and responses:
-                selected = responses[-1]
+            if selected is None and prefer_last and candidates:
+                selected = candidates[-1]
                 logger.info("优先选择最后一条响应")
 
             # 4) 回退到默认（第一条），如果存在
-            if selected is None and responses:
-                selected = responses[0]
+            if selected is None and candidates:
+                selected = candidates[0]
                 logger.info("回退选择第一条响应")
 
             if selected is None:

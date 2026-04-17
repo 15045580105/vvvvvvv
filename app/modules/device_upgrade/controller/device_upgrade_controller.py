@@ -800,11 +800,18 @@ class UpgradeController(BaseController):
     def _on_worker_progress(self, percent, phase, msg):
         # Logic to update two-stage progress bar
         if self.is_stress_mode:
-             # Calculate global progress?
-             # Current logic is single cycle.
-             # We want "Total Stress Progress".
-             # But "percent" here is for single file.
-             pass
+            try:
+                total_tasks = self.stress_target_loop * len(self.stress_task_list)
+                if total_tasks > 0:
+                    # 获取当前正在执行的任务索引 (在 _run_next_stress_step 中已经 +1，所以这里要 -1)
+                    current_idx = self.stress_pkg_index - 1
+                    # 已经完全跑完的任务总数
+                    completed_tasks = (self.stress_current_loop * len(self.stress_task_list)) + current_idx
+                    # 当前任务所占比例加上已完成的任务比例
+                    total_percent = int(((completed_tasks + (percent / 100.0)) / total_tasks) * 100)
+                    self.view.stress_progress.setValue(min(total_percent, 100))
+            except:
+                pass
         else:
              self.view.normal_progress.setValue(percent)
 
@@ -817,14 +824,6 @@ class UpgradeController(BaseController):
         if self.is_stress_mode:
              # Handle Loop
              if success:
-                 # Add completed file size to accumulated total
-                 try:
-                     current_idx = self.stress_pkg_index - 1
-                     if 0 <= current_idx < len(self.stress_pkg_list):
-                         current_file_path = self.stress_pkg_list[current_idx]
-                         self.stress_completed_bytes += os.path.getsize(current_file_path)
-                 except:
-                     pass
 
                  # Proceed to next package or next loop
                  self._log("升级完成，准备自动进入下一轮...", is_info=True)

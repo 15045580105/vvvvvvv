@@ -587,7 +587,7 @@ class SomeIpSignboardView(BaseView):
         header_layout = QHBoxLayout()
         header_text_layout = QVBoxLayout()
 
-        title_lbl = QLabel("SOME/IP 服务看板")
+        title_lbl = QLabel("SOME/IP-SD 服务看板")
         title_lbl.setStyleSheet("font-size: 24px; font-weight: bold; color: #111827;")
         subtitle_lbl = QLabel("实时监控与服务发现")
         subtitle_lbl.setStyleSheet("font-size: 14px; color: #6B7280;")
