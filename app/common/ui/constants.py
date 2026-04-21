@@ -13,7 +13,8 @@ from app.modules.file_transfer.controller.file_transfer_controller import FileTr
 from app.modules.log_config.controller.log_config_controller import LogConfigController
 from app.modules.log_management.controller.log_management_controller import LogDownloadController
 from app.modules.performance_management.controller.performance_management_controller import PerformanceController
-from app.modules.someip_signboard.controller.someip_signboard_controller import SomeIpSignboardController
+from app.modules.someip_signboard.controller.someip_signboard_controller import PacketParserController
+from app.modules.someipsd_signboard.controller.someipsd_signboard_controller import SomeIpSignboardController
 # from app.modules.script_exec.controller.script_exec_controller import ScriptExecController
 from app.modules.uds_sequence.controller.uds_sequence_controller import UDSSequenceController
 
@@ -64,6 +65,7 @@ class PageConfig:
     PAGE_CLOCK = "时钟管理"
     PAGE_DATA_CONVERTER = "数据格式转换"
     PAGE_SOMEIP = "服务发现信息面板"
+    PAGE_SOMEIP_PARSER = "报文解析界面"
     PAGE_DEMO = "示例页面"
 
     # 导航分组常量（之前缺失，补上）
@@ -93,6 +95,7 @@ class PageConfig:
     PAGE_CLOCK_DISPLAY = f"{EMOJI_CLOCK} {PAGE_CLOCK}"
     PAGE_DATA_CONVERTER_DISPLAY = f"{EMOJI_DATA_CONVERTER} {PAGE_DATA_CONVERTER}"
     PAGE_SOMEIP_DISPLAY = f"{EMOJI_SOMEIP} {PAGE_SOMEIP}"
+    PAGE_SOMEIP_PARSER_DISPLAY = f"{EMOJI_SOMEIP} {PAGE_SOMEIP_PARSER}"
     PAGE_DEMO_DISPLAY = f"🎉 {PAGE_DEMO}"
 
 
@@ -113,6 +116,7 @@ class PageConfig:
     CLOCK_MANAGEMENT_TAB_NAME = PAGE_CLOCK_DISPLAY
     DATA_CONVERTER_TAB_NAME = PAGE_DATA_CONVERTER_DISPLAY
     SOMEIP_SIGNBOARD_TAB_NAME = PAGE_SOMEIP_DISPLAY
+    SOMEIP_PARSER_TAB_NAME = PAGE_SOMEIP_PARSER_DISPLAY
     DEMO_TAB_NAME = PAGE_DEMO_DISPLAY
 
     # 统一页面定义：(注册名, 显示名, 控制器类, 是否对话框)
@@ -133,6 +137,7 @@ class PageConfig:
         (PAGE_UDS, PAGE_UDS_DISPLAY, UDSSequenceController, PAGE_TYPE_TAB),
         (PAGE_CLOCK, PAGE_CLOCK_DISPLAY, ClockManagementController, PAGE_TYPE_TAB),
         (PAGE_SOMEIP, PAGE_SOMEIP_DISPLAY, SomeIpSignboardController, PAGE_TYPE_TAB),
+        (PAGE_SOMEIP_PARSER, PAGE_SOMEIP_PARSER_DISPLAY, PacketParserController, PAGE_TYPE_TAB),
         #(PAGE_DEMO, PAGE_DEMO_DISPLAY, DemoPageController, PAGE_TYPE_TAB),
     ]
 
@@ -153,7 +158,7 @@ class PageConfig:
         ]},
         NAV_GROUP_UPGRADE: {"children": [PAGE_UPGRADE_DISPLAY]},
         NAV_GROUP_CONFIG: {"children": [PAGE_LOG_CONFIG_DISPLAY, PAGE_COMMON_CONFIG_DISPLAY]},
-        NAV_GROUP_SOMEIP: {"children": [PAGE_SOMEIP_DISPLAY]},
+        NAV_GROUP_SOMEIP: {"children": [PAGE_SOMEIP_DISPLAY, PAGE_SOMEIP_PARSER_DISPLAY]},
         #NAV_GROUP_ADV: {"children": [PAGE_SCRIPT_DISPLAY]},
         #NAV_GROUP_DEMO: {"children": [PAGE_DEMO_DISPLAY]},
     }
