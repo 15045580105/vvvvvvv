@@ -73,8 +73,25 @@ class DIDModel(BaseModel):
         """向原始日志追加一行并更新 raw_data。"""
         text = payload.strip() if isinstance(payload, str) else payload
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")
-        self.raw_log.append(f"[{timestamp}] {prefix}: {text or '-'}")
+        log_entry = f"[{timestamp}] {prefix}: {text or '-'}"
+        self.raw_log.append(log_entry)
         self.raw_data = "\n".join(self.raw_log)
+
+        try:
+            from app.common.log.operation_log_manager import OperationLogManager
+            OperationLogManager.instance().append_log("DID数据管理", f"{prefix}: {text or '-'}")
+            import os
+            log_dir = os.path.join(os.getcwd(), 'app', 'modules', 'did_management', 'log')
+            if not os.path.exists(log_dir):
+                os.makedirs(log_dir)
+
+            log_filename = f"did_{datetime.now().strftime('%Y%m%d')}.log"
+            log_path = os.path.join(log_dir, log_filename)
+
+            with open(log_path, 'a', encoding='utf-8') as f:
+                f.write(log_entry + "\n")
+        except Exception:
+            pass
 
     def apply_update(
         self,
@@ -125,4 +142,3 @@ class DIDModel(BaseModel):
             row.value = ""
             row.value_color = None
         self.dataChanged.emit()
-
