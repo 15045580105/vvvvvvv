@@ -5,15 +5,12 @@ from PyInstaller.building.build_main import Analysis, PYZ, EXE
 
 _spec_dir = os.path.abspath(os.getcwd())
 
-# 优先使用精简后的32位Python(由tools/build_embeddedd_python32.ps1生成
-_default_min_python32 = os.path.abspath(os.path.join(_spec_dir, "build", "python32_min"))
+# 默认使用系统安装的 32 位 Python 作为打包来源不再依赖 build/python32_min。
+# 如需临时覆盖，仍可通过环境变量 PYTHON32_HOME 指定。
+_default_python32_home = r"C:\Program Files (x86)\Python39-32"
 
 # 收集 32 位 Python 运行时到 onefile exe 内部（运行时解压到 sys._MEIPASS/runtime32）
-# 可通过环境变量 PYTHON32_HOME 覆盖来源路径。
-_python32_home = os.environ.get(
-    "PYTHON32_HOME",
-    _default_min_python32 if os.path.exists(_default_min_python32) else r"C:\Program Files (x86)\Python39-32",
-)
+_python32_home = os.environ.get("PYTHON32_HOME", _default_python32_home)
 
 
 def _collect_dir_datas(src_root: str, dest_prefix: str):

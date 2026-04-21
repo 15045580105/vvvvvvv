@@ -576,23 +576,6 @@ class DIDView(BaseView):
         log_entry = f"[{timestamp}] {message}"
         self.raw_text.append(log_entry)
         self.raw_text.moveCursor(QtGui.QTextCursor.End)
-        self._write_to_log_file(log_entry)
-
-    def _write_to_log_file(self, content: str):
-        try:
-            import os
-            from datetime import datetime
-            log_dir = os.path.join(os.getcwd(), 'app', 'modules', 'did_management', 'log')
-            if not os.path.exists(log_dir):
-                os.makedirs(log_dir)
-
-            log_filename = f"did_{datetime.now().strftime('%Y%m%d')}.log"
-            log_path = os.path.join(log_dir, log_filename)
-
-            with open(log_path, 'a', encoding='utf-8') as f:
-                f.write(content + "\n")
-        except Exception:
-            pass
 
     def resizeEvent(self, event):
         super().resizeEvent(event)

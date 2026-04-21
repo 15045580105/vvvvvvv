@@ -988,34 +988,48 @@ class UpgradeController(BaseController):
         if hasattr(self.view, "upgrade_log"):
             self.view.upgrade_log.append(log_entry)
 
-        self._write_to_log_file(log_entry)
         OperationLogManager.instance().append_log("设备升级", log_entry)
 
-    def _log_packet_info(self, packet, info):
-        """Custom format: Packet   Info"""
-        # Align packet to some width, e.g., 30 chars
-        padded_packet = f"{packet:<30}"
-        message = f"{padded_packet} {info}"
-
-        timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+    def append_log(self, message: str):
+        timestamp = datetime.datetime.now().strftime("[%Y-%m-%d %H:%M:%S.%f]")[:-3] + "]"
         log_entry = f"{timestamp} {message}"
 
         if hasattr(self.view, "upgrade_log"):
             self.view.upgrade_log.append(log_entry)
 
-        self._write_to_log_file(log_entry)
         OperationLogManager.instance().append_log("设备升级", log_entry)
 
-    def _write_to_log_file(self, content):
-        try:
-            log_dir = os.path.join(os.getcwd(), 'app', 'modules', 'device_upgrade', 'log')
-            if not os.path.exists(log_dir):
-                os.makedirs(log_dir)
+    def select_all_nodes(self, state: bool):
+        """Select or deselect all nodes in the tree."""
+        # Assuming the root node is at index 0
+        root_index = self.view.model.index(0, 0)
+        if not root_index.isValid():
+            return
 
-            log_filename = f"upgrade_{datetime.datetime.now().strftime('%Y%m%d')}.log"
-            log_path = os.path.join(log_dir, log_filename)
+        # Recursively set the check state
+        def _set_check_state(index, state):
+            if not index.isValid():
+                return
 
-            with open(log_path, 'a', encoding='utf-8') as f:
-                f.write(content + "\n")
-        except:
-            pass
+            # Set the check state of the current item
+            item = self.view.model.itemFromIndex(index)
+            if item:
+                item.setCheckState(0, state)
+                item.setData(state, 32) # Custom role for stress task enabled/disabled
+
+            # Recursively set the check state for children
+            if item and item.hasChildren():
+                for row in range(item.rowCount()):
+                    child_index = item.child(row).index()
+                    _set_check_state(child_index, state)
+
+        # Get the current check state of the root node
+        root_item = self.view.model.itemFromIndex(root_index)
+        if root_item:
+            current_state = root_item.checkState(0)
+
+            # Toggle the state
+            new_state = not current_state if state is None else state
+
+            # Set the new state
+            _set_check_state(root_index, new_state)

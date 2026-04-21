@@ -80,16 +80,6 @@ class DIDModel(BaseModel):
         try:
             from app.common.log.operation_log_manager import OperationLogManager
             OperationLogManager.instance().append_log("DID数据管理", f"{prefix}: {text or '-'}")
-            import os
-            log_dir = os.path.join(os.getcwd(), 'app', 'modules', 'did_management', 'log')
-            if not os.path.exists(log_dir):
-                os.makedirs(log_dir)
-
-            log_filename = f"did_{datetime.now().strftime('%Y%m%d')}.log"
-            log_path = os.path.join(log_dir, log_filename)
-
-            with open(log_path, 'a', encoding='utf-8') as f:
-                f.write(log_entry + "\n")
         except Exception:
             pass
 
