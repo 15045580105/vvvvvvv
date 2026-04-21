@@ -216,6 +216,29 @@ class SettingsWindow(QWidget):
             self.current_page = page_mapping[page_id]
             self.stacked_widget.setCurrentWidget(self.current_page)
 
+    def select_page(self, page_id: str, focus_target: str | None = None):
+        target_item = None
+        root_count = self.tree_widget.topLevelItemCount()
+        for i in range(root_count):
+            root = self.tree_widget.topLevelItem(i)
+            stack = [root]
+            while stack:
+                item = stack.pop(0)
+                if item.data(0, Qt.UserRole) == page_id:
+                    target_item = item
+                    break
+                for child_index in range(item.childCount()):
+                    stack.append(item.child(child_index))
+            if target_item:
+                break
+
+        if target_item is not None:
+            self.tree_widget.setCurrentItem(target_item)
+            self.on_tree_item_clicked(target_item, 0)
+
+        if page_id == "doip" and focus_target == "network_interface":
+            QtCore.QTimer.singleShot(120, self.doip_page.focus_network_interface)
+
     def _collect_all_settings(self) -> dict:
         """Collect settings from all pages without persisting."""
         settings: dict = {}

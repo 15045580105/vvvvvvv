@@ -210,13 +210,15 @@ class MainView(QtWidgets.QMainWindow):
             device_txt = "--设备在线"
         self.performance_label.setText(f"💻 CPU: {cpu_txt} | 内存: {mem_txt} | 📡 {device_txt}")
 
-    def show_settings_dialog(self):
+    def show_settings_dialog(self, page_id: str | None = None, focus_target: str | None = None):
         if self.settings_controller is None:
             self.settings_controller = AppConfigController(self)
-
-        self.settings_controller.view.show()
-        self.settings_controller.view.raise_()
-        self.settings_controller.view.activateWindow()
+        if hasattr(self.settings_controller, "show_page"):
+            self.settings_controller.show_page(page_id or "doip", focus_target=focus_target)
+        else:
+            self.settings_controller.view.show()
+            self.settings_controller.view.raise_()
+            self.settings_controller.view.activateWindow()
 
     def show_dpt_convert_tool(self):
         """显示DPT文件转换工具"""

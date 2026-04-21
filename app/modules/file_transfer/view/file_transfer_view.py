@@ -6,6 +6,7 @@ from PyQt5.QtWidgets import (
     QStyle, QGroupBox, QSplitter,
     QMessageBox, QComboBox, QTextEdit
 )
+from app.common.log.operation_log_manager import OperationLogManager
 from app.presentation.views.base_view import BaseView
 from app.common.ui.modern_widgets import MessageToast
 from app.common.ui.log_splitter import LogAreaSplitter
@@ -89,6 +90,8 @@ class FileTransferView(BaseView):
     # device_selected = pyqtSignal(dict) # Select device from combo
 
     def setup_ui(self):
+        OperationLogManager.instance().register_module("文件传输")
+
         # 使用垂直布局
         outer_layout = QVBoxLayout(self)
         outer_layout.setContentsMargins(0, 0, 0, 0)
@@ -354,6 +357,7 @@ class FileTransferView(BaseView):
 
     def append_log(self, message):
         self.transfer_log.append(f"[{QtCore.QTime.currentTime().toString()}] {message}")
+        OperationLogManager.instance().append_log("文件传输", message)
 
     def show_toast(self, message, message_type=1): # Default to Error (1) as requested context implies "Not Connected"
         # But generic usage might be Info.

@@ -1,7 +1,7 @@
-from PyQt5 import QtWidgets
+from PyQt5 import QtWidgets, QtGui
 from PyQt5.QtWidgets import QHeaderView
 from PyQt5.QtCore import Qt as _Qt
-from PyQt5.QtCore import QDateTime, QEvent, QTimer, QSettings
+from PyQt5.QtCore import QDateTime, QEvent, QTimer, QSettings, pyqtSignal
 
 from app.common.ui.widgets import ModernButton, TableButton, LoadingSpinner, ResponsiveButtonFlowPanel
 from app.common.log.operation_log_manager import OperationLogManager
@@ -25,6 +25,8 @@ OFFLINE_ICON = "🟥"
 
 
 class DeviceView(BaseView):
+    log_link_clicked = pyqtSignal(str)
+
     def setup_ui(self):
         self.layout = QtWidgets.QVBoxLayout(self)
         self.layout.setSpacing(16)
@@ -181,9 +183,12 @@ class DeviceView(BaseView):
 
         log_group = QtWidgets.QGroupBox("操作日志")
         log_layout = QtWidgets.QVBoxLayout()
-        self.log_view = QtWidgets.QTextEdit()
+        self.log_view = QtWidgets.QTextBrowser()
         self.log_view.setReadOnly(True)
+        self.log_view.setOpenLinks(False)
+        self.log_view.setOpenExternalLinks(False)
         self.log_view.setPlaceholderText("这里显示用户的操作日志...")
+        self.log_view.anchorClicked.connect(self._on_log_anchor_clicked)
         LogPanelBuilder.attach_search(log_layout, self.log_view)
         log_layout.addWidget(self.log_view)
         log_group.setLayout(log_layout)
@@ -556,8 +561,51 @@ class DeviceView(BaseView):
 
         self._refresh_table_layout()
 
-    def append_log(self, text: str):
+    def _append_log_entry(self, text: str, *, link_text: str | None = None, link_target: str | None = None):
         timestamp = QDateTime.currentDateTime().toString("yyyy-MM-dd HH:mm:ss")
-        log_msg = f"[{timestamp}] {text}"
-        self.log_view.append(log_msg)
+        doc = self.log_view.document()
+        cursor = QtGui.QTextCursor(doc)
+        cursor.movePosition(QtGui.QTextCursor.End)
+        if not doc.isEmpty():
+            cursor.insertBlock()
+
+        timestamp_format = QtGui.QTextCharFormat()
+        timestamp_format.setForeground(QtGui.QColor("#6B7280"))
+        timestamp_format.setAnchor(False)
+        timestamp_format.setFontUnderline(False)
+
+        text_format = QtGui.QTextCharFormat()
+        text_format.setForeground(QtGui.QColor("#111827"))
+        text_format.setAnchor(False)
+        text_format.setFontUnderline(False)
+
+        link_format = QtGui.QTextCharFormat()
+        link_format.setForeground(QtGui.QColor("#2563EB"))
+        link_format.setAnchor(True)
+        link_format.setFontUnderline(True)
+        if link_target:
+            link_format.setAnchorHref(link_target)
+
+        cursor.insertText(f"[{timestamp}] ", timestamp_format)
+        cursor.insertText(text, text_format)
+        if link_text and link_target:
+            if text and not text.endswith(" "):
+                cursor.insertText(" ", text_format)
+            cursor.insertText(link_text, link_format)
+
+        self.log_view.setTextCursor(cursor)
+        self.log_view.ensureCursorVisible()
+
+    def append_log(self, text: str):
+        self._append_log_entry(text)
         OperationLogManager.instance().append_log("设备管理", text)
+
+    def append_link_log(self, text: str, link_text: str, link_target: str):
+        self._append_log_entry(text, link_text=link_text, link_target=link_target)
+        OperationLogManager.instance().append_log("设备管理", f"{text} {link_text}")
+
+    def _on_log_anchor_clicked(self, url):
+        if url is None:
+            return
+        self.log_link_clicked.emit(url.toString())
+

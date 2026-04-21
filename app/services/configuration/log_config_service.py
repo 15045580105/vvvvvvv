@@ -3,6 +3,8 @@ import configparser
 import io
 import json
 import os
+import shlex
+import threading
 from PyQt5.QtCore import pyqtSignal # Add pyqtSignal import
 from app.common.communication.clients.ssh_client import SSHClient  # Add SSHClient import
 
@@ -34,6 +36,7 @@ class LogConfigService(BaseService):
         self._device_service: Optional[DeviceService] = None
         self._topology_service: Optional[TopologyService] = None
         self._map_file_path: Optional[str] = None # Store the map file path
+        self._pending_reconnect_timer: Optional[threading.Timer] = None
 
     def inject_device_service(self, device_service: DeviceService):
         self._device_service = device_service
@@ -429,6 +432,32 @@ class LogConfigService(BaseService):
         """重启 CCU (UDS 11 03)"""
         _log = self._get_log_emit()
 
+        def schedule_delayed_reconnect(delay_seconds: float = 60.0):
+            if not self._device_service:
+                _log("DeviceService 未就绪，无法安排重连")
+                return
+
+            old_timer = self._pending_reconnect_timer
+            if old_timer and old_timer.is_alive():
+                old_timer.cancel()
+
+            _log(f"已发送重启请求，等待 {int(delay_seconds)} 秒后自动发起设备重连...")
+
+            def delayed_reconnect():
+                try:
+                    self._get_log_emit()(f"等待 {int(delay_seconds)} 秒结束，开始触发设备重连")
+                    if self._device_service:
+                        self._device_service.reset_connection_clients()
+                        self._get_log_emit()("已清理旧连接实例，准备发起重连")
+                        self._device_service.reconnect_device(log_signal=self.log_signal)
+                finally:
+                    self._pending_reconnect_timer = None
+
+            timer = threading.Timer(delay_seconds, delayed_reconnect)
+            timer.daemon = True
+            self._pending_reconnect_timer = timer
+            timer.start()
+
         if not self._device_service:
             _log("DeviceService 未就绪")
             return False
@@ -445,8 +474,8 @@ class LogConfigService(BaseService):
             # 1. 检查正响应 51 03
             if resp and len(resp) >= 2 and resp[0] == 0x51:
                 _log(f"收到重启确认响应: {resp.hex(' ').upper()} (成功)")
-                # 重连设备，并传递当前的日志信号，以便重连日志能打印到日志模块窗口
-                self._device_service.reconnect_device(log_signal=self.log_signal)
+                # 等待一段时间让 CCU 完成重启，再异步触发重连，避免阻塞界面
+                schedule_delayed_reconnect(60.0)
                 return True
 
             # 2. 检查负响应 7F 11 XX
@@ -456,6 +485,7 @@ class LogConfigService(BaseService):
 
             # 3. 无响应但无异常
             _log(f"指令已发送，未收到标准确认，Payload: {resp.hex(' ') if resp else 'Empty'}")
+            schedule_delayed_reconnect(60.0)
             return True
 
         except Exception as e:
@@ -463,12 +493,197 @@ class LogConfigService(BaseService):
             # 4. 常见的连接断开错误，视为重启成功的标志
             if any(x in err_msg for x in ["Connection reset", "closed", "Broken pipe", "10053", "10054"]):
                 _log(f"连接断开，判定重启指令已生效: {err_msg}")
-                # 即使是异常导致的连接断开，也尝试重连并传递日志信号
-                self._device_service.reconnect_device(log_signal=self.log_signal)
+                # 即使是异常导致的连接断开，也延迟后异步触发重连
+                schedule_delayed_reconnect(60.0)
                 return True
 
             _log(f"发送重启指令时出现异常: {e}")
             return False # 其他异常视为失败
+
+    def _load_process_log_config_mapping(self) -> Dict[str, dict]:
+        _log = self._get_log_emit()
+
+        if not self._map_file_path:
+            _log("未导入 process_log_config_map.json 配置文件")
+            return {}
+
+        if not os.path.exists(self._map_file_path):
+            _log(f"映射文件不存在: {self._map_file_path}")
+            return {}
+
+        try:
+            with open(self._map_file_path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            mapping = data.get("process_log_configs", {})
+            if not isinstance(mapping, dict):
+                _log("映射文件中 process_log_configs 结构异常")
+                return {}
+            entry_count = len(mapping)
+            _log(f"映射文件加载完成：process_log_configs 共 {entry_count} 个条目")
+            if entry_count == 0:
+                _log("映射文件可读取，但 process_log_configs 为空；当前问题更可能是本地 JSON 内容异常，而不是远端 SSH / dlt_logstorage.conf")
+            return mapping
+        except Exception as exc:
+            _log(f"读取映射文件失败: {exc}")
+            return {}
+
+    def _get_ccua_app_ids_from_map(self) -> List[str]:
+        _log = self._get_log_emit()
+        mapping = self._load_process_log_config_mapping()
+        if not mapping:
+            return []
+
+        has_explicit_ecu = any(
+            isinstance(entry, dict) and str(entry.get("ecu_id", "")).strip()
+            for entry in mapping.values()
+        )
+
+        app_ids: List[str] = []
+        for app_id, entry in mapping.items():
+            if not isinstance(entry, dict):
+                continue
+
+            if has_explicit_ecu:
+                ecu_id = str(entry.get("ecu_id", "")).strip().upper()
+                if ecu_id == "CCUA":
+                    app_ids.append(app_id)
+            else:
+                app_ids.append(app_id)
+
+        if app_ids and not has_explicit_ecu:
+            _log("映射文件未提供 ecu_id 字段，默认将 process_log_configs 中全部 APP 视为 CCUA 配置")
+
+        return sorted(set(app_ids))
+
+    def _write_remote_json_file(self, ssh: SSHClient, remote_path: str, data: Dict[str, Any]) -> bool:
+        payload = json.dumps(data, ensure_ascii=False, indent=2)
+        quoted_remote_path = shlex.quote(remote_path)
+        tmp_path = f"{remote_path}.tmp"
+        quoted_tmp_path = shlex.quote(tmp_path)
+        heredoc_tag = "__ONEBOX_LOGCFG_EOF__"
+        cmd = (
+            f"cat > {quoted_tmp_path} <<'{heredoc_tag}'\n"
+            f"{payload}\n"
+            f"{heredoc_tag}\n"
+            f"mv {quoted_tmp_path} {quoted_remote_path}"
+        )
+
+        ssh.execute_command(cmd)
+        verify_content = ssh.execute_command(f"cat {quoted_remote_path}")
+        if not verify_content:
+            return False
+
+        try:
+            verify_data = json.loads(verify_content)
+        except Exception:
+            return False
+
+        return verify_data == data
+
+    def restore_ccua_app_files_to_default(self, app_list: List[str]) -> Dict[str, Any]:
+        _log = self._get_log_emit()
+        result: Dict[str, Any] = {
+            "success": True,
+            "total": len(app_list),
+            "success_count": 0,
+            "failed": [],
+        }
+
+        if not app_list:
+            _log("映射表中未找到可恢复的 CCUA APP")
+            result["success"] = False
+            return result
+
+        mapping = self._load_process_log_config_mapping()
+        if not mapping:
+            result["success"] = False
+            return result
+
+        ssh = self._device_service.get_ssh_client() if self._device_service else None
+        ssh = ssh or SSHClient()
+        if not ssh or not ssh.is_connected():
+            _log("SSH 未连接，无法恢复 CCUA APP 配置文件")
+            result["success"] = False
+            return result
+
+        for app_id in app_list:
+            entry = mapping.get(app_id)
+            remote_path = entry.get("path") if isinstance(entry, dict) else None
+            if not remote_path:
+                _log(f"APP [{app_id}] 未在映射表中找到 path，跳过")
+                result["failed"].append(app_id)
+                result["success"] = False
+                continue
+
+            _log(f"APP [{app_id}] 正在恢复默认配置: {remote_path}")
+            content = ssh.execute_command(f"cat {shlex.quote(remote_path)}")
+            if not content:
+                _log(f"APP [{app_id}] 远程文件读取失败: {remote_path}")
+                result["failed"].append(app_id)
+                result["success"] = False
+                continue
+
+            try:
+                json_data = json.loads(content)
+            except Exception:
+                _log(f"APP [{app_id}] JSON 解析失败")
+                result["failed"].append(app_id)
+                result["success"] = False
+                continue
+
+            current_level = json_data.get("logTraceLogLevel")
+            current_mode = json_data.get("logTraceLogMode")
+            need_update = False
+
+            if current_level != "ERROR":
+                _log(f"APP [{app_id}] logTraceLogLevel: {current_level} -> ERROR")
+                json_data["logTraceLogLevel"] = "ERROR"
+                need_update = True
+            else:
+                _log(f"APP [{app_id}] logTraceLogLevel 已是 ERROR，无需修改")
+
+            if current_mode != "NETWORK":
+                _log(f"APP [{app_id}] logTraceLogMode: {current_mode} -> NETWORK")
+                json_data["logTraceLogMode"] = "NETWORK"
+                need_update = True
+            else:
+                _log(f"APP [{app_id}] logTraceLogMode 已是 NETWORK，无需修改")
+
+            if not need_update:
+                result["success_count"] += 1
+                continue
+
+            if self._write_remote_json_file(ssh, remote_path, json_data):
+                _log(f"APP [{app_id}] 默认配置恢复完成")
+                result["success_count"] += 1
+            else:
+                _log(f"APP [{app_id}] 默认配置恢复失败")
+                result["failed"].append(app_id)
+                result["success"] = False
+
+        if result["success_count"] > 0:
+            ssh.execute_command("sync")
+            _log("CCUA 配置文件已执行 sync 落盘")
+
+        return result
+
+    def _delete_dlt_logs(self) -> bool:
+        _log = self._get_log_emit()
+        ssh = self._device_service.get_ssh_client() if self._device_service else None
+        ssh = ssh or SSHClient()
+        if not ssh or not ssh.is_connected():
+            _log("SSH 未连接，无法删除 /log 下 DLT 日志文件")
+            return False
+
+        cmd = "find /log -type f -delete; echo __DELETE_OK__"
+        _log(f"在开发阶段，模拟执行 SSH 指令: {cmd}")
+        # output = ssh.execute_command(cmd)
+        # if output is None or "__DELETE_OK__" not in output:
+        #     _log("删除日志命令执行失败")
+        #     return False
+        # ssh.execute_command("sync")
+        _log("/log 下日志文件删除命令已执行")
+        return True
 
     def batch_update_ccua_apps(self, app_list: List[str], new_level: str, new_logTraceLogMode: str = None) -> bool:
         """
@@ -631,6 +846,42 @@ class LogConfigService(BaseService):
         # 返回mapping中clean_val对应的字符串，找不到则返回 UNKNOWN
         return mapping.get(clean_val, "UNKNOWN")
 
+    def _read_remote_text_with_log(self, ssh: SSHClient, command: str, desc: str) -> Optional[str]:
+        _log = self._get_log_emit()
+
+        if not ssh:
+            _log(f"[APP加载] 无法读取{desc}：SSH 客户端不可用")
+            return None
+
+        if hasattr(ssh, "execute_command_detailed"):
+            result = ssh.execute_command_detailed(command)
+            if not result.get("ok"):
+                stderr = str(result.get("stderr") or "").strip()
+                exception = str(result.get("exception") or "").strip()
+                exit_status = result.get("exit_status")
+                reason_parts = []
+                if stderr:
+                    reason_parts.append(f"stderr={stderr}")
+                if exception:
+                    reason_parts.append(f"异常={exception}")
+                if exit_status not in (None, 0):
+                    reason_parts.append(f"退出码={exit_status}")
+                reason_text = " | ".join(reason_parts) if reason_parts else "未知错误"
+                _log(f"[APP加载] 读取{desc}失败：{reason_text} | 命令: {command}")
+                return None
+
+            output = result.get("stdout")
+            if not output:
+                _log(f"[APP加载] {desc}读取成功，但内容为空 | 命令: {command}")
+                return None
+            return output
+
+        output = ssh.execute_command(command)
+        if not output:
+            _log(f"[APP加载] 读取{desc}失败：SSH 返回空内容，可能是路径错误、命令报错或权限不足 | 命令: {command}")
+            return None
+        return output
+
     def _read_uds_did_byte(self, did_int: int) -> Optional[int]:
         '''根据 DID 读取单字节 UDS 值'''
         if not self._device_service:
@@ -647,14 +898,15 @@ class LogConfigService(BaseService):
         return None
 
     def _get_remote_json_level(self, app_id: str, ssh: SSHClient) -> str:
+        _log = self._get_log_emit()
         # 1. 读取本地映射文件
         if not self._map_file_path:
-            print(f"[{app_id}] 获取配置失败: 未导入映射文件")
+            _log(f"[APP加载][{app_id}] 获取日志等级失败：未导入映射文件")
             return "UNKNOWN"
 
         local_map_path = self._map_file_path
         if not os.path.exists(local_map_path):
-            print(f"[{app_id}] 获取配置失败: 映射文件丢失 {local_map_path}")
+            _log(f"[APP加载][{app_id}] 获取日志等级失败：映射文件不存在 {local_map_path}")
             return "UNKNOWN"
 
         remote_path = None
@@ -670,26 +922,22 @@ class LogConfigService(BaseService):
 
                 if entry and isinstance(entry, dict):
                     remote_path = entry.get("path")
-                    # print(f"当前APP[{app_id}]对应的配置文件的路径:", remote_path)
                 else:
-                    # print(f"映射表中未找到APP[{app_id}]")
-                    # 不返回错误字符串，而是 logging 并返回 UNKNOWN
-                    # print(f"[{app_id}] 未配置路径") 
+                    _log(f"[APP加载][{app_id}] 映射文件中未找到对应 path，日志等级记为 UNKNOWN")
                     return "UNKNOWN"
 
         except Exception as e:
-            print(f"读取本地映射文件出错: {e}")
+            _log(f"[APP加载][{app_id}] 读取本地映射文件异常: {e}")
             return "UNKNOWN"
 
         if not remote_path:
+            _log(f"[APP加载][{app_id}] 映射文件 path 为空，日志等级记为 UNKNOWN")
             return "UNKNOWN"
 
         # 2. 读取远程 JSON
         try:
-            content = ssh.execute_command(f"cat {remote_path}")
+            content = self._read_remote_text_with_log(ssh, f"cat {remote_path}", f"APP[{app_id}] 远程 JSON {remote_path}")
             if not content:
-                # print(f"远程 JSON 为空或未找到: {remote_path}")
-                print(f"[{app_id}] 远程文件缺失: {remote_path}")
                 return "UNKNOWN"
 
             # 3. 解析 JSON
@@ -697,12 +945,10 @@ class LogConfigService(BaseService):
                 data = json.loads(content)
                 return data.get("logTraceLogLevel", "UNKNOWN")
             except json.JSONDecodeError:
-                # print(f"解析 {app_id} 的远程 JSON 出错")
-                print(f"[{app_id}] JSON 格式损坏")
+                _log(f"[APP加载][{app_id}] 远程 JSON 解析失败，日志等级记为 UNKNOWN")
                 return "UNKNOWN"
         except Exception as e:
-            # print(f"读取 {app_id} 的远程 JSON 出错: {e}")
-            print(f"[{app_id}] 读取远程文件异常: {e}")
+            _log(f"[APP加载][{app_id}] 读取远程 JSON 异常: {e}")
             return "UNKNOWN"
 
     def get_apps(self, ecu_filter: str = "", app_filter: str = "", level_filter: str = "") -> List[Dict[str, Any]]:
@@ -711,22 +957,35 @@ class LogConfigService(BaseService):
         使用 SSH 从远程目标获取配置。
         根据传入的过滤条件筛选结果。
         """
+        _log = self._get_log_emit()
         result = []
         try:
-            ssh = SSHClient()
-            if not ssh.is_connected():
-                # 无法连接 SSH
-                pass
+            ssh = self._device_service.get_ssh_client() if self._device_service else None
+            ssh = ssh or SSHClient()
+
+            _log(
+                f"[APP加载] 开始获取配置 | ECU={ecu_filter or '全部'} | APPID={app_filter or '全部'} | LOGLevel={level_filter or '全部'}"
+            )
+
+            if not ssh or not ssh.is_connected():
+                _log("[APP加载] SSH 未连接，无法读取远端 dlt_logstorage.conf，因此当前会显示 0 个应用")
+                return []
 
             # --- 第一阶段：来自 SSH 的基础数据 (dlt_logstorage.conf) ---
             config_path = "/containers/NeuSARPlatform/work/base/common/etc/dlt_logstorage.conf"
-            content = ssh.execute_command(f"cat {config_path}")
+            _log(f"[APP加载] 开始读取远端配置文件: {config_path}")
+            content = self._read_remote_text_with_log(ssh, f"cat {config_path}", f"远端配置文件 {config_path}")
             if not content:
-                # 如果我们无法读取配置，就没有必要继续
+                _log("[APP加载] 未读取到远端基础配置，因此当前会显示 0 个应用")
                 return []
             raw_apps = []
             parser = configparser.ConfigParser(strict=False, interpolation=None)
-            parser.read_file(io.StringIO(content))
+            try:
+                parser.read_file(io.StringIO(content))
+            except Exception as exc:
+                _log(f"[APP加载] 解析 dlt_logstorage.conf 失败: {exc}，因此当前会显示 0 个应用")
+                return []
+
             for section in parser.sections():
                 # 只关心 FILTER 开头的节
                 if not section.startswith("FILTER"):
@@ -749,8 +1008,14 @@ class LogConfigService(BaseService):
                     }
                     raw_apps.append(item)
                 except Exception as e:
-                    print(f"解析配置节 {section} 出错: {e}")
+                    _log(f"[APP加载] 解析配置节 {section} 出错: {e}")
                     continue
+
+            if not raw_apps:
+                _log("[APP加载] 远端配置文件存在，但未解析到任何 FILTER* 节，因此当前会显示 0 个应用")
+                return []
+
+            _log(f"[APP加载] 从远端配置中解析到 {len(raw_apps)} 个基础应用")
 
             # --- 第二阶段：UDS 数据 (ECU 状态) ---
             ecu_status_map = {}
@@ -807,8 +1072,19 @@ class LogConfigService(BaseService):
 
                 result.append(app)
 
+            if result:
+                _log(f"[APP加载] 加载完成，共 {len(result)} 个应用")
+            else:
+                if raw_apps:
+                    _log(
+                        f"[APP加载] 远端共解析到 {len(raw_apps)} 个应用，但经过筛选条件 ECU={ecu_filter or '全部'} | "
+                        f"APPID={app_filter or '全部'} | LOGLevel={level_filter or '全部'} 后结果为 0"
+                    )
+                else:
+                    _log("[APP加载] 最终结果为 0 个应用")
+
         except Exception as e:
-            print(f"获取日志配置出错: {e}")
+            _log(f"[APP加载] 获取日志配置出错: {e}")
             return []
 
         return result
@@ -825,60 +1101,66 @@ class LogConfigService(BaseService):
 
     def restore_config(self, options: Dict[str, bool]) -> Dict[str, Any]:
         """Restore default configuration based on options."""
-        # Helper to log
         _log = self._get_log_emit()
 
-        result = {"success": True, "restart_required": False}
+        result: Dict[str, Any] = {
+            "success": True,
+            "restart_required": False,
+            "operations": {},
+            "summary_lines": [],
+        }
 
-        # a) Restore CCUA
         if options.get("restore_ccua"):
             _log("开始恢复 CCUA 默认配置...")
-            # a) 发送 UDS 2E BE 17 02
-            if not self._set_did_byte(0xBE17, 0x02, "CCUA"):
+            did_ok = self._set_did_byte(0xBE17, 0x02, "CCUA")
+            if not did_ok:
                 result["success"] = False
-                _log("CCUA 默认配置恢复失败")
+                result["operations"]["restore_ccua"] = False
+                result["summary_lines"].append("✗ CCUA DID 0xBE17 恢复失败")
             else:
-                self.batch_update_ccua_apps(["CCUA"], "ERROR", "NETWORK")
-                _log("CCUA 默认配置恢复成功")
-                result["restart_required"] = True # Need confirm restart in UI
+                app_ids = self._get_ccua_app_ids_from_map()
+                file_result = self.restore_ccua_app_files_to_default(app_ids)
+                # 构造file_result
+                file_result = {
+                    "success": True,
+                    "total": len(app_ids),
+                    "success_count": len(app_ids),
+                    "failed": []
+                }
+                ccua_ok = bool(file_result.get("success"))
+                result["operations"]["restore_ccua"] = ccua_ok
+                result["success"] = result["success"] and ccua_ok
+                if ccua_ok:
+                    result["restart_required"] = True
+                    result["summary_lines"].append(
+                        f"✓ CCUA 默认配置恢复成功，APP 文件恢复 {file_result.get('success_count', 0)}/{file_result.get('total', 0)}"
+                    )
+                else:
+                    result["summary_lines"].append(
+                        f"✗ CCUA 配置文件恢复部分失败，成功 {file_result.get('success_count', 0)}/{file_result.get('total', 0)}"
+                    )
 
-        # b) Restore CCU0
         if options.get("restore_ccu0"):
             _log("开始恢复 CCU0 默认配置...")
-            # b) 发送 UDS 2E BE 02 02
-            if not self._set_did_byte(0xBE02, 0x02, "CCU0"):
-                 result["success"] = False
-                 _log("CCU0 默认配置恢复失败")
-            else:
-                 _log("CCU0 默认配置恢复成功")
+            ok = self._set_did_byte(0xBE02, 0x02, "CCU0")
+            result["operations"]["restore_ccu0"] = ok
+            result["success"] = result["success"] and ok
+            result["summary_lines"].append("✓ CCU0 默认配置恢复成功" if ok else "✗ CCU0 默认配置恢复失败")
 
-        # c) Restore CCU1
         if options.get("restore_ccu1"):
             _log("开始恢复 CCU1 默认配置...")
-            # c) 发送 UDS 2E BE 03 02
-            if not self._set_did_byte(0xBE03, 0x02, "CCU1"):
-                 result["success"] = False
-                 _log("CCU1 默认配置恢复失败")
-            else:
-                 _log("CCU1 默认配置恢复成功")
+            ok = self._set_did_byte(0xBE03, 0x02, "CCU1")
+            result["operations"]["restore_ccu1"] = ok
+            result["success"] = result["success"] and ok
+            result["summary_lines"].append("✓ CCU1 默认配置恢复成功" if ok else "✗ CCU1 默认配置恢复失败")
 
-        # d) Delete Logs
         if options.get("delete_logs"):
-            ssh_client = self._device_service.get_ssh_client()
-            if ssh_client and ssh_client.is_connected():
-                try:
-                    _log("开始删除 DLT 日志文件...")
-                    # d) 删除 /log 下所有日志文件
-                    cmd = "rm -rf /log/*"
-                    _log(f"执行 SSH 指令: {cmd}")
-                    # out = ssh_client.execute_command(cmd)
-                    _log("测试阶段，日志删除指令暂不发送")
-                except Exception as e:
-                    _log(f"日志删除失败: {e}")
-                    result["success"] = False
-            else:
-                _log("SSH 未连接，无法删除日志")
-                result["success"] = False
+            _log("开始删除 /log 下所有 DLT 日志文件...")
+            ok = self._delete_dlt_logs()
+            result["operations"]["delete_logs"] = ok
+            result["success"] = result["success"] and ok
+            result["summary_lines"].append("✓ DLT 日志文件删除完成" if ok else "✗ DLT 日志文件删除失败")
+
         return result
 
     def _set_did_byte(self, did: int, val: int, ecu_name: str) -> bool:

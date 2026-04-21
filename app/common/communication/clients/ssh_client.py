@@ -1,6 +1,6 @@
 import paramiko
 import threading
-from typing import Optional
+from typing import Optional, Dict, Any
 
 class SSHClient:
     """
@@ -8,11 +8,11 @@ class SSHClient:
     系统任何时候都只会有一条SSH连接
     """
     _instance = None
-    _lock = threading.Lock()
+    _instance_lock = threading.Lock()
 
     def __new__(cls, *args, **kwargs):
         if not cls._instance:
-            with cls._lock:
+            with cls._instance_lock:
                 if not cls._instance:
                     cls._instance = super(SSHClient, cls).__new__(cls)
         return cls._instance
@@ -21,6 +21,7 @@ class SSHClient:
         # 避免重复初始化
         if hasattr(self, '_initialized') and self._initialized:
             return
+        self._lock = threading.RLock()
         self._client: Optional[paramiko.SSHClient] = None
         self._connected = False
         self._hostname = None
@@ -46,69 +47,96 @@ class SSHClient:
         """
         建立SSH连接。如果当前已有连接，会先断开旧连接，确保系统只有一条连接。
         """
+        old_client = None
         with self._lock:
             # 如果已有连接，先断开
-            if self._connected:
-                self.disconnect()
+            old_client = self._client
+            self._client = None
+            self._connected = False
 
             self._hostname = hostname
             self._port = port
             self._username = username
             self._password = password
 
+        if old_client:
             try:
-                self._client = paramiko.SSHClient()
-                self._client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+                old_client.close()
+            except Exception:
+                pass
 
-                connect_args = {
-                    "hostname": hostname,
-                    "port": port,
-                    "timeout": timeout,
-                    "look_for_keys": look_for_keys,
-                    "allow_agent": allow_agent,
-                }
-                if username:
-                    connect_args["username"] = username
-                if password:
-                    connect_args["password"] = password
-                if auth_timeout is not None:
-                    connect_args["auth_timeout"] = auth_timeout
-                if banner_timeout is not None:
-                    connect_args["banner_timeout"] = banner_timeout
-                if extra_connect_args:
-                    connect_args.update(extra_connect_args)
+        client = None
+        try:
+            client = paramiko.SSHClient()
+            client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
 
-                self._client.connect(**connect_args)
+            connect_args = {
+                "hostname": hostname,
+                "port": port,
+                "timeout": timeout,
+                "look_for_keys": look_for_keys,
+                "allow_agent": allow_agent,
+            }
+            if username:
+                connect_args["username"] = username
+            if password:
+                connect_args["password"] = password
+            if auth_timeout is not None:
+                connect_args["auth_timeout"] = auth_timeout
+            if banner_timeout is not None:
+                connect_args["banner_timeout"] = banner_timeout
+            if extra_connect_args:
+                connect_args.update(extra_connect_args)
+
+            client.connect(**connect_args)
+            with self._lock:
+                self._client = client
                 self._connected = True
-                # print(f"成功连接到 {self._hostname}:{self._port}")
-                return True
+            return True
 
-            except Exception as e:
-                print(f"SSH连接失败: {e}")
+        except Exception as e:
+            print(f"SSH连接失败: {e}")
+            if client:
+                try:
+                    client.close()
+                except Exception:
+                    pass
+            with self._lock:
                 self._client = None
                 self._connected = False
-                return False
+            return False
 
     def disconnect(self):
         """断开SSH连接"""
+        client = None
         with self._lock:
-            if self._client:
-                try:
-                    self._client.close()
-                except Exception:
-                    pass
-                self._client = None
+            client = self._client
+            self._client = None
             self._connected = False
-            # print("SSH连接已断开")
+        if client:
+            try:
+                client.close()
+            except Exception:
+                pass
 
     def is_connected(self) -> bool:
         """获取当前的连接状态"""
-        if not self._client or not self._connected:
+        with self._lock:
+            client = self._client
+            connected = self._connected
+        if not client or not connected:
             return False
         # 可选：发送心跳包检测连接是否真的存活
-        if self._client.get_transport() and self._client.get_transport().is_active():
-            return True
-        return False
+        try:
+            transport = client.get_transport()
+            alive = bool(transport and transport.is_active())
+        except Exception:
+            alive = False
+        if not alive:
+            with self._lock:
+                if self._client is client:
+                    self._connected = False
+        return alive
 
     def execute_command(self, command: str) -> Optional[str]:
         """
@@ -120,37 +148,83 @@ class SSHClient:
         Returns:
             命令输出结果 (stdout)，如果出错返回 None
         """
+        result = self.execute_command_detailed(command)
+        if not result.get("ok"):
+            return None
+        return result.get("stdout")
+
+    def execute_command_detailed(self, command: str) -> Dict[str, Any]:
+        """执行远程命令并返回详细结果，便于业务层输出精确日志。"""
         if not self.is_connected():
-            # 尝试重连（如果保存了连接信息）
             if self._hostname:
-                # print("连接已断开，尝试重连...")
                 if not self.connect(self._hostname, self._port, self._username, self._password):
-                    return None
+                    return {
+                        "ok": False,
+                        "stdout": "",
+                        "stderr": "SSH 未连接，且自动重连失败",
+                        "exit_status": None,
+                        "exception": None,
+                    }
             else:
-                return None
+                return {
+                    "ok": False,
+                    "stdout": "",
+                    "stderr": "SSH 未连接，且无可用历史连接信息",
+                    "exit_status": None,
+                    "exception": None,
+                }
+
+        with self._lock:
+            client = self._client
+
+        if client is None:
+            return {
+                "ok": False,
+                "stdout": "",
+                "stderr": "SSH client 不存在",
+                "exit_status": None,
+                "exception": None,
+            }
 
         try:
-            # print(f"---正在执行命令: {command}")
-            # exec_command 是非阻塞的
-            stdin, stdout, stderr = self._client.exec_command(command)
-
-            # 读取输出
+            stdin, stdout, stderr = client.exec_command(command)
             output = stdout.read().decode('utf-8', errors='ignore').strip()
             error = stderr.read().decode('utf-8', errors='ignore').strip()
-            # print(f"---接收反馈: {output}")
-            if error:
-                # print(f"命令执行错误: {error}")
-                return None
-            # print(f"命令执行成功: {output}")
-            return output
+            exit_status = None
+            try:
+                exit_status = stdout.channel.recv_exit_status()
+            except Exception:
+                pass
+
+            ok = not error and (exit_status in (None, 0))
+            return {
+                "ok": ok,
+                "stdout": output,
+                "stderr": error,
+                "exit_status": exit_status,
+                "exception": None,
+            }
 
         except Exception as e:
-            # print(f"命令执行异常: {e}")
-            # 发生异常时可能连接已断开
-            if not (self._client.get_transport() and self._client.get_transport().is_active()):
-                self._connected = False
-            return None
+            try:
+                transport = client.get_transport()
+                if not (transport and transport.is_active()):
+                    with self._lock:
+                        if self._client is client:
+                            self._connected = False
+            except Exception:
+                with self._lock:
+                    if self._client is client:
+                        self._connected = False
+            return {
+                "ok": False,
+                "stdout": "",
+                "stderr": "",
+                "exit_status": None,
+                "exception": str(e),
+            }
 
     def get_client(self) -> Optional[paramiko.SSHClient]:
         """获取底层的paramiko Client对象"""
-        return self._client
+        with self._lock:
+            return self._client

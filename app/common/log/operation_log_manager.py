@@ -14,6 +14,18 @@ class OperationLogManager:
         if hasattr(self, "_initialized"):
             return
         self._logs = {}  # {module_name: [log_entry_string, ...]}
+        self._registered_modules = {
+            "DID数据管理",
+            "DTC故障诊断",
+            "UDS指令编排",
+            "日志配置",
+            "脚本执行",
+            "设备升级",
+            "设备拓扑",
+            "设备管理",
+            "文件传输",
+            "通用配置",
+        }
         self._initialized = True
 
     @classmethod
@@ -32,6 +44,8 @@ class OperationLogManager:
             module_name (str): 模块名称，如 "设备管理"
             message (str): 日志内容
         """
+        self.register_module(module_name)
+
         if module_name not in self._logs:
             self._logs[module_name] = []
 
@@ -45,13 +59,72 @@ class OperationLogManager:
         log_entry = f"[{timestamp}] {message}"
         self._logs[module_name].append(log_entry)
 
+    def register_module(self, module_name: str):
+        """注册可导出的日志模块名称。"""
+        if not module_name:
+            return
+        self._registered_modules.add(str(module_name).strip())
+
+    def register_modules(self, module_names):
+        """批量注册可导出的日志模块名称。"""
+        if not module_names:
+            return
+        for module_name in module_names:
+            self.register_module(module_name)
+
+    def get_registered_modules(self):
+        """获取所有已注册的模块名称。"""
+        modules = {name for name in self._registered_modules if name}
+        modules.update(self._logs.keys())
+        return sorted(modules)
+
     def get_modules(self):
-        """获取所有模块名称(动态获取)"""
-        return sorted(list(self._logs.keys()))
+        """获取所有可导出的模块名称。"""
+        return self.get_registered_modules()
 
     def get_logs(self, module_name: str):
         """获取指定模块的日志列表"""
         return self._logs.get(module_name, [])
+
+    def _parse_log_time(self, log_entry: str):
+        """从标准日志前缀中解析时间。"""
+        if not log_entry or not log_entry.startswith("["):
+            return None
+
+        right_bracket = log_entry.find("]")
+        if right_bracket <= 1:
+            return None
+
+        timestamp_text = log_entry[1:right_bracket].strip()
+        for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M:%S.%f"):
+            try:
+                return datetime.datetime.strptime(timestamp_text, fmt)
+            except ValueError:
+                continue
+        return None
+
+    def _filter_logs_by_time(self, logs, start_time=None, end_time=None):
+        """按时间范围过滤日志。无法解析时间的日志默认保留。"""
+        if not logs:
+            return []
+
+        if start_time is None and end_time is None:
+            return list(logs)
+
+        filtered_logs = []
+        for log_entry in logs:
+            log_time = self._parse_log_time(log_entry)
+            if log_time is None:
+                filtered_logs.append(log_entry)
+                continue
+
+            if start_time is not None and log_time < start_time:
+                continue
+            if end_time is not None and log_time > end_time:
+                continue
+            filtered_logs.append(log_entry)
+
+        return filtered_logs
 
     def export_logs(self, module_name: str, export_path: str, start_time=None, end_time=None):
         """
@@ -80,21 +153,19 @@ class OperationLogManager:
         is_export_all = (not module_name or module_name == "所有模块")
 
         if is_export_all:
-            # 如果是导出所有，我们只导出实际有日志的模块
-            targets = self.get_modules()
+            # 导出所有已注册模块，未产生日志的模块也会生成提示文件
+            targets = self.get_registered_modules()
         else:
+            self.register_module(module_name)
             targets = [module_name]
 
         for target in targets:
-            logs = self.get_logs(target)
-
-            # 如果是指定导出某个模块，即使为空也生成一个文件，给用户反馈
-            # 如果是批量导出所有，跳过空的
-            if not logs and is_export_all:
-                continue
+            logs = self._filter_logs_by_time(self.get_logs(target), start_time, end_time)
 
             # 简单的文件名清理，防止非法字符
             safe_name = "".join([c for c in target if c.isalnum() or c in (' ', '_', '-')]).strip()
+            if not safe_name:
+                safe_name = "UnknownModule"
             # 文件名：OperationLog_设备管理_20260116_120000.txt
             filename = f"OperationLog_{safe_name}_{timestamp_str}.txt"
             full_path = os.path.join(export_path, filename)

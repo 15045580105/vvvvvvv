@@ -28,6 +28,7 @@ class CommonConfigController(BaseController):
 
     def _bind_signals(self):
         self.view.import_json_btn.clicked.connect(self._on_import_json)
+        self.common_config_service.log_signal.connect(self.view.append_common_log)
         self.view.prev_page_btn.clicked.connect(self._on_prev_page)
         self.view.next_page_btn.clicked.connect(self._on_next_page)
 
@@ -60,8 +61,7 @@ class CommonConfigController(BaseController):
         if shared_config_path:
             if self._load_shared_config(shared_config_path, auto_load=True):
                 return
-            self.view.append_param_log(f"无法加载上次配置: {shared_config_path}")
-            self.view.append_routine_log(f"无法加载上次配置: {shared_config_path}")
+            self.view.append_common_log(f"无法加载上次配置: {shared_config_path}")
 
         self._update_2e_view()
         self._update_routine_view()
@@ -71,6 +71,10 @@ class CommonConfigController(BaseController):
         file_path, _ = QtWidgets.QFileDialog.getOpenFileName(
             self.view, "选择配置文件", "", "JSON Files (*.json)"
         )
+        if not file_path:
+            self.view.append_common_log("用户取消导入 JSON 配置文件")
+            return
+
         if file_path:
             if self._load_shared_config(file_path):
                 self.view.show_message(
@@ -87,6 +91,11 @@ class CommonConfigController(BaseController):
         - service 层负责解析/标准化 JSON
         - controller 负责保存结果、处理分页并通知 view 刷新
         """
+        if auto_load:
+            self.view.append_common_log(f"检测到上次配置，准备自动加载: {file_path}")
+        else:
+            self.view.append_common_log(f"开始加载统一服务配置: {file_path}")
+
         services_2e, services_routine = self.common_config_service.load_shared_config(file_path)
         self.services_2e = services_2e
         self.services_routine = services_routine
@@ -98,11 +107,40 @@ class CommonConfigController(BaseController):
         self._update_2e_view()
         self._update_routine_view()
 
-        if auto_load and (services_2e or services_routine):
-            self.view.append_param_log(f"已自动加载上次配置: {file_path}")
-            self.view.append_routine_log(f"已自动加载上次配置: {file_path}")
+        if services_2e or services_routine:
+            self.view.append_common_log(
+                f"统一服务配置解析成功: $2E {len(services_2e)} 条，$31/$2F {len(services_routine)} 条"
+            )
+            self.view.append_common_log("界面刷新完成")
+        else:
+            self.view.append_common_log("统一服务配置解析完成，但未找到可用的常用服务定义")
 
         return bool(services_2e or services_routine)
+
+    def _format_value_for_log(self, value):
+        if isinstance(value, list):
+            return ", ".join(str(v) for v in value) if value else "---"
+        text = str(value or "").strip()
+        return text or "---"
+
+    def _log_execute_2e_summary(self, service_info):
+        content = str(service_info.get("content", "")).strip() or "未命名内容"
+        did = str(service_info.get("did", "")).strip() or "--"
+        obj_val = self._format_value_for_log(service_info.get("paramObject_val", "---"))
+        state_val = self._format_value_for_log(service_info.get("paramState_val", "---"))
+        self.view.append_common_log(
+            f"开始执行 $2E 服务 -> 内容: {content} | DID: {did} | 参数对象: {obj_val} | 参数状态: {state_val}"
+        )
+
+    def _log_execute_routine_summary(self, service_info):
+        content = str(service_info.get("content", "")).strip() or "未命名内容"
+        did = str(service_info.get("did", "")).strip() or "--"
+        obj_val = self._format_value_for_log(service_info.get("paramObject_val", "---"))
+        state_val = self._format_value_for_log(service_info.get("paramState_val", "---"))
+        control_val = self._format_value_for_log(service_info.get("routineControlType_val", "---"))
+        self.view.append_common_log(
+            f"开始执行 $31/$2F 服务 -> 内容: {content} | RID/DID: {did} | 参数对象: {obj_val} | 参数状态: {state_val} | 控制类型: {control_val}"
+        )
 
     def _update_2e_view(self):
         """更新 `$2E` 服务视图（含分页）。
@@ -158,12 +196,7 @@ class CommonConfigController(BaseController):
             self.view.show_message("先选择参数对象或参数状态", "warning")
             return
 
-        # 临时连接信号到 param_log (注意：并发执行可能导致日志混淆，但在单用户界面操作下通常可接受)
-        try:
-            self.common_config_service.log_signal.disconnect()
-        except Exception:
-            pass
-        self.common_config_service.log_signal.connect(self.view.append_param_log)
+        self._log_execute_2e_summary(service_info)
 
         def task():
             # 获取当前用户输入的值
@@ -178,7 +211,7 @@ class CommonConfigController(BaseController):
                 raise Exception(f"TypeError inside task: {e}") from e
 
         worker = Worker(task)
-        worker.log_signal.connect(self.view.append_param_log)
+        worker.log_signal.connect(self.view.append_common_log)
 
         self.view.set_button_status(self.view.param_table, row_index, "executing")
 
@@ -190,6 +223,7 @@ class CommonConfigController(BaseController):
 
             # 处理成功与否
             if not success:
+                 self.view.append_common_log("$2E 服务执行结束 -> 结果: 失败")
                  self.view.set_button_status(self.view.param_table, row_index, "failed")
                  return
 
@@ -197,10 +231,12 @@ class CommonConfigController(BaseController):
             verify_success = True # self.common_config_service.verify_service_output(service_info)
 
             if not verify_success:
+                 self.view.append_common_log("$2E 服务执行结束 -> 结果: 校验失败")
                  self.view.set_button_status(self.view.param_table, row_index, "failed")
                  return
 
             self.view.set_button_status(self.view.param_table, row_index, "success")
+            self.view.append_common_log("$2E 服务执行结束 -> 结果: 成功")
 
             # 更新最后读取时间
             import datetime
@@ -216,12 +252,7 @@ class CommonConfigController(BaseController):
     def _on_execute_routine(self, service_info, row_index):
         """执行 31&2F 请求"""
 
-        # 临时连接信号到 routine_log
-        try:
-            self.common_config_service.log_signal.disconnect()
-        except Exception:
-            pass
-        self.common_config_service.log_signal.connect(self.view.append_routine_log)
+        self._log_execute_routine_summary(service_info)
 
         self.view.set_button_status(self.view.routine_table, row_index, "executing")
 
@@ -234,10 +265,11 @@ class CommonConfigController(BaseController):
             return self.common_config_service.execute_routine_v2(service_info, param_obj_val, param_state_val, service_info.get("routineControlType_val", "---"))
 
         worker = Worker(task)
-        worker.log_signal.connect(self.view.append_routine_log)
+        worker.log_signal.connect(self.view.append_common_log)
 
         def on_finished(success):
             self.view.update_routine_status(row_index, "执行成功" if success else "执行失败", success)
+            self.view.append_common_log(f"$31/$2F 服务执行结束 -> 结果: {'成功' if success else '失败'}")
             if success:
                 import datetime
                 now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -306,11 +338,7 @@ class CommonConfigController(BaseController):
 
     def _on_execute_routine_service(self, service_info, row_index):
         """执行 31&2F 请求 (闭包适配)"""
-        try:
-            self.common_config_service.log_signal.disconnect()
-        except Exception:
-            pass
-        self.common_config_service.log_signal.connect(self.view.append_routine_log)
+        self._log_execute_routine_summary(service_info)
 
         self.view.set_button_status(self.view.routine_table, row_index, "executing")
 
@@ -318,10 +346,11 @@ class CommonConfigController(BaseController):
             return self.common_config_service.execute_routine_service(service_info)
 
         worker = Worker(task)
-        worker.log_signal.connect(self.view.append_routine_log)
+        worker.log_signal.connect(self.view.append_common_log)
 
         def on_finished(success):
             self.view.update_routine_status(row_index, "执行成功" if success else "执行失败", success)
+            self.view.append_common_log(f"$31/$2F 服务执行结束 -> 结果: {'成功' if success else '失败'}")
             if success:
                 import datetime
                 now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")

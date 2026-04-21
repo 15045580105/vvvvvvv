@@ -14,6 +14,7 @@ class DoIPSettingsPage(QWidget):
 
     def __init__(self):
         super().__init__()
+        self._network_highlight_timer = None
         self.init_ui()
 
     def init_ui(self):
@@ -72,10 +73,11 @@ class DoIPSettingsPage(QWidget):
         tool_layout.addRow("路由激活请求:", self.routing_request_check)
 
         # 网络接口
+        self.network_interface_label = QLabel("网络接口:")
         self.network_combo = QComboBox()
         # Delay loading network interfaces to avoid blocking UI on startup
         QtCore.QTimer.singleShot(100, self._load_network_interfaces)
-        tool_layout.addRow("网络接口:", self.network_combo)
+        tool_layout.addRow(self.network_interface_label, self.network_combo)
 
         # Target Logical Addresses
         # Physical
@@ -197,6 +199,40 @@ class DoIPSettingsPage(QWidget):
                 self.network_combo.addItem(f"[{name}] {ip}", ip)
         except Exception as e:
             self.network_combo.addItem(f"Error loading interfaces: {e}")
+
+    def focus_network_interface(self):
+        self._highlight_network_interface_row()
+        self.network_combo.setFocus(Qt.OtherFocusReason)
+
+    def _highlight_network_interface_row(self):
+        highlight_style = (
+            "background-color: #DBEAFE;"
+            "border: 2px solid #2563EB;"
+            "border-radius: 6px;"
+            "padding: 2px 6px;"
+            "color: #1D4ED8;"
+            "font-weight: 600;"
+        )
+        combo_style = (
+            "QComboBox {"
+            "background-color: #EFF6FF;"
+            "border: 2px solid #2563EB;"
+            "border-radius: 6px;"
+            "padding: 4px 8px;"
+            "}"
+        )
+        self.network_interface_label.setStyleSheet(highlight_style)
+        self.network_combo.setStyleSheet(combo_style)
+
+        if self._network_highlight_timer is None:
+            self._network_highlight_timer = QtCore.QTimer(self)
+            self._network_highlight_timer.setSingleShot(True)
+            self._network_highlight_timer.timeout.connect(self._clear_network_interface_highlight)
+        self._network_highlight_timer.start(2600)
+
+    def _clear_network_interface_highlight(self):
+        self.network_interface_label.setStyleSheet("")
+        self.network_combo.setStyleSheet("")
 
     def update_ui(self, settings):
         """更新界面显示"""

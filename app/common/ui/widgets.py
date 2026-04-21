@@ -332,11 +332,26 @@ class CheckableComboBox(QtWidgets.QComboBox):
     def _sync_line_edit_text(self):
         texts = self._checked_items()
         text_str = self._compose_display_text(texts)
+        self.blockSignals(True)
+        self.setCurrentIndex(-1)
+        self.blockSignals(False)
         self.lineEdit().blockSignals(True)
         self.lineEdit().setText(text_str)
         self.lineEdit().blockSignals(False)
-        self.setCurrentIndex(-1)
         self.checkedItemsChanged.emit(texts, text_str)
+
+    def setCheckedItems(self, texts):
+        normalized = {str(text).strip() for text in (texts or []) if str(text).strip()}
+        self._is_updating = True
+        try:
+            for i in range(1, self.model.rowCount()):
+                item = self.model.item(i)
+                state = QT_CHECKED if item.text() in normalized else QT_UNCHECKED
+                item.setCheckState(state)
+            self.checkSelectAllState()
+        finally:
+            self._is_updating = False
+        self._sync_line_edit_text()
 
     def setEnabled(self, enabled):
         super(CheckableComboBox, self).setEnabled(enabled)

@@ -353,6 +353,18 @@ class LogConfigView(BaseView):
         btn_layout.addStretch()
         layout.addLayout(btn_layout)
 
+        self.restore_progress_label = QtWidgets.QLabel("")
+        self.restore_progress_label.setStyleSheet("color: #6B7280;")
+        self.restore_progress_label.hide()
+        layout.addWidget(self.restore_progress_label)
+
+        self.restore_progress_bar = QtWidgets.QProgressBar()
+        self.restore_progress_bar.setTextVisible(False)
+        self.restore_progress_bar.setRange(0, 1)
+        self.restore_progress_bar.setValue(0)
+        self.restore_progress_bar.hide()
+        layout.addWidget(self.restore_progress_bar)
+
         layout.addStretch()
 
         # 操作日志区
@@ -459,6 +471,22 @@ class LogConfigView(BaseView):
             msg_type = 1 # warning 也用红色或自定义
 
         MessageToast(self).show_toast(message, msg_type)
+
+    def set_restore_progress(self, visible: bool, text: str = "", busy: bool = True):
+        self.restore_progress_label.setText(text or "")
+        self.restore_progress_label.setVisible(visible)
+        self.restore_progress_bar.setVisible(visible)
+
+        if not visible:
+            self.restore_progress_bar.setRange(0, 1)
+            self.restore_progress_bar.setValue(0)
+            return
+
+        if busy:
+            self.restore_progress_bar.setRange(0, 0)
+        else:
+            self.restore_progress_bar.setRange(0, 1)
+            self.restore_progress_bar.setValue(1)
 
     def populate(self, apps, start_index=1):
         """Populate the APP table.

@@ -126,6 +126,14 @@ class AppConfigController(BaseController):
         self.view.domain_update_page.update_ui(self.model.domain_update_settings)
         self.view.app_log_page.update_ui(self.model.app_log_settings)
 
+    def show_page(self, page_id: str = "doip", focus_target: str | None = None):
+        self.on_model_changed()
+        if hasattr(self.view, "select_page"):
+            self.view.select_page(page_id, focus_target=focus_target)
+        self.view.show()
+        self.view.raise_()
+        self.view.activateWindow()
+
     def save_doip_settings(self, settings):
         self.model.save_doip_settings(settings)
 

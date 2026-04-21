@@ -17,6 +17,7 @@ class AppLogSettingsPage(QWidget):
     def __init__(self):
         super().__init__()
         self.init_ui()
+        self.refresh_modules()
 
     def init_ui(self):
         """Initialize UI"""
@@ -56,8 +57,6 @@ class AppLogSettingsPage(QWidget):
         self.export_module_combo = QComboBox()
         self.export_module_combo.setMinimumWidth(200)
         self.export_module_combo.setEditable(False)
-        # Add some dummy items or populate later
-        self.export_module_combo.addItems(["所有模块", "模块 A", "模块 B"])
         export_layout.addWidget(self.export_module_combo, row, 1, 1, 2)
 
         row += 1

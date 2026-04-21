@@ -32,6 +32,7 @@ class LogConfigController(BaseController):
         device_service = di_container.resolve(DeviceService)
         if device_service:
             self.log_config_service.inject_device_service(device_service)
+            device_service.protocol_status_changed_signal.connect(self._on_restore_protocol_status_changed)
 
         # Load persisted map path
         saved_path = ConfigCenter.get_log_map_path()
@@ -39,9 +40,19 @@ class LogConfigController(BaseController):
             self.view.map_path_edit.setText(saved_path)
             self.log_config_service.set_map_file_path(saved_path)
             self.view.append_log(f"已恢复配置文件路径: {saved_path}")
+            mapping = self.log_config_service._load_process_log_config_mapping()
+            self.view.append_log(f"已恢复的映射文件可用条目数: {len(mapping)}")
+            if not mapping:
+                self.view.append_log("当前本地映射文件未解析到有效 process_log_configs 条目，请先检查 JSON 文件内容")
 
         self._workers = []
         self._is_ecu_executing = False
+        self._is_restore_executing = False
+        self._restore_waiting_reconnect = False
+        self._restore_target_ip = None
+        self._restore_reconnect_timer = QtCore.QTimer(self.view)
+        self._restore_reconnect_timer.setSingleShot(True)
+        self._restore_reconnect_timer.timeout.connect(self._on_restore_reconnect_timeout)
         self._bind_signals()
 
         # 进入界面后自动触发一次全量刷新，避免下拉框为空
@@ -77,6 +88,48 @@ class LogConfigController(BaseController):
     def update_log(self, message):
         self.view.append_log(message)
         logger.info(message)
+
+    def _set_restore_busy(self, busy: bool, progress_text: str = ""):
+        self._is_restore_executing = busy
+        self.view.restore_btn.setEnabled(not busy)
+        self.view.set_restore_progress(busy, progress_text, busy=True)
+
+    def _finish_restore_flow(self, message: str = "", msg_type: str = "info"):
+        self._restore_waiting_reconnect = False
+        self._restore_target_ip = None
+        self._restore_reconnect_timer.stop()
+        self._set_restore_busy(False)
+        if message:
+            self.view.show_message(message, msg_type)
+
+    def _on_restore_protocol_status_changed(self, payload: dict):
+        if not self._restore_waiting_reconnect:
+            return
+
+        target_ip = self._restore_target_ip
+        if target_ip and payload.get("ip") != target_ip:
+            return
+
+        doip_status = str(payload.get("doip_connect_status", ""))
+        ssh_status = str(payload.get("ssh_connect_status", ""))
+
+        if "建链成功" in doip_status:
+            self.view.append_log(f"CCUA 重连成功: DoIP={doip_status} | SSH={ssh_status or '--'}")
+            self._finish_restore_flow("CCUA 已重启并完成重连", "success")
+            return
+
+        doip_failed = "连接失败" in doip_status
+        ssh_failed = "连接失败" in ssh_status
+        still_connecting = ("连接中" in doip_status) or ("连接中" in ssh_status)
+
+        if (doip_failed or ssh_failed) and not still_connecting:
+            self.view.append_log(f"CCUA 重连失败: DoIP={doip_status} | SSH={ssh_status or '--'}")
+            self._finish_restore_flow("CCUA 重启后重连失败，请检查设备连接", "error")
+
+    def _on_restore_reconnect_timeout(self):
+        if self._restore_waiting_reconnect:
+            self.view.append_log("等待 CCUA 重连超时")
+            self._finish_restore_flow("CCUA 重启后等待重连超时，请手动检查设备状态", "warning")
 
     def _format_ecu_execute_result_text(self, result):
         def fmt_byte(value):
@@ -121,11 +174,18 @@ class LogConfigController(BaseController):
             self.view, "选择日志配置文件", "", "JSON Files (*.json);;All Files (*)"
         )
         if file_path:
+            self.view.append_log(f"开始导入日志配置映射文件: {file_path}")
             self.view.map_path_edit.setText(file_path)
             self.log_config_service.set_map_file_path(file_path)
             # Save path to config center
             ConfigCenter.set_log_map_path(file_path)
-            self.view.show_message(f"已加载配置文件: {file_path}", "success")
+            mapping = self.log_config_service._load_process_log_config_mapping()
+            mapping_count = len(mapping)
+            self.view.append_log(f"导入完成：process_log_configs 共 {mapping_count} 个条目")
+            if mapping_count > 0:
+                self.view.show_message(f"已加载配置文件: {file_path}", "success")
+            else:
+                self.view.show_message("配置文件已加载，但 process_log_configs 为 0，请先检查本地 JSON 内容", "warning")
             # 如果 APP tab 需要依赖此文件刷新，可以在这里调用刷新
             # self._on_app_refresh()
 
@@ -220,7 +280,9 @@ class LogConfigController(BaseController):
              return
         self._is_searching = True
 
-        self.view.append_log("正在获取配置...")
+        self.view.append_log(
+            f"正在获取配置... 筛选条件: ECU={ecu_id or '全部'} | APPID={app_id or '全部'} | LOGLevel={log_level or '全部'}"
+        )
 
         # 2. 定义后台任务
         def search_task():
@@ -248,7 +310,10 @@ class LogConfigController(BaseController):
 
             # 刷新 UI 状态
             self.on_model_changed()
-            self.view.show_message(f"加载完成，共 {len(all_apps)} 个应用", "info")
+            if all_apps:
+                self.view.show_message(f"加载完成，共 {len(all_apps)} 个应用", "info")
+            else:
+                self.view.show_message("加载完成，共 0 个应用；请查看操作日志中的具体原因", "warning")
 
         # 4. 启动 Worker
         worker = Worker(search_task)
@@ -363,6 +428,10 @@ class LogConfigController(BaseController):
 
 
     def _on_restore_config(self):
+        if self._is_restore_executing:
+            self.view.show_message("恢复操作执行中，请稍候...", "info")
+            return
+
         restore_ccua = self.view.restore_ccua.isChecked()
         restore_ccu0 = self.view.restore_ccu0.isChecked()
         restore_ccu1 = self.view.restore_ccu1.isChecked()
@@ -376,78 +445,107 @@ class LogConfigController(BaseController):
         }
 
         if not any(options.values()):
-             # 使用 Toast 提示
-             MessageToast(self.view).show_toast("请选择至少一项恢复操作", 1) # 1 for Info/Warning like usage here, or 2 for Warning
-             return
+            MessageToast(self.view).show_toast("请选择至少一项恢复操作", 1)
+            return
 
-        # 检查设备连接 (DoIP 检查)
-        if not self.log_config_service._device_service or not self.log_config_service._device_service.get_doip_client():
-             self.view.show_message("设备未连接 (DoIP)，无法执行操作", "error")
-             return
-        msg = ""
+        device_service = self.log_config_service._device_service
+        requires_doip = restore_ccua or restore_ccu0 or restore_ccu1
+        doip_client = device_service.get_doip_client() if (device_service and requires_doip) else None
+        doip_connected = False
+        if doip_client:
+            doip_connected = doip_client.is_connected() if hasattr(doip_client, "is_connected") else bool(getattr(doip_client, "connected", False))
+
+        if requires_doip and not doip_connected:
+            self.view.show_message("设备未连接 (DoIP)，无法执行恢复操作", "error")
+            return
+
+        summary_lines = []
+        if restore_ccua:
+            summary_lines.append("- 恢复 CCUA 默认配置")
+        if restore_ccu0:
+            summary_lines.append("- 恢复 CCU0 默认配置")
+        if restore_ccu1:
+            summary_lines.append("- 恢复 CCU1 默认配置")
+        if delete_logs:
+            summary_lines.append("- 删除 /log 下所有 DLT 日志文件")
+
+        if not self.view.show_confirm("确定执行以下操作吗？\n\n" + "\n".join(summary_lines)):
+            return
 
         if delete_logs:
-            # 优先提示删除日志的不可逆性
-            msg = "确定要删除所有 DLT 日志文件吗？\n若删除文件将无法恢复。"
+            if not self.view.show_confirm("确定要删除 /log 下所有 DLT 日志文件吗？\n\n该操作不可恢复。"):
+                return
 
-            others = []
-            if restore_ccua: others.append("恢复 CCUA 默认配置")
-            if restore_ccu0: others.append("恢复 CCU0 默认配置")
-            if restore_ccu1: others.append("恢复 CCU1 默认配置")
+            ssh_client = device_service.get_ssh_client() if device_service else None
+            if not ssh_client or not ssh_client.is_connected():
+                self.view.show_message("设备未连接 (SSH)，无法执行删除日志操作", "error")
+                return
 
-            if others:
-                msg += "\n\n同时执行以下操作:\n" + "\n".join([f"- {o}" for o in others])
+        self._set_restore_busy(True, "正在执行恢复操作，请稍候...")
+        self.view.append_log("[恢复默认配置] 开始执行")
+        for line in summary_lines:
+            self.view.append_log(line)
 
-        elif restore_ccua:
-            msg = "恢复 CCUA 默认配置和修改process_log_configs？"
+        def task():
+            return self.log_config_service.restore_config(options)
 
-            others = []
-            if restore_ccu0: others.append("恢复 CCU0 默认配置")
-            if restore_ccu1: others.append("恢复 CCU1 默认配置")
+        worker = Worker(task)
+        worker.log_signal.connect(self.view.append_log)
 
-            if others:
-                msg += "\n\n其他操作:\n" + "\n".join([f"- {o}" for o in others])
+        def on_finished(result):
+            if not isinstance(result, dict):
+                self._finish_restore_flow("恢复操作执行失败，请检查日志", "error")
+                return
 
-        else:
-            msg = "确定要执行以下操作吗？\n"
-            if restore_ccu0: msg += "- 恢复 CCU0 默认配置\n"
-            if restore_ccu1: msg += "- 恢复 CCU1 默认配置\n"
+            for line in result.get("summary_lines", []):
+                self.view.append_log(line)
 
-        if self.view.show_confirm(msg):
-             from app.common.utils.worker import Worker
-             # 删除日志需要 SSH
-             if delete_logs:
-                 ssh_client = self.log_config_service._device_service.get_ssh_client()
-                 if not ssh_client or not ssh_client.is_connected():
-                     self.view.show_message("设备未连接 (SSH)，无法执行删除日志操作", "error")
-                     return
+            if not result.get("success", False):
+                self._finish_restore_flow("部分恢复操作失败，请检查日志", "error")
+                return
 
-             # 定义任务函数
-             def task():
-                 return self.log_config_service.restore_config(options)
+            if options.get("restore_ccua") and result.get("restart_required", False):
+                confirm_restart = self.view.show_confirm(
+                    "CCUA 默认配置恢复完成。\n\n需要重启 CCU 才能生效，是否立即重启？"
+                )
+                if not confirm_restart:
+                    self._finish_restore_flow("恢复完成，请稍后手动重启 CCUA 使配置生效", "warning")
+                    return
 
-             worker = Worker(task)
-             worker.log_signal.connect(self.view.append_log)
+                self.view.append_log("用户确认立即重启 CCUA")
+                self.view.set_restore_progress(True, "CCUA 正在重启，正在重连设备...", busy=True)
 
-             def on_finished(result):
-                 if hasattr(result, "get") and result.get("success", False): # Use safe access if result could be None or bool
-                     if result.get("restart_required", False):
-                         # 弹出重启询问
-                         msg = "CCUA 默认配置恢复完成，需要重启 CCU 才能生效。\n是否立即重启 CCU？"
-                         if self.view.show_confirm(msg):
-                             # 执行重启
-                             self.view.show_message("正在重启 CCUA，请稍候...", "warning")
-                             self.log_config_service.restart_ccu("CCUA")
-                 elif isinstance(result, bool) and result:
-                      self.view.show_message("操作执行完成", "success")
-                 else:
-                     self.view.show_message("部分操作执行失败，请查看日志", "error")
+                def restart_task():
+                    return self.log_config_service.restart_ccu("CCUA")
 
-             worker.result_signal.connect(on_finished)
-             worker.start()
+                restart_worker = Worker(restart_task)
+                restart_worker.log_signal.connect(self.view.append_log)
 
-             self._workers.append(worker)
-             worker.finished.connect(lambda: self._workers.remove(worker) if worker in self._workers else None)
+                def on_restart_finished(ok):
+                    if not ok:
+                        self._finish_restore_flow("CCUA 重启指令发送失败", "error")
+                        return
+
+                    self._restore_waiting_reconnect = True
+                    self._restore_target_ip = device_service.get_current_device_ip() if device_service else None
+                    self._restore_reconnect_timer.start(120000)
+                    # self.view.append_log("CCUA 重启指令已发送，进入最长 120s 的自动重连等待窗口...")
+
+                restart_worker.result_signal.connect(on_restart_finished)
+                restart_worker.start()
+                self._workers.append(restart_worker)
+                restart_worker.finished.connect(
+                    lambda: self._workers.remove(restart_worker) if restart_worker in self._workers else None
+                )
+                return
+
+            self._finish_restore_flow("恢复操作执行完成", "")
+
+        worker.result_signal.connect(on_finished)
+        worker.start()
+
+        self._workers.append(worker)
+        worker.finished.connect(lambda: self._workers.remove(worker) if worker in self._workers else None)
 
     def _on_modify_requested(self, row_index):
         if row_index < 0 or row_index >= len(self.model.apps):
