@@ -4,6 +4,7 @@ from PyQt5 import QtWidgets
 from PyQt5.QtCore import QThread, pyqtSignal, QTimer
 
 from app.common.ui.modern_widgets import MessageToast, ModernConfirmDialog
+from app.common.utils.worker import Worker
 from app.core.base_controller import BaseController
 from app.core.dependency_injection import di_container
 from app.core.event_bus import event_bus
@@ -19,18 +20,23 @@ logger = logging.getLogger(__name__)
 
 
 class ConnectWorker(QThread):
-    def __init__(self, service, device, log_signal=None, *, startup_auto_reconnect=False, reconnect=False):
+    def __init__(self, service, device, log_signal=None, *, startup_auto_reconnect=False, reconnect=False, attempt_id=None):
         super().__init__()
         self.service = service
         self.device = device
         self.log_signal = log_signal
         self.startup_auto_reconnect = startup_auto_reconnect
         self.reconnect = reconnect
+        self.attempt_id = attempt_id
         self.cancel_event = threading.Event()
 
     def cancel(self, current_device=None):
         self.cancel_event.set()
-        self.service.request_cancel_connection(current_device or self.device, log_signal=self.log_signal)
+        self.service.request_cancel_connection(
+            current_device or self.device,
+            log_signal=self.log_signal,
+            attempt_id=self.attempt_id,
+        )
 
     def run(self):
         self.service.connect_device(
@@ -38,6 +44,7 @@ class ConnectWorker(QThread):
             log_signal=self.log_signal,
             cancel_event=self.cancel_event,
             reconnect=self.reconnect,
+            attempt_id=self.attempt_id,
         )
 
 
@@ -65,6 +72,20 @@ class DeviceController(BaseController):
         self._startup_reconnect_done = False
         self._startup_reconnect_device_key = None
         self._startup_reconnect_failure_toast_shown = False
+        self._connect_attempt_seq = 0
+        self._device_attempt_ids = {}
+        self._shown_interface_warning_attempts = set()
+        self._disconnecting_device_keys = set()
+        self._pending_refresh = False
+        self._pending_persist = False
+        self._refresh_timer = QTimer(self.view)
+        self._refresh_timer.setSingleShot(True)
+        self._refresh_timer.setInterval(80)
+        self._refresh_timer.timeout.connect(self._flush_pending_view_refresh)
+        self._persist_timer = QTimer(self.view)
+        self._persist_timer.setSingleShot(True)
+        self._persist_timer.setInterval(180)
+        self._persist_timer.timeout.connect(self._flush_pending_persist)
 
         self._connect_static_signals()
         self._initial_devices()
@@ -74,6 +95,7 @@ class DeviceController(BaseController):
 
     def _connect_static_signals(self):
         self.view.add_btn.clicked.connect(self._on_add_clicked)
+        self.view.log_link_clicked.connect(self._on_log_link_clicked)
         self.device_service.log_signal.connect(self.update_log)
         # 协议状态变更信号，用于刷新三行状态和详情
         self.device_service.protocol_status_changed_signal.connect(self._on_protocol_status_changed)
@@ -140,6 +162,34 @@ class DeviceController(BaseController):
         port = int(device.get("port", 22))
         target_key = f"{ip}:{port}"
         is_startup_reconnect_target = (self._startup_reconnect_device_key == target_key)
+        payload_attempt_id = device.get("_attempt_id")
+        current_attempt_id = self._device_attempt_ids.get(target_key)
+
+        if payload_attempt_id is not None and current_attempt_id is not None and payload_attempt_id != current_attempt_id:
+            self.view.append_log(
+                f"忽略过期连接状态回写 -> {target_key} | payload_attempt={payload_attempt_id} | current_attempt={current_attempt_id}"
+            )
+            return
+
+        diagnostic = device.get("_doip_diagnostic") or {}
+        if diagnostic.get("need_check_interface"):
+            warn_key = (target_key, payload_attempt_id)
+            if warn_key not in self._shown_interface_warning_attempts:
+                self._shown_interface_warning_attempts.add(warn_key)
+                local_ip = diagnostic.get("local_ip") or "--"
+                interface_name = diagnostic.get("interface_name") or "当前网卡"
+                target_ip_text = diagnostic.get("target_ip") or ip or "--"
+                warning_text = (
+                    f"检测到本机网络接口 {interface_name} ({local_ip}) 与设备 {target_ip_text} 不在同一网段，"
+                    f"请检查本机网络接口，并进入软件设置中的 DoIP 网络接口配置。"
+                )
+                self.view.append_log(warning_text)
+                self.view.append_link_log(
+                    "快速处理：",
+                    "打开 软件设置 > DoIP 设置",
+                    "onebox://settings/doip?focus=network_interface",
+                )
+                MessageToast(self.view).show_toast("检测到网络接口可能配置异常，请点击操作日志中的蓝色链接处理", 1)
 
         for d in self.model.devices:
             if d.get("ip") == ip and int(d.get("port", 22)) == port:
@@ -156,9 +206,8 @@ class DeviceController(BaseController):
                     self._notify_startup_reconnect_failure_once(d)
                 break
 
-        # 持久化并刷新 UI
-        self._persist_devices()
-        self.on_model_changed()
+        self._schedule_devices_persist()
+        self._schedule_view_refresh()
 
     def _initial_devices(self):
         """从配置文件加载设备列表并刷新到视图。"""
@@ -201,6 +250,46 @@ class DeviceController(BaseController):
         device["ssh_connect_info"] = detail_text
         device["doip_connect_info"] = detail_text
         device["someip_connect_info"] = detail_text
+        self._persist_devices()
+        self.on_model_changed()
+
+    def _next_connect_attempt_id(self, device: dict) -> int:
+        self._connect_attempt_seq += 1
+        attempt_id = self._connect_attempt_seq
+        device_key = self._device_key(device)
+        self._device_attempt_ids[device_key] = attempt_id
+        self._shown_interface_warning_attempts = {
+            item for item in self._shown_interface_warning_attempts if item[0] != device_key
+        }
+        return attempt_id
+
+    def _schedule_view_refresh(self):
+        self._pending_refresh = True
+        self._refresh_timer.start()
+
+    def _flush_pending_view_refresh(self):
+        if not self._pending_refresh:
+            return
+        self._pending_refresh = False
+        self.on_model_changed()
+
+    def _schedule_devices_persist(self):
+        self._pending_persist = True
+        self._persist_timer.start()
+
+    def _flush_pending_persist(self):
+        if not self._pending_persist:
+            return
+        self._pending_persist = False
+        self._persist_devices()
+
+    def _mark_device_connecting(self, index: int, detail_text: str):
+        if index < 0 or index >= len(self.model.devices):
+            return
+        device = self.model.devices[index]
+        for protocol in ("ssh", "doip", "someip"):
+            device[f"{protocol}_connect_status"] = CONNECTING
+            device[f"{protocol}_connect_info"] = detail_text
         self._persist_devices()
         self.on_model_changed()
 
@@ -448,6 +537,18 @@ class DeviceController(BaseController):
         d = self.model.devices[index]
         return f"{d.get('name')} {d.get('ip')}:{d.get('port')}"
 
+    def _open_doip_settings(self):
+        window = self.view.window()
+        if window and hasattr(window, "show_settings_dialog"):
+            window.show_settings_dialog(page_id="doip", focus_target="network_interface")
+            self.view.append_log("已自动打开 软件设置 > DoIP 设置，并定位到网络接口配置")
+            return
+        self.view.append_log("未找到主窗口设置入口，请手动进入 软件设置 > DoIP 设置")
+
+    def _on_log_link_clicked(self, link_target: str):
+        if str(link_target or "").startswith("onebox://settings/doip"):
+            self._open_doip_settings()
+
     # -------------------------------------连接/断开/删除等操作 -------------------------------------------------------------
     def _is_connect_worker_running(self) -> bool:
         return bool(self._active_connect_worker and self._active_connect_worker.isRunning())
@@ -492,6 +593,9 @@ class DeviceController(BaseController):
                  MessageToast(self.view).show_toast("仅在所有协议均为离线/已断链状态下可建立连接", 1)
             return
 
+        detail_text = "设备重连中，请稍候..." if reconnect else ("启动自动重连中，请稍候..." if startup_auto_reconnect else "设备连接中，请稍候...")
+        self._mark_device_connecting(index, detail_text)
+        attempt_id = self._next_connect_attempt_id(device)
         device_copy = device.copy()
         worker = ConnectWorker(
             self.device_service,
@@ -499,6 +603,7 @@ class DeviceController(BaseController):
             log_signal=log_signal,
             startup_auto_reconnect=startup_auto_reconnect,
             reconnect=reconnect,
+            attempt_id=attempt_id,
         )
         worker.finished.connect(lambda w=worker: self._cleanup_worker(w))
         self._workers.append(worker)
@@ -528,38 +633,51 @@ class DeviceController(BaseController):
             return
 
         device = self.model.devices[index]
-        result = self.device_service.disconnect_device(device)
-
-        self._persist_devices()
-
-        if result.get("all_already_disconnected"):
-            message = "当前状态全部已经是断开状态，无须再次断开"
-            MessageToast(self.view).show_toast(message, 1)
-            self.view.append_log(f"{message} -> {self._device_repr(index)}")
-            cleaned_instances = result.get("cleaned_instances") or []
-            if cleaned_instances:
-                self.view.append_log(
-                    f"后台检测到残留实例并已置空: {', '.join(cleaned_instances).upper()} -> {self._device_repr(index)}"
-                )
+        device_key = self._device_key(device)
+        if device_key in self._disconnecting_device_keys:
+            MessageToast(self.view).show_toast("该设备正在断开中，请稍候...", 0)
             return
 
-        disconnected_protocols = result.get("disconnected_protocols") or []
-        skipped_protocols = result.get("skipped_protocols") or []
-        cleaned_instances = result.get("cleaned_instances") or []
+        self._disconnecting_device_keys.add(device_key)
+        self.view.append_log(f"开始断开连接 -> {self._device_repr(index)}")
+        MessageToast(self.view).show_toast("正在断开连接，请稍候...", 0)
 
-        summary_parts = []
-        if disconnected_protocols:
-            summary_parts.append(f"已断开: {', '.join(disconnected_protocols).upper()}")
-        if skipped_protocols:
-            summary_parts.append(f"已是断开状态，跳过: {', '.join(skipped_protocols).upper()}")
-        if cleaned_instances:
-            cleaned_only = [proto for proto in cleaned_instances if proto not in disconnected_protocols]
-            if cleaned_only:
-                summary_parts.append(f"后台清理残留实例: {', '.join(cleaned_only).upper()}")
+        def task():
+            return self.device_service.disconnect_device(device.copy())
 
-        summary_text = "；".join(summary_parts) if summary_parts else "断开连接完成"
-        MessageToast(self.view).show_toast("断开连接成功", 0)
-        self.view.append_log(f"断开连接 -> {self._device_repr(index)}；{summary_text}")
+        worker = Worker(task)
+
+        def on_finished(result):
+            self._disconnecting_device_keys.discard(device_key)
+            self._flush_pending_persist()
+            self._flush_pending_view_refresh()
+
+            if not isinstance(result, dict):
+                MessageToast(self.view).show_toast("断开连接失败，请检查日志", 1)
+                self.view.append_log(f"断开连接失败 -> {self._device_repr(index)}")
+                return
+
+            if result.get("all_already_disconnected"):
+                MessageToast(self.view).show_toast("该设备当前已是断开状态", 0)
+                return
+
+            disconnected_protocols = result.get("disconnected_protocols") or []
+            skipped_protocols = result.get("skipped_protocols") or []
+
+            summary_parts = []
+            if disconnected_protocols:
+                summary_parts.append(f"已断开: {', '.join(disconnected_protocols).upper()}")
+            if skipped_protocols:
+                summary_parts.append(f"已是断开状态，跳过: {', '.join(skipped_protocols).upper()}")
+
+            summary_text = "；".join(summary_parts) if summary_parts else "断开连接完成"
+            MessageToast(self.view).show_toast("断开连接成功", 0)
+            self.view.append_log(f"断开连接 -> {self._device_repr(index)}；{summary_text}")
+
+        worker.result_signal.connect(on_finished)
+        worker.start()
+        self._workers.append(worker)
+        worker.finished.connect(lambda: self._workers.remove(worker) if worker in self._workers else None)
 
     def _do_delete(self, index):
         if self._guard_connect_sensitive_action("删除设备", index=index):

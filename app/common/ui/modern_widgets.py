@@ -72,6 +72,7 @@ class MessageToast(QWidget):
         super().__init__(parent)
         self.setWindowFlags(Qt.FramelessWindowHint | Qt.SubWindow)
         self.setAttribute(Qt.WA_TranslucentBackground)
+        self._click_handler = None
 
         # 布局 margin 给阴影留空间
         self.layout = QHBoxLayout(self)
@@ -101,17 +102,20 @@ class MessageToast(QWidget):
         cl.addWidget(self.icon_lbl)
         cl.addWidget(self.msg_lbl)
         self.layout.addWidget(self.container)
+        for widget in (self.container, self.icon_lbl, self.msg_lbl):
+            widget.installEventFilter(self)
 
         # 动画设置
         self.anim = QPropertyAnimation(self, b"pos")
         self.timer = QTimer()
         self.timer.timeout.connect(self.hide_anim)
 
-    def show_toast(self, text, message_type=0):
+    def show_toast(self, text, message_type=0, on_click=None):
         """
         显示通知
         type: 0:success, 1:error, info
         """
+        self._click_handler = on_click if callable(on_click) else None
         self.msg_lbl.setText(text)
 
         if message_type == 0:
@@ -123,6 +127,12 @@ class MessageToast(QWidget):
         else:
             self.icon_lbl.setText("ℹ️")
             self.container.setStyleSheet("#ToastContainer { background-color: #3B82F6; border-radius: 20px; }")
+
+        cursor_shape = Qt.PointingHandCursor if self._click_handler else Qt.ArrowCursor
+        self.setCursor(cursor_shape)
+        self.container.setCursor(cursor_shape)
+        self.icon_lbl.setCursor(cursor_shape)
+        self.msg_lbl.setCursor(cursor_shape)
 
         self.adjustSize()
 
@@ -143,6 +153,32 @@ class MessageToast(QWidget):
         self.anim.start()
 
         self.timer.start(2500)  # 显示时间
+
+    def eventFilter(self, watched, event):
+        if watched in (self.container, self.icon_lbl, self.msg_lbl) and event.type() == QEvent.MouseButtonRelease:
+            if getattr(event, "button", lambda: None)() == Qt.LeftButton:
+                self._handle_click()
+                return True
+        return super().eventFilter(watched, event)
+
+    def mouseReleaseEvent(self, event: QMouseEvent):
+        if event.button() == Qt.LeftButton:
+            self._handle_click()
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
+
+    def _handle_click(self):
+        handler = self._click_handler
+        self._click_handler = None
+        if self.timer.isActive():
+            self.timer.stop()
+        if callable(handler):
+            try:
+                handler()
+            except Exception:
+                pass
+        self.close()
 
     def hide_anim(self):
         self.timer.stop()

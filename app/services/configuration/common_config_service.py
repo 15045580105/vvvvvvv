@@ -168,6 +168,7 @@ class CommonConfigService(QObject):
         """
         if not os.path.exists(file_path):
             logger.error(f"配置文件不存在: {file_path}")
+            self._emit_log(f"配置文件不存在: {file_path}")
             return [], []
         data = self._load_json_file(file_path)
         services_2e = [
@@ -258,9 +259,13 @@ class CommonConfigService(QObject):
         with open(file_path, 'r', encoding='utf-8') as f:
             raw_text = f.read()
         try:
-            return json.loads(raw_text)
+            data = json.loads(raw_text)
+            return data
         except json.JSONDecodeError:
-            return json.loads(self._sanitize_json_hex_literals(raw_text))
+            self._emit_log("检测到 JSON 中存在十六进制字面量，尝试兼容解析...")
+            data = json.loads(self._sanitize_json_hex_literals(raw_text))
+            self._emit_log("JSON 文件兼容解析成功")
+            return data
 
     def _sanitize_json_hex_literals(self, raw_text: str) -> str:
         return re.sub(

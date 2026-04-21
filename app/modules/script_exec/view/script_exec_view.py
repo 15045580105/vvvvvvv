@@ -1,5 +1,6 @@
 from PyQt5 import QtWidgets, QtCore, QtGui
 
+from app.common.log.operation_log_manager import OperationLogManager
 from app.common.ui.widgets import ModernButton
 from app.presentation.views.base_view import BaseView
 from app.common.ui.log_panel import LogPanelBuilder
@@ -7,6 +8,8 @@ from app.common.ui.log_panel import LogPanelBuilder
 
 class ScriptExecView(BaseView):
     def setup_ui(self):
+        OperationLogManager.instance().register_module("脚本执行")
+
         # 根垂直布局：上方设备区 + 下方脚本与指令区
         main_layout = QtWidgets.QVBoxLayout(self)
         main_layout.setContentsMargins(8, 8, 8, 8)
@@ -242,6 +245,7 @@ class ScriptExecView(BaseView):
 
     def append_output(self, text: str):
         self.script_output.append(text)
+        OperationLogManager.instance().append_log("脚本执行", text)
 
     def clear_output(self):
         self.script_output.clear()

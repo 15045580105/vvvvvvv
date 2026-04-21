@@ -13,6 +13,7 @@ class CommonConfigView(BaseView):
         main_layout = QtWidgets.QVBoxLayout(self)
         main_layout.setContentsMargins(10, 10, 10, 10)
         main_layout.setSpacing(10)
+        self._shared_log_document = QtGui.QTextDocument(self)
 
         self._action_status_min_width = 72
         self._action_compact_threshold = 210
@@ -157,7 +158,8 @@ class CommonConfigView(BaseView):
         log_layout.setContentsMargins(10, 20, 10, 10)
         self.param_log_text = QtWidgets.QTextEdit()
         self.param_log_text.setReadOnly(True)
-        self.param_log_text.setPlaceholderText("这里显示常用$2E服务的操作日志...")
+        self.param_log_text.setDocument(self._shared_log_document)
+        self.param_log_text.setPlaceholderText("这里显示常用服务的统一操作日志...")
         LogPanelBuilder.attach_search(log_layout, self.param_log_text)
         log_layout.addWidget(self.param_log_text)
         log_group.setLayout(log_layout)
@@ -251,7 +253,8 @@ class CommonConfigView(BaseView):
         log_layout.setContentsMargins(10, 20, 10, 10)
         self.routine_log_text = QtWidgets.QTextEdit()
         self.routine_log_text.setReadOnly(True)
-        self.routine_log_text.setPlaceholderText("这里显示常用$31&$2F服务的操作日志...")
+        self.routine_log_text.setDocument(self._shared_log_document)
+        self.routine_log_text.setPlaceholderText("这里显示常用服务的统一操作日志...")
         LogPanelBuilder.attach_search(log_layout, self.routine_log_text)
         log_layout.addWidget(self.routine_log_text)
         log_group.setLayout(log_layout)
@@ -261,11 +264,14 @@ class CommonConfigView(BaseView):
 
     def append_param_log(self, message: str):
         """向常用$2E服务日志窗口添加日志"""
-        self._append_log(self.param_log_text, message)
+        self.append_common_log(message)
 
     def append_routine_log(self, message: str):
         """向常用例程控制日志窗口添加日志"""
-        self._append_log(self.routine_log_text, message)
+        self.append_common_log(message)
+
+    def append_common_log(self, message: str):
+        self._append_log(self.param_log_text, message)
 
     def _append_log(self, text_edit, message: str):
         # Record to OperationLogManager
@@ -278,13 +284,8 @@ class CommonConfigView(BaseView):
         text_edit.setTextCursor(cursor)
 
     def show_message(self, message, type="info"):
-        # 根据当前显示的标签页记录日志
-        current_index = self.tab_widget.currentIndex()
         log_msg = f"[{type.upper()}] {message}"
-        if current_index == 0:
-            self.append_param_log(log_msg)
-        else:
-            self.append_routine_log(log_msg)
+        self.append_common_log(log_msg)
 
         msg_type = 2  # info
         if type == "success":
@@ -890,20 +891,15 @@ class CommonConfigView(BaseView):
             combo.addItems(options)
 
             default = config.get("default", "")
-            model = combo.model
             defaults = [d.strip() for d in default.split(",")] if default else []
-            for i in range(1, model.rowCount()):
-                item = model.item(i)
-                if item.text() in defaults:
-                    if hasattr(QtCore.Qt, "CheckState"):
-                        item.setCheckState(QtCore.Qt.CheckState.Checked)
-                    else:
-                        item.setCheckState(getattr(QtCore.Qt, "Checked", 2))
-            combo.updateText()
+            if defaults:
+                combo.setCheckedItems(defaults)
+            else:
+                combo.updateText()
 
             # 复选下拉把用户勾选结果直接写回 service_data，执行时不再额外查表格控件。
             combo.checkedItemsChanged.connect(lambda _items, text, s=service_data, k=data_key: s.update({k: text or "---"}))
-            service_data[data_key] = combo.lineEdit().text() or "---"
+            service_data[data_key] = combo.lineEdit().text().strip() or "---"
             table.setCellWidget(row, col, combo)
 
         elif c_type == "dropdown":
