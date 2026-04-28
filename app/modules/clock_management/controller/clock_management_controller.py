@@ -8,8 +8,9 @@ from app.common.utils.worker import Worker
 
 
 # Define task outside of class to avoid closure issues and ensure clean state
-def fetch_time_task(ssh_client):
+def fetch_time_task(device_service):
     """独立的 SSH 任务函数，运行在 Worker 线程中"""
+    ssh_client = device_service.get_ssh_client() if device_service else None
     if not ssh_client:
         return None
     try:
@@ -56,31 +57,38 @@ class ClockManagementController(BaseController):
         # 存储 worker 引用，key为 clock_id
         self._workers = {}
 
+    def _get_active_device_service(self):
+        service = di_container.resolve(DeviceService)
+        if service:
+            self.device_service = service
+        return self.device_service
+
     def _fetch_all_clocks(self):
         """同时获取所有需要的时钟数据"""
         # 安全检查
-        if not self.view or not self.device_service:
+        service = self._get_active_device_service()
+        if not self.view or not service:
             self._refresh_timer.stop()
             return
 
-        ssh_client = self.device_service.get_ssh_client()
+        ssh_client = service.get_ssh_client()
         if not ssh_client or not ssh_client.is_connected():
             return
 
         # 获取 VM1 时间
-        self._start_fetch_worker(ssh_client, "vm1")
+        self._start_fetch_worker(service, "vm1")
         # 如果需要获取 RT1, RT2，可以在这里继续添加调用
         # self._start_fetch_worker(ssh_client, "rt1")
         # self._start_fetch_worker(ssh_client, "rt2")
 
-    def _start_fetch_worker(self, ssh_client, clock_id):
+    def _start_fetch_worker(self, device_service, clock_id):
         """启动特定 ID 的获取任务"""
         # 检查是否已有任务在运行
         if clock_id in self._workers and self._workers[clock_id].isRunning():
             return
 
         # 创建 Worker
-        worker = Worker(lambda: fetch_time_task(ssh_client))
+        worker = Worker(lambda: fetch_time_task(device_service))
 
         # 使用 lambda 绑定 clock_id
         worker.result_signal.connect(lambda res: self._on_time_fetched(clock_id, res))

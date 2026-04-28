@@ -6,11 +6,12 @@ import threading
 from PyQt5 import QtWidgets, QtCore
 
 from app.core.base_controller import BaseController
+from app.core.dependency_injection import di_container
 from app.core.event_bus import event_bus
 from app.modules.file_transfer.model.file_transfer_model import FileTransferModel
 from app.modules.file_transfer.view.file_transfer_view import FileTransferView
+from app.services.device_manage.device_service import DeviceService
 from app.services.system.config_service import ConfigService
-from app.common.communication.clients.ssh_client import SSHClient
 
 
 class FileTransferController(BaseController):
@@ -24,6 +25,13 @@ class FileTransferController(BaseController):
         super().__init__(self.model, self.view, parent)
 
         self.config_service = ConfigService()
+        self.device_service = di_container.resolve(DeviceService)
+        if not self.device_service:
+            self.device_service = DeviceService()
+            di_container.register_singleton(DeviceService, self.device_service)
+
+        self.model.bind_device_service(self.device_service)
+        self.device_service.protocol_status_changed_signal.connect(self._on_protocol_status_changed)
 
         # Internal signals connection
         self.refresh_local_signal.connect(self.refresh_local_directory)
@@ -167,9 +175,8 @@ class FileTransferController(BaseController):
 
     # ---------------- Remote File System Logic ----------------
     def refresh_remote_directory(self):
-        # Check if connected using Singleton
-        client = SSHClient()
-        if not client.is_connected():
+        ssh_client = self.device_service.get_ssh_client() if self.device_service else None
+        if ssh_client is None or not ssh_client.is_connected():
             self.view.show_toast("未连接设备")
             return
 
@@ -183,6 +190,17 @@ class FileTransferController(BaseController):
              path = "/log"
 
         self.change_remote_directory(path)
+
+    def _on_protocol_status_changed(self, payload: dict):
+        """连接状态变化后，及时让文件传输模块丢弃旧的 SCP/SFTP 包装对象。"""
+        ssh_status = str(payload.get("ssh_connect_status", ""))
+        if ("连接失败" in ssh_status) or ("已断开" in ssh_status) or ("未连接" in ssh_status):
+            self.model.disconnect()
+            return
+
+        if "建链成功" in ssh_status:
+            # 只重绑传输层包装对象，不关闭共享 SSH 主连接。
+            self.model.use_global_connection()
 
     def change_remote_directory(self, path):
         if not self.model.connected: return

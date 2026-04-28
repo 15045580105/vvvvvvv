@@ -106,6 +106,13 @@ class SomeIPClient:
         self._dedup_cache = {}
         self._dedup_lock = threading.Lock()
 
+    def _build_stop_context(self, source: str, reason: str) -> str:
+        return (
+            f"[SomeIP断开] source={source or 'unknown'} | reason={reason or '--'} | "
+            f"running={self.running} | local={self.local_ip}:{self.local_port} | "
+            f"multicast={self.multicast_ip}:{self.multicast_port} | thread={threading.current_thread().name}"
+        )
+
     def start(self) -> bool:
         """启动客户端"""
         try:
@@ -194,10 +201,11 @@ class SomeIPClient:
             return True
         except Exception as e:
             logger.error(f"启动失败: {e}")
-            self.stop()
+            self.stop(source="SomeIPClient.start", reason="start_failure")
             return False
 
-    def stop(self):
+    def stop(self, *, source: str = "unknown", reason: str = ""):
+        logger.warning(self._build_stop_context(source, reason))
         self.running = False
         if self.udp_socket:
             try:

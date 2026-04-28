@@ -3,9 +3,11 @@ from typing import Optional, Type
 from PyQt5 import QtCore, QtWidgets, QtGui
 from PyQt5.QtCore import Qt, QEvent
 
+from app.common.utils.license_manager import get_license_info
 from app.common.ui.constants import PAGE_TEXT_TO_KEY, DIALOG_PAGES, PageConfig, TAB_PAGES, NAV_STRUCTURE
 from app.common.ui.style import APP_STYLE
 from app.core.base_controller import BaseController
+from app.modules.login.view.login_view import LoginDialog
 from app.presentation.model.main_window_model import MainModel
 from app.presentation.views.main_window_view import MainView
 from app.services.system.performance_status_service import PerformanceStatusService
@@ -19,6 +21,8 @@ class MainController(BaseController):
 
     SEARCH_DEBOUNCE_MS = 300
     PERFORMANCE_POLL_MS = 3000
+    LICENSE_MONITOR_INTERVAL_MS = 30_000
+    LICENSE_WARNING_SECONDS = 15 * 60
 
     def __init__(self) -> None:
         self.model: MainModel = MainModel()
@@ -33,13 +37,17 @@ class MainController(BaseController):
         self._pending_search_text: str = ""
         self._search_result_shown: bool = False
         self._performance_timer: Optional[QtCore.QTimer] = None
+        self._license_monitor_timer: Optional[QtCore.QTimer] = None
         self._performance_service = PerformanceStatusService()
         self._active_workers = []
+        self._license_warning_marker: str = ""
+        self._license_locked: bool = False
         self._init_ui()
         self._init_search()
         self._init_navigation()
         self._init_device_metrics_source()
         self._init_performance_monitor()
+        self._init_license_guard()
 
         self.device_service = di_container.resolve("DeviceService")
         # 如果获取不到(可能还未注册)，可以在init_dependencies中再试
@@ -135,6 +143,94 @@ class MainController(BaseController):
         self._performance_timer.timeout.connect(self._refresh_performance)
         self._performance_timer.start()
         self._refresh_performance()
+
+    def _init_license_guard(self) -> None:
+        self._license_monitor_timer = QtCore.QTimer(self.view)
+        self._license_monitor_timer.setInterval(self.LICENSE_MONITOR_INTERVAL_MS)
+        self._license_monitor_timer.timeout.connect(self._check_license_runtime)
+        self._license_monitor_timer.start()
+        QtCore.QTimer.singleShot(0, self._check_license_runtime)
+
+    def _check_license_runtime(self) -> None:
+        info = get_license_info()
+        self._refresh_license_page_if_open()
+
+        if info.activated:
+            marker = f"{info.activation_code}|{info.expire_time_text}"
+            if info.remaining_seconds > self.LICENSE_WARNING_SECONDS:
+                if self._license_warning_marker == marker:
+                    self._license_warning_marker = ""
+            elif 0 < info.remaining_seconds <= self.LICENSE_WARNING_SECONDS and self._license_warning_marker != marker:
+                self._license_warning_marker = marker
+                QtWidgets.QMessageBox.warning(
+                    self.view,
+                    "授权即将过期",
+                    "当前授权还有15分钟内到期，请尽快重新生成激活码并重新激活，否则到期后将无法继续使用。",
+                )
+
+            if self._license_locked:
+                self._license_locked = False
+                self._set_application_interactive(True)
+            return
+
+        if info.status_text == "已过期":
+            self._handle_license_expired()
+
+    def _handle_license_expired(self) -> None:
+        if self._license_locked:
+            return
+
+        self._license_locked = True
+        self._set_application_interactive(False)
+
+        message_box = QtWidgets.QMessageBox(self.view)
+        message_box.setIcon(QtWidgets.QMessageBox.Warning)
+        message_box.setWindowTitle("授权已过期")
+        message_box.setWindowFlags((message_box.windowFlags() | Qt.CustomizeWindowHint | Qt.WindowTitleHint) & ~Qt.WindowCloseButtonHint)
+        message_box.setText("当前授权已到期，应用已被锁定。请重新生成激活码并重新激活后再继续使用。")
+        reactivate_button = message_box.addButton("重新激活", QtWidgets.QMessageBox.AcceptRole)
+        message_box.setDefaultButton(reactivate_button)
+        message_box.exec_()
+
+        self._show_reactivation_dialog()
+
+    def _show_reactivation_dialog(self) -> None:
+        dialog = LoginDialog(self.view)
+        dialog.setWindowTitle("授权已过期，请重新激活")
+        if dialog.exec_() == QtWidgets.QDialog.Accepted:
+            self._license_locked = False
+            self._license_warning_marker = ""
+            self._set_application_interactive(True)
+            self._refresh_license_page_if_open()
+            self._check_license_runtime()
+            return
+
+        app = QtWidgets.QApplication.instance()
+        if isinstance(app, QtWidgets.QApplication):
+            app.quit()
+
+    def _set_application_interactive(self, enabled: bool) -> None:
+        self.view.hide_search_results()
+        self._search_result_shown = False
+        self.view.toolbar.setEnabled(enabled)
+        self.view.nav_dock.setEnabled(enabled)
+        self.view.central_stack.setEnabled(enabled)
+        self.view.statusBar().setEnabled(enabled)
+
+        settings_controller = getattr(self.view, "settings_controller", None)
+        if not enabled and settings_controller is not None and hasattr(settings_controller, "view"):
+            try:
+                settings_controller.view.close()
+            except Exception:
+                logger.exception("Close settings window on license lock failed")
+
+    def _refresh_license_page_if_open(self) -> None:
+        settings_controller = getattr(self.view, "settings_controller", None)
+        if settings_controller is None or not hasattr(settings_controller, "view"):
+            return
+        license_page = getattr(settings_controller.view, "license_page", None)
+        if license_page is not None and hasattr(license_page, "refresh_license_info"):
+            license_page.refresh_license_info()
 
     # ----------------- 页面与Tab构建 -----------------
     def _build_pages(self) -> None:
@@ -395,6 +491,8 @@ class MainController(BaseController):
         # 停止性能监控定时器
         if self._performance_timer:
             self._performance_timer.stop()
+        if self._license_monitor_timer:
+            self._license_monitor_timer.stop()
 
         # 通知所有已注册的 Controller 执行清理
         for key, controller in self.model.registry.items():

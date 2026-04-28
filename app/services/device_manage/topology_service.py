@@ -1,15 +1,12 @@
 from __future__ import annotations
 
-import threading
 import math # Added math import
 import json
 from dataclasses import dataclass
-from typing import Dict, List, Tuple, Optional, Any, Callable, Union
+from typing import Dict, List, Tuple, Optional, Any, Callable, Union, Literal
 import re
-
 import logging
 from PyQt5.QtCore import QObject, pyqtSignal, QMutex
-
 from app.modules.device_topology.controller.service_status_parser import SomeIpParser
 from app.services.device_manage.device_service import DeviceService
 from app.services.diagnostic.dpt_service import DPTService
@@ -168,13 +165,6 @@ class TopologyService(QObject):
     def request_network_mgmt(self):
         """异步请求网络管理信息"""
         pass
-        # 既然 _get_pnc_status 只是 mock，我们定义 3 个 helper
-        # tasks = [
-        #     ("power_wake_source", self._get_power_wake, self.sig_power_wake_updated),
-        #     ("pnc", self._get_pnc, self.sig_pnc_updated),
-        #     ("rt1_net_source", self._get_rt1_net, self.sig_rt1_net_updated)
-        # ]
-        # self._execute_parallel_tasks(tasks)
 
     def request_storage_info(self):
         """异步请求存储信息"""
@@ -218,31 +208,249 @@ class TopologyService(QObject):
 
             self._start_worker(worker_func, pyqtSignal())
 
+    def _hex_to_bytes(self, raw_hex: str) -> Optional[bytes]:
+        """安全地将 HEX 字符串转换为 bytes。"""
+        if not raw_hex:
+            return None
+        try:
+            normalized = raw_hex.replace(' ', '').strip()
+            if not normalized:
+                return None
+            return bytes.fromhex(normalized)
+        except ValueError:
+            return None
+
+    def _parse_ascii_from_raw_hex(self, raw_hex: str) -> str:
+        """按 ASCII 规则解析原始 HEX。"""
+        raw_bytes = self._hex_to_bytes(raw_hex)
+        if not raw_bytes:
+            return "未配置"
+
+        if all(b in (0x20, 0x00, 0xFF) for b in raw_bytes):
+            return "未配置"
+
+        cleaned = raw_bytes.replace(b'\x00', b'').replace(b'\xff', b'')
+        try:
+            text = cleaned.decode('ascii', errors='ignore').strip()
+            return text if text else "未配置"
+        except Exception:
+            return f"原始值异常 [HEX: {raw_hex}]"
+
+    def _parse_unsigned_from_raw_hex(self, raw_hex: str, *, offset: int = 0, byteorder: Literal['big', 'little'] = 'big') -> str:
+        """按 Unsigned + offset 规则解析原始 HEX。"""
+        raw_bytes = self._hex_to_bytes(raw_hex)
+        if not raw_bytes:
+            return "未配置"
+
+        value = int.from_bytes(raw_bytes, byteorder=byteorder, signed=False) + offset
+        return str(value)
+
+    def _get_response_slice_hex(self, response_bytes: bytes, start: int, end: int) -> str:
+        """按完整响应的 0-based 字节位置提取闭区间 HEX。"""
+        if not response_bytes or start < 0 or end < start or start >= len(response_bytes):
+            return ""
+        actual_end = min(end, len(response_bytes) - 1)
+        return response_bytes[start:actual_end + 1].hex(' ').upper()
+
+    def _extract_field_range_from_parsed_result(self, parsed_result, field_name_key: str) -> str:
+        """仅从 DPT 结果中提取字段的 range_str，用于日志展示。
+
+        注意：当前证书值的实际切片仍以 ECU 原始响应字节为准，
+        DPT 的 range_str 只作为“字段位置说明”和调试日志输出来源，
+        这样可以避免 DPT 配置边界与 ECU 实际报文边界存在 1 byte 偏差时，
+        影响最终页面展示结果。
+        """
+        if not parsed_result or not getattr(parsed_result, 'fields', None):
+            return ""
+        for field in parsed_result.fields:
+            name = getattr(field, 'name', '')
+            if field_name_key in name:
+                return str(getattr(field, 'range_str', '')).strip()
+        return ""
+
+    def _parse_cert_info_from_response(self, response_bytes: bytes, parsed_result=None) -> Dict[str, str]:
+        """按 ECU 的原始响应字节位置切片，提取证书信息字段。
+
+        解析约定：
+        1. `response_bytes` 是完整的正响应，例如：`71 01 BE E8 ...`；
+        2. 这里的 byte 位号按当前完整响应的 0-based 索引计算；
+        3. 证书字段边界以 ECU 实际报文为准，避免完全依赖 DPT range_str 导致尾部字段错位；
+        4. DPT 结果只用于补充“这个字段在 DPT 中声明的范围”，方便日志对照。
+        """
+        # 证书信息字段与原始响应字节位置的对应关系：
+        # byte 005      -> 证书状态信息
+        # byte 006~021 -> 证书版本号（ASCII）
+        # byte 022~277 -> 证书环境（ASCII）
+        # byte 278~340 -> 证书序列号
+        # byte 341~342 -> 证书有效期_年（2 byte，little-endian，offset=2000）
+        # byte 343     -> 证书有效期_月
+        # byte 344     -> 证书有效期_日
+        # byte 345     -> 证书有效期_时
+        # byte 346     -> 证书有效期_分
+        # byte 347     -> 证书有效期_秒
+        cert_status_hex = self._get_response_slice_hex(response_bytes, 5, 5)
+        cert_version_hex = self._get_response_slice_hex(response_bytes, 6, 21)
+        cert_environment_hex = self._get_response_slice_hex(response_bytes, 22, 277)
+        cert_sequence_hex = self._get_response_slice_hex(response_bytes, 278, 340)
+        cert_year_hex = self._get_response_slice_hex(response_bytes, 341, 342)
+        cert_month_hex = self._get_response_slice_hex(response_bytes, 343, 343)
+        cert_day_hex = self._get_response_slice_hex(response_bytes, 344, 344)
+        cert_hour_hex = self._get_response_slice_hex(response_bytes, 345, 345)
+        cert_min_hex = self._get_response_slice_hex(response_bytes, 346, 346)
+        cert_sec_hex = self._get_response_slice_hex(response_bytes, 347, 347)
+
+        cert_status_range = self._extract_field_range_from_parsed_result(parsed_result, "Szitrus_certStatus") or '5/ALL'
+        cert_version_range = self._extract_field_range_from_parsed_result(parsed_result, "Szitrus_getVersion") or '6-21/ALL'
+        cert_environment_range = self._extract_field_range_from_parsed_result(parsed_result, "Environment") or '22-277/ALL'
+        cert_sequence_range = self._extract_field_range_from_parsed_result(parsed_result, "Sequence_number") or '278-340/ALL'
+        cert_year_range = self._extract_field_range_from_parsed_result(parsed_result, "Validity_duration_Year") or '341-342/ALL'
+        cert_month_range = self._extract_field_range_from_parsed_result(parsed_result, "Validity_duration_Month") or '343/ALL'
+        cert_day_range = self._extract_field_range_from_parsed_result(parsed_result, "Validity_duration_Day") or '344/ALL'
+        cert_hour_range = self._extract_field_range_from_parsed_result(parsed_result, "Validity_duration_Hour") or '345/ALL'
+        cert_min_range = self._extract_field_range_from_parsed_result(parsed_result, "Validity_duration_Min") or '346/ALL'
+        cert_sec_range = self._extract_field_range_from_parsed_result(parsed_result, "Validity_duration_Sec") or '347/ALL'
+
+        # 年字段当前按 little-endian 解析，例如 raw `60 00` -> 0x0060 -> 96，再加偏置 2000 得到 2096。
+        # 月/日/时/分/秒均按单字节 Unsigned 解析，无额外偏置。
+        year = self._parse_int_safely(self._parse_unsigned_from_raw_hex(cert_year_hex, offset=2000, byteorder='little'))
+        month = self._parse_int_safely(self._parse_unsigned_from_raw_hex(cert_month_hex, offset=0))
+        day = self._parse_int_safely(self._parse_unsigned_from_raw_hex(cert_day_hex, offset=0))
+        hour = self._parse_int_safely(self._parse_unsigned_from_raw_hex(cert_hour_hex, offset=0))
+        minute = self._parse_int_safely(self._parse_unsigned_from_raw_hex(cert_min_hex, offset=0))
+        second = self._parse_int_safely(self._parse_unsigned_from_raw_hex(cert_sec_hex, offset=0))
+
+        year_text = f"{year:04d}" if year is not None else "----"
+        month_text = f"{month:02d}" if month is not None else "--"
+        day_text = f"{day:02d}" if day is not None else "--"
+        hour_text = f"{hour:02d}" if hour is not None else "--"
+        minute_text = f"{minute:02d}" if minute is not None else "--"
+        second_text = f"{second:02d}" if second is not None else "--"
+
+        return {
+            "cert_status": self._parse_unsigned_from_raw_hex(cert_status_hex),
+            "cert_status_raw": cert_status_hex,
+            "cert_version": self._parse_ascii_from_raw_hex(cert_version_hex),
+            "cert_version_raw": cert_version_hex,
+            "cert_environment": self._parse_ascii_from_raw_hex(cert_environment_hex),
+            "cert_environment_raw": cert_environment_hex,
+            "cert_sequence": self._parse_unsigned_from_raw_hex(cert_sequence_hex, byteorder='little'),
+            "cert_sequence_raw": cert_sequence_hex,
+            "validity_year": year_text,
+            "validity_month": month_text,
+            "validity_day": day_text,
+            "validity_hour": hour_text,
+            "validity_min": minute_text,
+            "validity_sec": second_text,
+            "validity_text": f"{year_text}-{month_text}-{day_text} {hour_text}:{minute_text}:{second_text}",
+            "validity_raw": f"{cert_year_hex} | {cert_month_hex} | {cert_day_hex} | {cert_hour_hex} | {cert_min_hex} | {cert_sec_hex}",
+            "range_map": (
+                f"证书状态信息[{cert_status_range}]，证书版本号[{cert_version_range}]，证书环境[{cert_environment_range}]，"
+                f"证书序列号[{cert_sequence_range}]，证书有效期_年[{cert_year_range}]，证书有效期_月[{cert_month_range}]，"
+                f"证书有效期_日[{cert_day_range}]，证书有效期_时[{cert_hour_range}]，证书有效期_分[{cert_min_range}]，证书有效期_秒[{cert_sec_range}]"
+            ),
+        }
+
+    def _parse_int_safely(self, value: Any) -> Optional[int]:
+        if value is None:
+            return None
+        match = re.search(r'-?\d+', str(value))
+        if not match:
+            return None
+        try:
+            return int(match.group(0))
+        except Exception:
+            return None
+
+    def _build_cert_info_display(self, response_bytes: bytes, parsed_result=None) -> str:
+        """将 BEE8 的完整原始响应整理成最终展示文本。
+
+        这里做三件事：
+        1. 调用 `_parse_cert_info_from_response()` 从原始报文中切片取值；
+        2. 做基础合法性校验（例如年月日时分秒是否落在合理范围）；
+        3. 拼出界面直接展示的多行文本，并把 raw HEX 一并带上，方便问题定位。
+        """
+        if not response_bytes:
+            return "DPT解析结果为空"
+
+        cert_info = self._parse_cert_info_from_response(response_bytes, parsed_result)
+        anomalies: List[str] = []
+
+        self.log_signal.emit(f"证书字段位置映射：{cert_info['range_map']}")
+        self.log_signal.emit(
+            "证书原始字节映射："
+            f"证书序列号 [raw: {cert_info['cert_sequence_raw'] if 'cert_sequence_raw' in cert_info else 'N/A'}]；"
+            f"证书有效期 [raw: {cert_info['validity_raw']}]"
+        )
+
+        year = self._parse_int_safely(cert_info["validity_year"])
+        month = self._parse_int_safely(cert_info["validity_month"])
+        day = self._parse_int_safely(cert_info["validity_day"])
+        hour = self._parse_int_safely(cert_info["validity_hour"])
+        minute = self._parse_int_safely(cert_info["validity_min"])
+        second = self._parse_int_safely(cert_info["validity_sec"])
+
+        invalid_validity = (
+            (year is not None and year < 2000)
+            or (month is not None and not 1 <= month <= 12)
+            or (day is not None and not 1 <= day <= 31)
+            or (hour is not None and not 0 <= hour <= 23)
+            or (minute is not None and not 0 <= minute <= 59)
+            or (second is not None and not 0 <= second <= 59)
+        )
+        if invalid_validity:
+            anomalies.append(f"证书有效期疑似异常: {cert_info['validity_text']}，原始字节: {cert_info['validity_raw']}")
+
+        if parsed_result and getattr(parsed_result, 'fields', None):
+            for field in parsed_result.fields:
+                if "Szitrus_certStatus" in getattr(field, 'name', ''):
+                    parsed_value = str(getattr(field, 'parsed_value', '')).strip()
+                    if "reserved" in parsed_value.lower() or "reverved" in parsed_value.lower() or "预留" in parsed_value:
+                        anomalies.append(f"证书状态信息DPT枚举结果为预留值，原始字节: {getattr(field, 'raw_hex', '')}")
+                    break
+
+        if anomalies:
+            self.log_signal.emit("证书信息异常提示：" + "；".join(anomalies))
+
+        return "\n".join([
+            f"证书状态信息：{cert_info['cert_status']} [raw: {cert_info.get('cert_status_raw', 'N/A')}]",
+            f"证书版本号：{cert_info['cert_version']} [raw: {cert_info.get('cert_version_raw', 'N/A')}]",
+            f"证书环境：{cert_info['cert_environment']} [raw: {cert_info.get('cert_environment_raw', 'N/A')}]",
+            f"证书序列号：{cert_info['cert_sequence']} [raw: {cert_info.get('cert_sequence_raw', 'N/A')}]",
+            f"证书有效期：{cert_info['validity_text']} [raw: {cert_info.get('validity_raw', 'N/A')}]",
+        ])
+
     # --- UDS Helpers (Refactored) ---
     def _get_cert_info(self) -> str:
+        # 证书信息读取整体链路：
+        # 1) 发送 31 01 BE E8 例程请求 ECU 返回证书原始数据；
+        # 2) 若 DPT 就绪，则用 DPT 解析字段名称/range，辅助日志定位；
+        # 3) 最终仍以 `_build_cert_info_display()` 基于原始响应字节切片输出展示文本。
         self.log_signal.emit("-->读取证书信息<--")
         payload = bytes([0x31, 0x01, 0xBE, 0xE8])
-        data =self._device_service.execute_secure_routine(payload, sec_level=0x21, log_signal=self.log_signal)
-        self.log_signal.emit(f"data:{data}")
+        data = self._device_service.execute_secure_routine(payload, sec_level=0x21, log_signal=self.log_signal)
 
-        result: Dict[str, str] = {}
+        if not isinstance(data, (bytes, bytearray)) or not data:
+            self.log_signal.emit(f"证书信息读取失败，原始返回: {data}")
+            return "读取失败(可能需要解锁)"
+
+        data = bytes(data)
+        self.log_signal.emit(f"证书信息原始响应长度: {len(data)} 字节")
+        self.log_signal.emit(f"证书信息原始响应: {data.hex(' ').upper()}")
 
         # 使用 DPTService 解析数据
         if self._dpt_service.is_ready():
             parsed_result = self._dpt_service.parse_bytes(data, did="BEE8")
             if parsed_result:
                 self.log_signal.emit(f"DPT解析结果: {parsed_result.fields}")
-                for field in parsed_result.fields:
-                    if hasattr(field, 'name') and hasattr(field, 'parsed_value'):
-                        result[field.name] = str(field.parsed_value)
+                display_text = self._build_cert_info_display(data, parsed_result)
+                self.log_signal.emit(f"证书信息整理结果:\n{display_text}")
+                return display_text
             else:
                 self.log_signal.emit("DPT解析失败: 未找到匹配的解析规则")
         else:
             self.log_signal.emit("DPT服务未就绪，无法解析数据")
 
-
-        if data: return data.hex()
-        return "读取失败(可能需要解锁)"
+        return self._build_cert_info_display(data)
 
     def _get_key_slot_status(self) -> str:
         self.log_signal.emit("-->读取密钥槽状态<--")
@@ -318,6 +526,7 @@ class TopologyService(QObject):
             parsed_result = self._dpt_service.parse_bytes(data, did="BE2D")
             if parsed_result:
                 lines = []
+                res = "解析结果为空"
                 for field in parsed_result.fields:
                     name = field.name
                     val_str = str(field.parsed_value)
@@ -356,22 +565,6 @@ class TopologyService(QObject):
             self.log_signal.emit("DPT服务未就绪，无法解析数据")
             return f"Raw: {data.hex(' ').upper()}"
 
-    def _get_power_wake(self) -> str:
-        return "Unknown" # Mock data
-
-    def _get_pnc(self) -> str:
-        return "Unknown" # Mock data
-
-    def _get_rt1_net(self) -> str:
-        return "Unknown" # Mock data
-
-    def _get_pnc_status(self) -> Dict[str, str]:
-        return {
-            "power_wake_source": "Unknown",
-            "pnc": "Unknown",
-            "rt1_net": "Unknown"
-        }
-
     def _start_worker(self, func: Callable, result_signal: Optional[pyqtSignal] = None):
         """启动 Worker 执行任务"""
         # 封装任务以捕获异常并发送错误信号
@@ -395,17 +588,6 @@ class TopologyService(QObject):
 
         self._workers.append(worker)
         worker.start()
-
-    def _start_worker_common(self, func: Callable, signal: pyqtSignal, action_name: str):
-        """通用的 Worker 启动"""
-        def wrapped_task():
-            try:
-                success = func()
-                msg = f"{action_name}指令发送完成" if success else f"{action_name}指令发送失败"
-                return success, msg
-            except Exception as e:
-                return False, str(e)
-        self._start_worker(wrapped_task, signal)
 
     def request_eth_snapshot(self):
         """采集整车拓扑概览（异步）。"""
@@ -630,58 +812,6 @@ class TopologyService(QObject):
 
 
     # --- SomeIP Helpers ---
-    def _someip_request_sync(self, service: int, method: int, payload: bytes = b'', timeout: float = 2.0, target_port: int = 30500) -> Optional[bytes]:
-        client = self._device_service.get_someip_client()
-        if not client:
-            return None
-
-        # 1. 获取目标IP
-        target_ip = self._device_service.get_current_device_ip()
-        if not target_ip:
-            # 未知IP时尝试使用默认值
-            target_ip = "10.1.0.79"
-
-        # 记录详细的发送参数
-        if hasattr(self, 'log_signal'):
-            self.log_signal.emit(f"[Debug] Sending SOME/IP to {target_ip}:{target_port}")
-
-        result = None
-        event = threading.Event()
-
-        # 2. 定义回调
-        def cb(pkt):
-            nonlocal result
-            try:
-                # 尝试提取 load
-                if hasattr(pkt, 'payload') and hasattr(pkt.payload, 'load'):
-                    result = pkt.payload.load
-                else:
-                    # 兜底转换
-                    result = bytes(pkt.payload)
-            except:
-                result = b''
-            event.set()
-
-        # 注册回调
-        client.register_callback(service, method, cb)
-        try:
-            # 发送请求 (假设 target IP 是组播或已知)
-            # 这里需要 target IP，DeviceService 里的 client 可能有默认 multicast
-            # 但通常请求是单播。这里假设 client 已经配置好或者我们广播
-            # 由于 DeviceService.send_someip_request 需要 target_ip，我们这里直接用 client 发
-            # 暂时用 '239.255.0.1' 或 client.multicast_ip 如果是 discovery，但这是 method call
-            # 假设发给 localhost 或者 device IP?
-            # 我们没有 device IP 在这里。
-            # 这是一个问题。SomeIP 需要目标 IP。
-            # 暂时使用 '127.0.0.1' 模拟或者需要 device_info 中的 IP
-            # 发送请求
-            client.send_request(service, method, payload, target_ip=target_ip, target_port=target_port)
-            event.wait(timeout)
-        finally:
-            # 清理回调
-            client.unregister_callback(service, method)
-
-        return result
 
     def _get_user_mode(self) -> str:
         """模拟获取用户模式"""

@@ -4,12 +4,23 @@ import os
 import scp
 from PyQt5.QtCore import pyqtSignal
 from app.core.base_service import BaseService
+from app.core.dependency_injection import di_container
 from app.common.communication.clients.ssh_client import SSHClient
+from app.services.device_manage.device_service import DeviceService
 from app.services.file_manage.progress.progress import make_scp_progress_adapter
 
 
 class FileTransferService(BaseService):
     connection_status_changed = pyqtSignal(bool, str)
+
+    @staticmethod
+    def _safe_close(obj):
+        if not obj:
+            return
+        try:
+            obj.close()
+        except Exception:
+            pass
 
     @staticmethod
     def _format_size(size_bytes: Optional[int]) -> str:
@@ -48,26 +59,72 @@ class FileTransferService(BaseService):
         # 保护性锁/占位（如需扩展为多线程使用可替换为 threading.Lock）
         self._internal_lock = None
 
+    def _get_active_ssh_wrapper(self):
+        device_service = di_container.resolve(DeviceService)
+        if device_service:
+            try:
+                ssh = device_service.get_ssh_client()
+                if ssh and ssh.is_connected():
+                    return ssh
+            except Exception:
+                pass
+        ssh = SSHClient()
+        return ssh if ssh.is_connected() else None
+
+    def _get_active_paramiko_client(self):
+        ssh_wrapper = self._get_active_ssh_wrapper()
+        return ssh_wrapper.get_client() if ssh_wrapper else None
+
     def connect_device(self, hostname, port=22, username=None, password=None):
-        """建立SSH连接并初始化SCP客户端"""
-        # Delegate to singleton
+        """建立 SSH 连接。
+
+        注意：这里仍复用全局 `SSHClient` 单例。
+        若业务需要彻底断开该共享 SSH，请显式调用 `force_disconnect_shared_ssh()`，
+        普通 `disconnect()` 只释放文件传输服务自己的临时资源，不会主动断开全局 SSH。
+        """
         return SSHClient().connect(hostname, port, username, password)
 
     def disconnect(self):
-        """断开SSH连接和SCP客户端"""
-        SSHClient().disconnect()
+        """释放文件传输服务自身资源，但不主动断开全局共享 SSH。
+
+        这样可避免日志下载/文件传输模块在退出或刷新时，误把整个应用共用的
+        SSH 主连接一起断开，影响性能监控、拓扑、日志配置等其他模块。
+        """
+        self._safe_close(self.scp_client)
+        self.scp_client = None
+
+        # `self.ssh_client` 在当前实现中主要是遗留/兼容字段，默认不主动 close，
+        # 仅清空本地引用，避免误关共享 Paramiko 连接。
+        self.ssh_client = None
+        self._connected = False
+
         # Safely emit signal if available (helps static analysis and avoids runtime errors
         # in contexts where the signal object may not expose `emit` directly).
         sig = getattr(self, 'connection_status_changed', None)
         if sig is not None and hasattr(sig, 'emit') and callable(getattr(sig, 'emit')):
             try:
-                sig.emit(False, "Disconnected")
+                sig.emit(True, "Transfer resources released; shared SSH kept alive")
             except Exception:
                 # Swallow any emit-time exceptions to avoid cascading failures
                 pass
 
+    def force_disconnect_shared_ssh(self):
+        """显式断开全局共享 SSH。
+
+        仅在确实要结束整条 SSH 会话时调用；普通文件传输结束请使用 `disconnect()`。
+        """
+        self.disconnect()
+        SSHClient().disconnect(source="FileTransferService.force_disconnect_shared_ssh", reason="explicit_shared_ssh_disconnect", include_stack=False)
+        sig = getattr(self, 'connection_status_changed', None)
+        if sig is not None and hasattr(sig, 'emit') and callable(getattr(sig, 'emit')):
+            try:
+                sig.emit(False, "Shared SSH disconnected")
+            except Exception:
+                pass
+
     def is_connected(self):
-        return SSHClient().is_connected()
+        ssh = self._get_active_ssh_wrapper()
+        return bool(ssh and ssh.is_connected())
 
     def list_remote_files(self, path: str):
         """获取远程文件列表 (Alias for get_remote_file_list)"""
@@ -75,7 +132,7 @@ class FileTransferService(BaseService):
 
     def get_remote_file_list(self, path: str):
         """获取远程目录内容，返回 View 所需的结构列表"""
-        client = SSHClient().get_client()
+        client = self._get_active_paramiko_client()
         if not client:
             raise RuntimeError("未连接到远程设备")
 
@@ -212,7 +269,7 @@ class FileTransferService(BaseService):
 
     def _get_scp_client(self, progress=None):
         """Helper to create a temporary SCP client from singleton SSHClient"""
-        client = SSHClient().get_client()
+        client = self._get_active_paramiko_client()
         if client and client.get_transport() and client.get_transport().is_active():
             return scp.SCPClient(client.get_transport(), progress=progress)
         return None
@@ -243,7 +300,7 @@ class FileTransferService(BaseService):
 
     def path_exists(self, remote_path):
         """检查远程路径是否存在"""
-        client = SSHClient().get_client()
+        client = self._get_active_paramiko_client()
         if not client:
             return False
 
@@ -257,7 +314,7 @@ class FileTransferService(BaseService):
 
     def is_remote_dir(self, remote_path):
         """检查远程路径是否为目录"""
-        client = SSHClient().get_client()
+        client = self._get_active_paramiko_client()
         if not client:
             return False
 
@@ -453,7 +510,7 @@ class FileTransferService(BaseService):
 
     def download_file(self, remote_path, local_path, progress_callback=None):
         """下载文件，支持进度回调。优先尝试 SFTP，失败回退到 SCP。"""
-        client = SSHClient().get_client()
+        client = self._get_active_paramiko_client()
         if not client:
             return False, "Not connected"
         

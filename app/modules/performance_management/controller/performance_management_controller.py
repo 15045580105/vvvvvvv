@@ -59,6 +59,23 @@ class PerformanceController(BaseController):
         self._bind_view_signals()
         self.on_model_changed()
 
+    def _get_active_device_service(self):
+        service = di_container.resolve(DeviceService)
+        if service:
+            self._device_service = service
+        return self._device_service
+
+    def _get_connection_context_text(self) -> str:
+        service = self._get_active_device_service()
+        if not service or not hasattr(service, "get_connection_context"):
+            return "generation=-- | SSH=-- | DoIP=--"
+        ctx = service.get_connection_context()
+        return (
+            f"generation={ctx.get('generation', '--')} | ip={ctx.get('ip') or '--'} | "
+            f"SSH={'Y' if ctx.get('ssh_connected') else 'N'} | "
+            f"DoIP={'Y' if ctx.get('doip_connected') else 'N'}"
+        )
+
     def _bind_view_signals(self):
         # Metrics Tab Signals
         self.view.metrics_start_btn.clicked.connect(self._on_metrics_start_clicked)
@@ -98,9 +115,10 @@ class PerformanceController(BaseController):
 
     # --- Metrics Handlers ---
     def _on_metrics_start_clicked(self):
-        ssh_client = self._device_service.get_ssh_client()
+        service = self._get_active_device_service()
+        ssh_client = service.get_ssh_client() if service else None
         if ssh_client is None or not ssh_client.is_connected():
-            self.view.set_metrics_status("未检测到已连接的 SSH 设备", "error")
+            self.view.set_metrics_status(f"未检测到已连接的 SSH 设备 ({self._get_connection_context_text()})", "error")
             return
 
         # Clear chart before starting
@@ -134,7 +152,7 @@ class PerformanceController(BaseController):
         if self.collector_thread:
             self.collector_thread.pause()
 
-        self.view.set_metrics_status("性能监控已结束", "warn")
+        self.view.set_metrics_status("性能监控已停止采集（SSH连接保持）", "warn")
         self.view.metrics_start_btn.setEnabled(True)
         self.view.metrics_stop_btn.setEnabled(False)
         self.view.metrics_cycle_combo.setEnabled(True)
@@ -151,9 +169,10 @@ class PerformanceController(BaseController):
 
     # --- Process Handlers ---
     def _on_process_start_clicked(self):
-        ssh_client = self._device_service.get_ssh_client()
+        service = self._get_active_device_service()
+        ssh_client = service.get_ssh_client() if service else None
         if ssh_client is None or not ssh_client.is_connected():
-            self.view.set_process_status("未检测到已连接的 SSH 设备", "error")
+            self.view.set_process_status(f"未检测到已连接的 SSH 设备 ({self._get_connection_context_text()})", "error")
             return
 
         interval = self._current_process_interval_ms()
@@ -185,7 +204,7 @@ class PerformanceController(BaseController):
         if self.process_collector_thread:
             self.process_collector_thread.pause()
 
-        self.view.set_process_status("进程监控已结束", "warn")
+        self.view.set_process_status("进程监控已停止采集（SSH连接保持）", "warn")
         self.view.process_start_btn.setEnabled(True)
         self.view.process_stop_btn.setEnabled(False)
         self.view.process_cycle_combo.setEnabled(True)

@@ -1,9 +1,11 @@
+from typing import cast
+
 from PyQt5.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel,
-                             QPushButton, QMessageBox, QTextEdit)
+                             QPushButton, QMessageBox, QTextEdit, QWidget)
 from PyQt5.QtCore import pyqtSignal, Qt
 
 from app.common.utils.machine_code import get_machine_code
-from app.common.utils.license_manager import activate, expected_activation_code
+from app.common.utils.license_manager import activate
 
 
 class LoginDialog(QDialog):
@@ -11,16 +13,17 @@ class LoginDialog(QDialog):
 
     login_success = pyqtSignal()
 
-    def __init__(self, parent=None):
+    def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
         self.setWindowTitle("GAC工具激活")
         self.setModal(True)
-        self.setWindowFlags(self.windowFlags() | Qt.WindowStaysOnTopHint)
+        self.setWindowFlag(Qt.WindowStaysOnTopHint, True)
         self.resize(720, 320)  # 缩小窗口，避免比主界面大
         self.setup_ui()
         # 将对话框居中到父窗口上方
         if parent is not None:
-            geo = parent.frameGeometry()
+            parent_widget = cast(QWidget, parent)
+            geo = parent_widget.frameGeometry()
             center = geo.center()
             self.move(center.x() - self.width() // 2, center.y() - self.height() // 2)
 
@@ -58,9 +61,10 @@ class LoginDialog(QDialog):
         auth_layout.addWidget(self.auth_input, 1)
         layout.addLayout(auth_layout)
 
-        # 测试环境自动填入激活码
-        expected_code = expected_activation_code(machine_code)
-        self.auth_input.setPlainText(expected_code)
+        tip_label = QLabel("请将管理员生成的激活码完整粘贴到此处，系统会自动去除空格和换行后校验。")
+        tip_label.setWordWrap(True)
+        tip_label.setStyleSheet("color: #6b7280;")
+        layout.addWidget(tip_label)
 
         # 按钮行
         button_layout = QHBoxLayout()
@@ -84,8 +88,9 @@ class LoginDialog(QDialog):
             QMessageBox.warning(self, "输入错误", "请输入激活码")
             return
 
-        if activate(auth_code):
+        result = activate(auth_code)
+        if result.success:
             self.login_success.emit()
             self.accept()
         else:
-            QMessageBox.critical(self, "激活失败", "激活码无效，请联系管理员")
+            QMessageBox.critical(self, "激活失败", result.message)

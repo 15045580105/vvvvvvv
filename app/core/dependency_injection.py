@@ -14,6 +14,12 @@ class DIContainer:
     def register_singleton(self, interface: Type, implementation: Any):
         """注册单例"""
         self._singletons[interface] = implementation
+        # 若该接口之前已经 resolve 过，则立即刷新实例缓存。
+        # 否则后续 resolve 仍会返回旧实例，导致不同模块持有的 Service 不一致。
+        if callable(implementation):
+            self._instances.pop(interface, None)
+        else:
+            self._instances[interface] = implementation
 
     def register_factory(self, interface: Type, factory: Callable):
         """注册工厂"""

@@ -163,7 +163,18 @@ class DeviceController(BaseController):
         target_key = f"{ip}:{port}"
         is_startup_reconnect_target = (self._startup_reconnect_device_key == target_key)
         payload_attempt_id = device.get("_attempt_id")
+        payload_generation = device.get("_connection_generation")
         current_attempt_id = self._device_attempt_ids.get(target_key)
+
+        logger.info(
+            "[连接上下文] 设备状态回写 -> %s | attempt=%s | generation=%s | ssh=%s | doip=%s | someip=%s",
+            target_key,
+            payload_attempt_id,
+            payload_generation,
+            device.get("ssh_connect_status"),
+            device.get("doip_connect_status"),
+            device.get("someip_connect_status"),
+        )
 
         if payload_attempt_id is not None and current_attempt_id is not None and payload_attempt_id != current_attempt_id:
             self.view.append_log(

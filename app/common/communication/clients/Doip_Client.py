@@ -11,6 +11,7 @@ from doipclient import DoIPClient
 from doipclient.messages import RoutingActivationRequest
 import logging
 import time
+import threading
 from typing import Optional, Tuple, List
 from typing import Any, Union
 
@@ -30,6 +31,19 @@ class DoIPClientHandler:
         self.interface_ip = None
         # 新增：本机(测试器)逻辑地址/源地址，默认0x0E80，可由外部修改
         self.client_logical_address: int = 0x0E80
+
+    def _build_disconnect_context(self, source: str, reason: str) -> str:
+        return (
+            f"[DoIP断开] source={source or 'unknown'} | reason={reason or '--'} | "
+            f"connected={self.connected} | interface_ip={self.interface_ip or '--'} | "
+            f"thread={threading.current_thread().name}"
+        )
+
+    def _log_passive_disconnect(self, stage: str, detail: str = "") -> None:
+        message = f"[DoIP被动掉线] stage={stage} | connected={self.connected} | interface_ip={self.interface_ip or '--'} | thread={threading.current_thread().name}"
+        if detail:
+            message += f" | detail={detail}"
+        logger.warning(message)
 
     def get_network_interfaces(self) -> List[Tuple[str, str]]:
         """
@@ -127,7 +141,7 @@ class DoIPClientHandler:
             # 先尝试关闭旧连接（如果有）
             try:
                 if self.doip_client:
-                    self.doip_client.close()
+                    self.disconnect(source="DoIPClientHandler.connect", reason="connect_replace_old_instance")
             except Exception:
                 pass
 
@@ -196,6 +210,7 @@ class DoIPClientHandler:
                 # 仍然尝试接收诊断消息（有些 ECUs 可能不发 ACK 但直接返回数据）
             except IOError as e:
                 logger.error(f"send_diagnostic 返回 IO 错误: {e}")
+                self._log_passive_disconnect("send_diagnostic_io_error", str(e))
                 self.connected = False
                 try:
                     self.doip_client.close()
@@ -410,8 +425,9 @@ class DoIPClientHandler:
             logger.warning(f"无法展平响应类型: {type(raw_response)}, 值: {raw_response}")
             return []
 
-    def disconnect(self):
+    def disconnect(self, *, source: str = "unknown", reason: str = ""):
         """断开连接"""
+        logger.warning(self._build_disconnect_context(source, reason))
         if self.doip_client:
             try:
                 self.doip_client.close()

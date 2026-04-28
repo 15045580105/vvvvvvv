@@ -27,6 +27,12 @@ class ECUInitController(BaseController):
         self.view.file_selected.connect(self.on_file_selected)
         self.view.init_requested.connect(self.on_init_requested)
 
+    def _get_active_device_service(self):
+        service = di_container.resolve(DeviceService)
+        if service:
+            self.device_service = service
+        return self.device_service
+
     def on_file_selected(self, file_path: str):
         """Handle file selection: parse INI and populate MTOC dropdown and ECU list."""
         try:
@@ -97,7 +103,8 @@ class ECUInitController(BaseController):
             QtWidgets.QMessageBox.warning(self.view, "提示", "请至少选择一个 ECU")
             return
 
-        if not self.device_service:
+        service = self._get_active_device_service()
+        if not service:
              QtWidgets.QMessageBox.warning(self.view, "错误", "无法获取设备服务")
              return
 
@@ -159,7 +166,7 @@ class ECUInitController(BaseController):
 
                 # Send request
                 # Using send_doip_payload from DeviceService
-                response = self.device_service.send_doip_payload(payload, timeout=2.0)
+                response = service.send_doip_payload(payload, timeout=2.0)
 
                 # Emit RX log
                 if response:

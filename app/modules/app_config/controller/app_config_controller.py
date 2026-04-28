@@ -125,6 +125,8 @@ class AppConfigController(BaseController):
         self.view.diag_layer_page.update_ui(self.model.diag_layer_settings)
         self.view.domain_update_page.update_ui(self.model.domain_update_settings)
         self.view.app_log_page.update_ui(self.model.app_log_settings)
+        if hasattr(self.view, "license_page") and hasattr(self.view.license_page, "refresh_license_info"):
+            self.view.license_page.refresh_license_info()
 
     def show_page(self, page_id: str = "doip", focus_target: str | None = None):
         self.on_model_changed()

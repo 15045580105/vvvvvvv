@@ -1,7 +1,6 @@
 from app.core.base_model import BaseModel
 import paramiko
 import scp
-import os
 import stat
 from datetime import datetime
 from app.common.communication.clients.ssh_client import SSHClient
@@ -19,15 +18,58 @@ class FileTransferModel(BaseModel):
         self.sftp_client = None
         self.connected = False
         self.current_device_info = None  # Store (ip, port, user)
+        self._device_service = None
+        self._owns_ssh_client = False
 
+
+    def bind_device_service(self, device_service):
+        self._device_service = device_service
+
+    def _resolve_shared_ssh_wrapper(self):
+        ssh_wrapper = None
+        if self._device_service is not None:
+            try:
+                ssh_wrapper = self._device_service.get_ssh_client()
+            except Exception:
+                ssh_wrapper = None
+
+        if ssh_wrapper and ssh_wrapper.is_connected():
+            return ssh_wrapper
+
+        fallback = SSHClient()
+        return fallback if fallback.is_connected() else None
+
+    def _close_transfer_clients(self):
+        if self.scp_client:
+            try:
+                self.scp_client.close()
+            except:
+                pass
+            self.scp_client = None
+
+        if self.sftp_client:
+            try:
+                self.sftp_client.close()
+            except:
+                pass
+            self.sftp_client = None
 
     def use_global_connection(self):
         """Use the global SSH client connection"""
-        global_client = SSHClient()
-        if not global_client.is_connected():
+        global_client = self._resolve_shared_ssh_wrapper()
+        if not global_client:
+            self.disconnect()
             return False
 
-        self.ssh_client = global_client.get_client()
+        shared_paramiko_client = global_client.get_client()
+        if shared_paramiko_client is None:
+            self.disconnect()
+            return False
+
+        # 仅关闭本模块自己创建的 SCP/SFTP 包装对象，绝不关闭全局 SSH 主连接。
+        self._close_transfer_clients()
+        self.ssh_client = shared_paramiko_client
+        self._owns_ssh_client = False
         if self.ssh_client and self.ssh_client.get_transport() and self.ssh_client.get_transport().is_active():
             # Init SCP
             self.scp_client = scp.SCPClient(self.ssh_client.get_transport())
@@ -70,38 +112,32 @@ class FileTransferModel(BaseModel):
 
             self.connected = True
             self.current_device_info = (ip, port, user)
+            self._owns_ssh_client = True
             return True
         except Exception as e:
             print(f"Connection failed: {e}")
             return False
 
     def disconnect(self):
-        if self.scp_client:
-            try:
-                self.scp_client.close()
-            except:
-                pass
-            self.scp_client = None
+        self._close_transfer_clients()
 
-        if self.sftp_client:
-            try:
-                self.sftp_client.close()
-            except:
-                pass
-            self.sftp_client = None
-
-        if self.ssh_client:
+        if self.ssh_client and self._owns_ssh_client:
             try:
                 self.ssh_client.close()
             except:
                 pass
-            self.ssh_client = None
+        self.ssh_client = None
 
         self.connected = False
         self.current_device_info = None
+        self._owns_ssh_client = False
 
     def list_remote_dir(self, path):
         """List remote directory content. Returns list of tuples: (name, mtime, type, size)"""
+        if (not self.connected) or (not self.ssh_client) or (self.ssh_client.get_transport() is None) or (not self.ssh_client.get_transport().is_active()):
+            if not self.use_global_connection():
+                return None
+
         if not self.connected:
             return None
 

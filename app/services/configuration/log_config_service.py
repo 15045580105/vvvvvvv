@@ -447,7 +447,10 @@ class LogConfigService(BaseService):
                 try:
                     self._get_log_emit()(f"等待 {int(delay_seconds)} 秒结束，开始触发设备重连")
                     if self._device_service:
-                        self._device_service.reset_connection_clients()
+                        self._device_service.reset_connection_clients(
+                            source="LogConfigService.restart_ccu",
+                            reason="delayed_reconnect_after_restart",
+                        )
                         self._get_log_emit()("已清理旧连接实例，准备发起重连")
                         self._device_service.reconnect_device(log_signal=self.log_signal)
                 finally:

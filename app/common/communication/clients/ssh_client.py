@@ -1,6 +1,12 @@
+import logging
+import os
 import paramiko
 import threading
+import traceback
 from typing import Optional, Dict, Any
+
+
+logger = logging.getLogger(__name__)
 
 class SSHClient:
     """
@@ -29,6 +35,62 @@ class SSHClient:
         self._username = None
         self._password = None
         self._initialized = True
+
+    def _build_disconnect_log(self, *, source: str, reason: str, include_stack: bool = False) -> str:
+        with self._lock:
+            client = self._client
+            hostname = self._hostname
+            port = self._port
+            connected = self._connected
+
+        transport_alive = False
+        try:
+            transport = client.get_transport() if client else None
+            transport_alive = bool(transport and transport.is_active())
+        except Exception:
+            transport_alive = False
+
+        message = (
+            f"[SSH断开] source={source or 'unknown'} | reason={reason or '--'} | "
+            f"thread={threading.current_thread().name} | target={hostname or '--'}:{port or 22} | "
+            f"connected={connected} | transport_alive={transport_alive}"
+        )
+
+        if include_stack:
+            stack = traceback.extract_stack(limit=8)[:-2]
+            formatted = " <- ".join(
+                f"{frame.name}@{os.path.basename(frame.filename)}:{frame.lineno}"
+                for frame in stack[-4:]
+            )
+            if formatted:
+                message += f" | stack={formatted}"
+
+        return message
+
+    def _build_connection_state_text(self) -> str:
+        with self._lock:
+            client = self._client
+            hostname = self._hostname
+            port = self._port
+            connected = self._connected
+
+        transport_alive = False
+        try:
+            transport = client.get_transport() if client else None
+            transport_alive = bool(transport and transport.is_active())
+        except Exception:
+            transport_alive = False
+
+        return (
+            f"thread={threading.current_thread().name} | target={hostname or '--'}:{port or 22} | "
+            f"connected={connected} | transport_alive={transport_alive}"
+        )
+
+    def _log_passive_disconnect(self, stage: str, detail: str = "") -> None:
+        message = f"[SSH被动掉线] stage={stage} | {self._build_connection_state_text()}"
+        if detail:
+            message += f" | detail={detail}"
+        logger.warning(message)
 
     def connect(
         self,
@@ -106,8 +168,12 @@ class SSHClient:
                 self._connected = False
             return False
 
-    def disconnect(self):
-        """断开SSH连接"""
+    def disconnect(self, *, source: str = "unknown", reason: str = "", include_stack: bool = False):
+        """断开SSH连接。
+
+        source/reason 用于标记“是谁触发了真正断开”，便于排查共享 SSH 被谁关闭。
+        """
+        logger.warning(self._build_disconnect_log(source=source, reason=reason, include_stack=include_stack))
         client = None
         with self._lock:
             client = self._client
@@ -136,6 +202,7 @@ class SSHClient:
             with self._lock:
                 if self._client is client:
                     self._connected = False
+            self._log_passive_disconnect("is_connected", "transport not active")
         return alive
 
     def execute_command(self, command: str) -> Optional[str]:
@@ -156,6 +223,7 @@ class SSHClient:
     def execute_command_detailed(self, command: str) -> Dict[str, Any]:
         """执行远程命令并返回详细结果，便于业务层输出精确日志。"""
         if not self.is_connected():
+            self._log_passive_disconnect("execute_command_precheck", f"command={command}")
             if self._hostname:
                 if not self.connect(self._hostname, self._port, self._username, self._password):
                     return {
@@ -206,16 +274,19 @@ class SSHClient:
             }
 
         except Exception as e:
+            passive_detail = f"command={command}; exception={str(e)}"
             try:
                 transport = client.get_transport()
                 if not (transport and transport.is_active()):
                     with self._lock:
                         if self._client is client:
                             self._connected = False
+                    self._log_passive_disconnect("execute_command_exception", passive_detail)
             except Exception:
                 with self._lock:
                     if self._client is client:
                         self._connected = False
+                self._log_passive_disconnect("execute_command_exception_transport_check_failed", passive_detail)
             return {
                 "ok": False,
                 "stdout": "",

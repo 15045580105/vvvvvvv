@@ -9,6 +9,7 @@ from app.modules.app_config.view.diagnostic_layer_settings_page import Diagnosti
 from app.modules.app_config.view.doip_settings_page import DoIPSettingsPage
 from app.modules.app_config.view.someip_settings_page import SomeIPSettingsPage
 from app.modules.app_config.view.domain_software_update_page import DomainSoftwareUpdatePage
+from app.modules.app_config.view.license_info_page import LicenseInfoPage
 
 
 class SettingsWindow(QWidget):
@@ -174,6 +175,13 @@ class SettingsWindow(QWidget):
         app_log_item.setText(0, "APP 日志设置")
         app_log_item.setData(0, Qt.UserRole, "app_log")
 
+        help_item = QTreeWidgetItem(self.tree_widget)
+        help_item.setText(0, "帮助")
+
+        license_item = QTreeWidgetItem(help_item)
+        license_item.setText(0, "License")
+        license_item.setData(0, Qt.UserRole, "license")
+
         # 展开所有节点
         self.tree_widget.expandAll()
 
@@ -199,6 +207,9 @@ class SettingsWindow(QWidget):
         self.app_log_page = AppLogSettingsPage()
         self.stacked_widget.addWidget(self.app_log_page)
 
+        self.license_page = LicenseInfoPage()
+        self.stacked_widget.addWidget(self.license_page)
+
     def on_tree_item_clicked(self, item, column):
         """树形结构点击事件"""
         page_id = item.data(0, Qt.UserRole)
@@ -209,12 +220,15 @@ class SettingsWindow(QWidget):
             "diag_layer": self.diag_layer_page,
             "domain_update": self.domain_update_page,
             "app_log": self.app_log_page,
-            "someip": self.someip_page
+            "someip": self.someip_page,
+            "license": self.license_page,
         }
 
         if page_id in page_mapping:
             self.current_page = page_mapping[page_id]
             self.stacked_widget.setCurrentWidget(self.current_page)
+            if hasattr(self.current_page, "refresh_license_info"):
+                self.current_page.refresh_license_info()
 
     def select_page(self, page_id: str, focus_target: str | None = None):
         target_item = None

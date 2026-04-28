@@ -48,4 +48,4 @@ def get_machine_code():
         machine_hash = hashlib.sha256(machine_info.encode()).hexdigest().upper()
         return machine_hash
     except Exception:
-        return "DEFAULT_MACHINE_CODE" * 4
+        return hashlib.sha256(b"DEFAULT_MACHINE_CODE").hexdigest().upper()

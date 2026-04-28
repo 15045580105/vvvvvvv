@@ -49,6 +49,7 @@ class DeviceService(QObject):
 
         self._cleanup_lock = threading.Lock()
         self._cleanup_thread: Optional[threading.Thread] = None
+        self._connection_generation = 0
 
     def _get_log_emit(self, log_signal: Optional[object] = None):
         """统一返回日志输出函数，兼容 PyQtBoundSignal / callable。"""
@@ -63,6 +64,66 @@ class DeviceService(QObject):
     def _debug_log(self, message: str) -> None:
         """仅输出到控制台/调试日志，不进入前端操作日志。"""
         logger.info(message)
+
+    def _bump_connection_generation(self, reason: str, device: Optional[Dict[str, Any]] = None) -> int:
+        """为一次新的连接上下文分配代际号。
+
+        目的：
+        1. 让重连前后的 DoIP/SSH/SomeIP 生命周期可观测；
+        2. 排查“页面显示已连接，但业务模块还拿着旧连接对象”的问题时，
+           能快速从日志判断当前操作属于哪一代连接上下文。
+        """
+        self._connection_generation += 1
+        device_text = ""
+        if device:
+            device_text = f" -> {device.get('ip', '')}:{device.get('port', 22)}"
+        self._debug_log(f"[连接上下文] generation={self._connection_generation} | reason={reason}{device_text}")
+        return self._connection_generation
+
+    def get_connection_context(self) -> Dict[str, Any]:
+        """返回当前连接上下文快照，供控制器/服务日志使用。"""
+        active_service = self._get_active_service()
+        if active_service is not self:
+            return active_service.get_connection_context()
+
+        ssh_connected = bool(self._ssh_client and self._ssh_client.is_connected())
+        doip_connected = bool(self._doip_handler and getattr(self._doip_handler, "connected", False))
+        someip_client = self._someip_client
+        someip_running = bool(someip_client and getattr(someip_client, "running", False))
+        current_ip = None
+        if self._last_connected_device:
+            current_ip = self._last_connected_device.get("ip")
+
+        return {
+            "generation": self._connection_generation,
+            "ip": current_ip,
+            "ssh_connected": ssh_connected,
+            "doip_connected": doip_connected,
+            "someip_connected": someip_running,
+        }
+
+    def _format_connection_context_text(self) -> str:
+        ctx = self.get_connection_context()
+        return (
+            f"generation={ctx.get('generation', 0)} | ip={ctx.get('ip') or '--'} | "
+            f"SSH={'Y' if ctx.get('ssh_connected') else 'N'} | "
+            f"DoIP={'Y' if ctx.get('doip_connected') else 'N'} | "
+            f"SomeIP={'Y' if ctx.get('someip_connected') else 'N'}"
+        )
+
+    def _get_active_service(self) -> "DeviceService":
+        """返回当前 DI 容器中的主 DeviceService。
+
+        某些模块可能在历史版本中缓存过旧的 DeviceService 引用；
+        重连完成后，这些旧引用如果继续访问各自实例字段，会看到过期的
+        DoIP/SSH/SomeIP 客户端状态。这里统一回落到 DI 中当前注册的主实例，
+        让旧引用也能拿到最新连接上下文。
+        """
+        try:
+            active = di_container.resolve(DeviceService)
+        except Exception:
+            active = None
+        return active if active is not None else self
 
     def _emit_protocol_status(self, payload: Dict[str, Any]) -> None:
         emit = getattr(self.protocol_status_changed_signal, "emit", None)
@@ -81,7 +142,7 @@ class DeviceService(QObject):
                 try:
                     if reason:
                         _log(f"开始后台清理连接资源：{reason}")
-                    self._reset_connection_clients()
+                    self._reset_connection_clients(source="DeviceService._run_async_cleanup", reason=reason or "async_cleanup")
                     if reason:
                         _log(f"后台清理连接资源完成：{reason}")
                 finally:
@@ -108,6 +169,8 @@ class DeviceService(QObject):
     ) -> None:
         """连接单个设备：按 SomeIP / DoIP / SSH 顺序尝试建链，支持取消与重连。"""
         _log = self._get_log_emit(log_signal)
+        generation = self._bump_connection_generation("reconnect" if reconnect else "connect", device)
+        _log(f"[连接上下文] 启动连接流程 | generation={generation} | target={device.get('ip', '')}:{device.get('port', 22)}")
 
         # 保存设备配置以便重连使用；保留副本避免外部在连接过程中修改。
         self._last_connected_device = device.copy()
@@ -115,7 +178,7 @@ class DeviceService(QObject):
         if reconnect:
             _log("开始执行重连：先断开旧连接并清理客户端实例")
             self.disconnect_device(device, log_signal=log_signal)
-            self._reset_connection_clients()
+            self._reset_connection_clients(source="DeviceService.connect_device", reason="reconnect_pre_cleanup")
             if self._is_cancelled(cancel_event):
                 self._mark_connection_cancelled(device, log_signal, reason="用户已取消重连", attempt_id=attempt_id)
                 return
@@ -182,9 +245,9 @@ class DeviceService(QObject):
                 success_protocols.append(protocol.upper())
 
         if success_protocols:
-            _log(f"设备连接流程完成，成功协议: {', '.join(success_protocols)}")
+            _log(f"设备连接流程完成，成功协议: {', '.join(success_protocols)} | {self._format_connection_context_text()}")
         else:
-            _log("设备连接流程结束，但未建立成功的协议连接")
+            _log(f"设备连接流程结束，但未建立成功的协议连接 | {self._format_connection_context_text()}")
 
     def request_cancel_connection(
         self,
@@ -282,33 +345,40 @@ class DeviceService(QObject):
                 time.sleep(min(interval, remaining))
         return False
 
-    def reset_connection_clients(self) -> None:
+    def reset_connection_clients(self, *, source: str = "DeviceService.reset_connection_clients", reason: str = "manual_reset") -> None:
         """强制关闭并清理当前客户端实例，确保后续重连为全新连接。(公开版本，供Controller调用)"""
-        self._reset_connection_clients()
+        self._reset_connection_clients(source=source, reason=reason)
 
-    def _reset_connection_clients(self) -> None:
+    def _reset_connection_clients(self, *, source: str = "DeviceService._reset_connection_clients", reason: str = "reset_connection_clients") -> None:
         """强制关闭并清理当前客户端实例，确保后续重连为全新连接。"""
+        self._debug_log(f"[连接上下文] 开始清理客户端实例 | {self._format_connection_context_text()}")
         try:
             if self._ssh_client is not None:
-                self._ssh_client.disconnect()
+                self._ssh_client.disconnect(source=source, reason=reason, include_stack=False)
         except Exception:
             pass
         try:
             if self._someip_client is not None:
-                self._someip_client.stop()
+                self._someip_client.stop(source=source, reason=reason)
         except Exception:
             pass
         try:
             if self._doip_handler is not None:
-                self._doip_handler.disconnect()
+                self._doip_handler.disconnect(source=source, reason=reason)
         except Exception:
             pass
         self._ssh_client = None
         self._someip_client = None
         self._doip_handler = None
+        self._debug_log(f"[连接上下文] 客户端实例清理完成 | {self._format_connection_context_text()}")
 
     def reconnect_device(self, log_signal: Optional[object] = None) -> None:
         """请求重连最后一次连接的设备。逻辑委托给 Controller 层处理。"""
+        active_service = self._get_active_service()
+        if active_service is not self:
+            active_service.reconnect_device(log_signal=log_signal)
+            return
+
         if not self._last_connected_device:
             self._get_log_emit()("无上次连接设备记录，无法重连")
             return
@@ -389,9 +459,17 @@ class DeviceService(QObject):
         _log("正在通过SSH断开设备...")
         try:
             if hasattr(self._ssh_client, "is_connected") and self._ssh_client.is_connected():
-                self._ssh_client.disconnect()
+                self._ssh_client.disconnect(
+                    source="DeviceService._disconnect_ssh",
+                    reason="force_cleanup" if force_cleanup else "user_disconnect_or_protocol_disconnect",
+                    include_stack=False,
+                )
             elif force_cleanup and hasattr(self._ssh_client, "disconnect"):
-                self._ssh_client.disconnect()
+                self._ssh_client.disconnect(
+                    source="DeviceService._disconnect_ssh",
+                    reason="force_cleanup_inactive_transport",
+                    include_stack=False,
+                )
             cleaned = True
             self._ssh_client = None
             if not force_cleanup:
@@ -423,7 +501,10 @@ class DeviceService(QObject):
             return True, False
 
         try:
-            self._someip_client.stop()
+            self._someip_client.stop(
+                source="DeviceService._disconnect_someip",
+                reason="force_cleanup" if force_cleanup else "user_disconnect_or_protocol_disconnect",
+            )
             cleaned = True
             self._someip_client = None
             if not force_cleanup:
@@ -455,7 +536,10 @@ class DeviceService(QObject):
             return True, False
 
         try:
-            self._doip_handler.disconnect()
+            self._doip_handler.disconnect(
+                source="DeviceService._disconnect_doip",
+                reason="force_cleanup" if force_cleanup else "user_disconnect_or_protocol_disconnect",
+            )
             cleaned = True
             self._doip_handler = None
             if not force_cleanup:
@@ -518,7 +602,7 @@ class DeviceService(QObject):
             ecu_logical_address = int(doip_settings.get("target_phy_addr", "0x004F"), 16)
 
         # ECU 逻辑地址及本机逻辑地址可按需从 device 中扩展配置，这里使用 DoIPClientHandler 默认值
-        _log(f"正在通过DoIP连接设备 {ip}:{tcp_port}...")
+        _log(f"正在通过DoIP连接设备 {ip}:{tcp_port}... | generation={self._connection_generation}")
         if not ip:
             device["doip_connect_status"] = "连接失败"
             device["doip_connect_info"] = "缺少 ECU IP"
@@ -579,9 +663,11 @@ class DeviceService(QObject):
         if ok:
             device["doip_connect_status"] = "建链成功"
             device["doip_connect_info"] = f"DoIP 已连接到 {ip}:{tcp_port}"
+            _log(f"DoIP 建链成功 | {self._format_connection_context_text()}")
         else:
             device["doip_connect_status"] = "连接失败"
             device["doip_connect_info"] = f"DoIP 连接 {ip}:{tcp_port} 失败"
+            _log(f"DoIP 建链失败 | generation={self._connection_generation} | target={ip}:{tcp_port}")
 
         self._attach_doip_diagnostic(
             device,
@@ -693,7 +779,7 @@ class DeviceService(QObject):
 
     def _connect_someip(self, device: Dict[str, Any], log_signal: Optional[object] = None) -> None:
         _log = self._get_log_emit(log_signal)
-        _log(f"正在通过SomeIP连接设备...")
+        _log(f"正在通过SomeIP连接设备... | generation={self._connection_generation}")
         """内部辅助：为当前设备准备 SOME/IP 通信客户端，并更新状态字段。
         注意：SOME/IP 多数场景是无连接 UDP，这里仅表示“本地客户端已就绪”。
         """
@@ -705,6 +791,7 @@ class DeviceService(QObject):
 
         device["someip_connect_status"] = "建链成功"
         device["someip_connect_info"] = f"SomeIP 连接成功>> {client.local_ip}:{client.local_port} (VLAN {client.vlan_id})"
+        _log(f"SomeIP 客户端就绪 | {self._format_connection_context_text()}")
 
     def _get_interface_details_by_ip(self, interface_ip: Optional[str]) -> Dict[str, str]:
         if not interface_ip:
@@ -765,6 +852,7 @@ class DeviceService(QObject):
             "doip_connect_info": device.get("doip_connect_info"),
             "someip_connect_status": device.get("someip_connect_status"),
             "someip_connect_info": device.get("someip_connect_info"),
+            "_connection_generation": self._connection_generation,
         }
         if isinstance(device.get("_doip_diagnostic"), dict):
             payload["_doip_diagnostic"] = dict(device.get("_doip_diagnostic") or {})
@@ -827,7 +915,7 @@ class DeviceService(QObject):
                 **connect_kwargs,
             )
             if self._is_cancelled(cancel_event):
-                self._ssh_client.disconnect()
+                self._ssh_client.disconnect(source="DeviceService._connect_ssh", reason="connect_cancelled_after_established", include_stack=False)
                 self._ssh_client = None
                 return None
             if not connect_result:
@@ -836,7 +924,7 @@ class DeviceService(QObject):
                 return "", "SSH 建链失败或认证失败", 255
             device["ssh_connect_status"] = "建链成功"
             device["ssh_connect_info"] = f"SSH 已连接到 {host}:{port}"
-            _log(f"SSH 已连接到 {host}:{port}")
+            _log(f"SSH 已连接到 {host}:{port} | {self._format_connection_context_text()}")
         except AuthenticationException as e:
             msg = f"SSH认证失败: {e}"
             _log(msg)
@@ -862,32 +950,46 @@ class DeviceService(QObject):
 
     # ---- 提供给其他 Service 复用的 已连接成功的 DoIP / SomeIP /ssh 能力 ----
     def get_doip_client(self) -> Optional[DoIPClientHandler]:
-        """获取当前的 DoIP 客户端实例"""
-        if self._doip_handler is None:
-            self._doip_handler = DoIPClientHandler()
+        """获取当前的 DoIP 客户端实例。"""
+        active_service = self._get_active_service()
+        if active_service is not self:
+            return active_service.get_doip_client()
         return self._doip_handler
 
     def get_ssh_client(self) -> Optional[SSHClient]:
         """获取当前的 SSH 客户端实例"""
+        active_service = self._get_active_service()
+        if active_service is not self:
+            return active_service.get_ssh_client()
         return self._ssh_client
     def get_someip_client(self) -> Optional[SomeIPClient]:
         """获取当前的 SomeIP 客户端实例"""
+        active_service = self._get_active_service()
+        if active_service is not self:
+            return active_service.get_someip_client()
         return self._someip_client
 
     def get_current_device_ip(self) -> Optional[str]:
         """获取当前连接设备的 IP 地址"""
+        active_service = self._get_active_service()
+        if active_service is not self:
+            return active_service.get_current_device_ip()
         if self._last_connected_device:
             return self._last_connected_device.get("ip")
         return None
 
 
     def close_device_connections(self):
+        active_service = self._get_active_service()
+        if active_service is not self:
+            active_service.close_device_connections()
+            return
         if self._ssh_client is not None:
-            self._ssh_client.disconnect()
+            self._ssh_client.disconnect(source="DeviceService.close_device_connections", reason="application_or_module_shutdown", include_stack=False)
         if self._someip_client is not None:
-            self._someip_client.stop()
+            self._someip_client.stop(source="DeviceService.close_device_connections", reason="application_or_module_shutdown")
         if self._doip_handler is not None:
-            self._doip_handler.disconnect()
+            self._doip_handler.disconnect(source="DeviceService.close_device_connections", reason="application_or_module_shutdown")
 
 
     def active_ssh_command(
@@ -915,6 +1017,16 @@ class DeviceService(QObject):
             prefer_last: bool = False,
     ) -> bytes | None:
         """统一的 DoIP 发送接口，供 Topology/Diagnostic 等业务 Service 重用。"""
+        active_service = self._get_active_service()
+        if active_service is not self:
+            return active_service.send_doip_payload(
+                payload,
+                timeout=timeout,
+                response_index=response_index,
+                target_did=target_did,
+                prefer_last=prefer_last,
+            )
+
         # 1. 获取客户端实例
         client = self.get_doip_client()
         if client is None:
@@ -1008,6 +1120,16 @@ class DeviceService(QObject):
         """
         # 确定使用的日志信号或emit函数
         log_emit = self._get_log_emit(log_signal)
+
+        active_service = self._get_active_service()
+        if active_service is not self:
+            return active_service.execute_secure_routine(
+                routine_command,
+                sec_level=sec_level,
+                return_on_auth_fail=return_on_auth_fail,
+                log_signal=log_signal,
+                cancel_event=cancel_event,
+            )
 
         client = self.get_doip_client()
         if not client:

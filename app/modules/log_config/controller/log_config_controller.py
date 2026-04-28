@@ -112,18 +112,25 @@ class LogConfigController(BaseController):
 
         doip_status = str(payload.get("doip_connect_status", ""))
         ssh_status = str(payload.get("ssh_connect_status", ""))
+        generation = payload.get("_connection_generation", "--")
 
-        if "建链成功" in doip_status:
-            self.view.append_log(f"CCUA 重连成功: DoIP={doip_status} | SSH={ssh_status or '--'}")
+        doip_ready = "建链成功" in doip_status
+        ssh_ready = "建链成功" in ssh_status
+
+        if doip_ready and ssh_ready:
+            self.view.append_log(f"CCUA 重连成功: generation={generation} | DoIP={doip_status} | SSH={ssh_status or '--'}")
             self._finish_restore_flow("CCUA 已重启并完成重连", "success")
             return
+
+        if doip_ready and not ssh_ready:
+            self.view.set_restore_progress(True, f"DoIP 已恢复，等待 SSH 就绪... (generation={generation}, 当前 SSH: {ssh_status or '--'})", busy=True)
 
         doip_failed = "连接失败" in doip_status
         ssh_failed = "连接失败" in ssh_status
         still_connecting = ("连接中" in doip_status) or ("连接中" in ssh_status)
 
         if (doip_failed or ssh_failed) and not still_connecting:
-            self.view.append_log(f"CCUA 重连失败: DoIP={doip_status} | SSH={ssh_status or '--'}")
+            self.view.append_log(f"CCUA 重连失败: generation={generation} | DoIP={doip_status} | SSH={ssh_status or '--'}")
             self._finish_restore_flow("CCUA 重启后重连失败，请检查设备连接", "error")
 
     def _on_restore_reconnect_timeout(self):
