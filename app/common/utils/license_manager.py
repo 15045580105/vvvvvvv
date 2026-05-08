@@ -4,7 +4,6 @@ import base64
 import hashlib
 import hmac
 import json
-import os
 import re
 import struct
 import uuid
@@ -13,6 +12,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Final
 
+from app.common.utils.license_build_config import LICENSE_BUILD_CONFIG
 from app.common.utils.machine_code import get_machine_code
 from app.common.utils.path_utils import get_app_config_path
 
@@ -32,7 +32,8 @@ MAC_SIZE: Final[int] = 32
 PAYLOAD_SIZE: Final[int] = 280
 RAW_CODE_SIZE: Final[int] = len(MAGIC) + NONCE_SIZE + PAYLOAD_SIZE + MAC_SIZE
 ACTIVATION_CODE_LENGTH: Final[int] = 443
-DEFAULT_SECRET: Final[bytes] = b"ACG::replace-this-with-a-production-secret::2026"
+MIN_SECRET_BYTES: Final[int] = 32
+MASTER_SECRET_FILE: Final[Path] = Path(__file__).resolve().parents[3] / ".acg_master_secret"
 
 MACHINE_ID_PATTERN: Final[re.Pattern[str]] = re.compile(r"^[A-F0-9]{64}$")
 MACHINE_FIELD_SIZE: Final[int] = 64
@@ -97,11 +98,64 @@ class ActivationResult:
     license_info: LicenseInfo | None = None
 
 
+def _derive_keys(master_secret: bytes) -> tuple[bytes, bytes]:
+    return (
+        hmac.new(master_secret, b"enc", hashlib.sha256).digest(),
+        hmac.new(master_secret, b"mac", hashlib.sha256).digest(),
+    )
+
+
+def _validate_secret_fingerprint(master_secret: bytes) -> None:
+    expected_fingerprint = LICENSE_BUILD_CONFIG.secret_fingerprint.strip()
+    if not expected_fingerprint:
+        return
+    actual_fingerprint = hashlib.sha256(master_secret).hexdigest()[: len(expected_fingerprint)]
+    if actual_fingerprint != expected_fingerprint:
+        raise ActivationCodeError("主密钥指纹校验失败，当前应用与激活码生成器的密钥配置不一致")
+
+
+def _resolve_local_secret() -> bytes:
+    if not MASTER_SECRET_FILE.exists():
+        raise ActivationCodeError(f"未找到主密钥文件：{MASTER_SECRET_FILE.name}")
+    raw_value = MASTER_SECRET_FILE.read_text(encoding="utf-8").strip()
+    if not raw_value:
+        raise ActivationCodeError(f"主密钥文件 {MASTER_SECRET_FILE.name} 为空")
+    master_secret = raw_value.encode("utf-8")
+    if len(master_secret) < MIN_SECRET_BYTES:
+        raise ActivationCodeError(f"主密钥文件 {MASTER_SECRET_FILE.name} 长度不足，至少需要 32 个字节")
+    _validate_secret_fingerprint(master_secret)
+    return master_secret
+
+
+def _resolve_embedded_keys() -> tuple[bytes, bytes] | None:
+    enc_key_hex = LICENSE_BUILD_CONFIG.embedded_enc_key_hex.strip()
+    mac_key_hex = LICENSE_BUILD_CONFIG.embedded_mac_key_hex.strip()
+    if not enc_key_hex or not mac_key_hex:
+        return None
+    try:
+        return bytes.fromhex(enc_key_hex), bytes.fromhex(mac_key_hex)
+    except ValueError as exc:
+        raise ActivationCodeError("内置 License 密钥格式无效，请重新打包应用") from exc
+
+
+def _resolve_codec_keys(explicit_secret: bytes | None = None) -> tuple[tuple[bytes, bytes], str]:
+    if explicit_secret is not None:
+        if not explicit_secret:
+            raise ActivationCodeError("传入的主密钥为空")
+        _validate_secret_fingerprint(explicit_secret)
+        return _derive_keys(explicit_secret), "explicit"
+
+    embedded_keys = _resolve_embedded_keys()
+    if embedded_keys is not None:
+        return embedded_keys, "embedded"
+
+    local_secret = _resolve_local_secret()
+    return _derive_keys(local_secret), "local-file"
+
+
 class LicenseCodec:
     def __init__(self, secret: bytes | None = None):
-        master_secret = secret or os.getenv("ACG_MASTER_SECRET", "").encode("utf-8") or DEFAULT_SECRET
-        self._enc_key = hmac.new(master_secret, b"enc", hashlib.sha256).digest()
-        self._mac_key = hmac.new(master_secret, b"mac", hashlib.sha256).digest()
+        (self._enc_key, self._mac_key), self._key_source = _resolve_codec_keys(secret)
 
     def decode_and_verify(self, activation_code: str) -> DecodedLicense:
         if len(activation_code) != ACTIVATION_CODE_LENGTH:
@@ -120,7 +174,10 @@ class LicenseCodec:
         mac = raw_code[-MAC_SIZE:]
         expected_mac = hmac.new(self._mac_key, magic + nonce + ciphertext, hashlib.sha256).digest()
         if not hmac.compare_digest(mac, expected_mac):
-            raise ActivationCodeError("激活码签名校验失败，内容可能被篡改")
+            message = "激活码签名校验失败，内容可能被篡改"
+            if self._key_source == "local-file":
+                message += f"。请确认当前程序读取的 {MASTER_SECRET_FILE.name} 与激活码生成器使用的是同一份文件"
+            raise ActivationCodeError(message)
 
         payload = self._xor_with_keystream(ciphertext, nonce)
         return self._unpack_payload(payload)
