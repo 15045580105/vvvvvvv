@@ -1,14 +1,7 @@
-from __future__ import annotations
+"""Legacy placeholder module.
 
-from dataclasses import dataclass
+The application no longer injects or reads any license secret during packaging.
+Active license codec logic now lives in `app.common.utils.license_codec_core`.
+"""
 
-
-@dataclass(frozen=True, slots=True)
-class LicenseBuildConfig:
-    embedded_enc_key_hex: str = ""
-    embedded_mac_key_hex: str = ""
-    secret_fingerprint: str = ""
-
-
-LICENSE_BUILD_CONFIG = LicenseBuildConfig()
-
+__all__: list[str] = []

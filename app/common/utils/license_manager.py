@@ -1,18 +1,18 @@
 from __future__ import annotations
 
-import base64
-import hashlib
-import hmac
 import json
 import re
-import struct
-import uuid
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path
 from typing import Final
 
-from app.common.utils.license_build_config import LICENSE_BUILD_CONFIG
+from app.common.utils.license_codec_core import (
+    ActivationCodeError,
+    DecodedLicense,
+    LicenseCodec,
+    LicenseUserInfo,
+)
 from app.common.utils.machine_code import get_machine_code
 from app.common.utils.path_utils import get_app_config_path
 
@@ -26,47 +26,8 @@ EXPIRE_TIME_KEY: Final[str] = "过期时间:"
 REMAINING_TIME_KEY: Final[str] = "剩余时间:"
 ACTIVATION_CODE_KEY: Final[str] = "Activation Code:"
 
-MAGIC: Final[bytes] = b"ACG1"
-NONCE_SIZE: Final[int] = 16
-MAC_SIZE: Final[int] = 32
-PAYLOAD_SIZE: Final[int] = 280
-RAW_CODE_SIZE: Final[int] = len(MAGIC) + NONCE_SIZE + PAYLOAD_SIZE + MAC_SIZE
-ACTIVATION_CODE_LENGTH: Final[int] = 443
-MIN_SECRET_BYTES: Final[int] = 32
-MASTER_SECRET_FILE: Final[Path] = Path(__file__).resolve().parents[3] / ".acg_master_secret"
-
+# 机器码校验仍然放在业务层：这属于本地设备环境规则，不属于纯编解码核心。
 MACHINE_ID_PATTERN: Final[re.Pattern[str]] = re.compile(r"^[A-F0-9]{64}$")
-MACHINE_FIELD_SIZE: Final[int] = 64
-NAME_FIELD_SIZE: Final[int] = 48
-DEPARTMENT_FIELD_SIZE: Final[int] = 48
-EMAIL_FIELD_SIZE: Final[int] = 72
-
-
-class ActivationCodeError(ValueError):
-    pass
-
-
-@dataclass(slots=True)
-class LicenseUserInfo:
-    name: str = ""
-    department: str = ""
-    email: str = ""
-
-
-@dataclass(slots=True)
-class DecodedLicense:
-    token: str
-    generate_time: datetime
-    expire_time: datetime
-    license_days: int
-    expire_code_seconds: int
-    activated_count: int
-    machine_id: str
-    user_info: LicenseUserInfo
-
-    @property
-    def activation_deadline(self) -> datetime:
-        return self.generate_time + timedelta(seconds=self.expire_code_seconds)
 
 
 @dataclass(slots=True)
@@ -96,143 +57,6 @@ class ActivationResult:
     success: bool
     message: str
     license_info: LicenseInfo | None = None
-
-
-def _derive_keys(master_secret: bytes) -> tuple[bytes, bytes]:
-    return (
-        hmac.new(master_secret, b"enc", hashlib.sha256).digest(),
-        hmac.new(master_secret, b"mac", hashlib.sha256).digest(),
-    )
-
-
-def _validate_secret_fingerprint(master_secret: bytes) -> None:
-    expected_fingerprint = LICENSE_BUILD_CONFIG.secret_fingerprint.strip()
-    if not expected_fingerprint:
-        return
-    actual_fingerprint = hashlib.sha256(master_secret).hexdigest()[: len(expected_fingerprint)]
-    if actual_fingerprint != expected_fingerprint:
-        raise ActivationCodeError("主密钥指纹校验失败，当前应用与激活码生成器的密钥配置不一致")
-
-
-def _resolve_local_secret() -> bytes:
-    if not MASTER_SECRET_FILE.exists():
-        raise ActivationCodeError(f"未找到主密钥文件：{MASTER_SECRET_FILE.name}")
-    raw_value = MASTER_SECRET_FILE.read_text(encoding="utf-8").strip()
-    if not raw_value:
-        raise ActivationCodeError(f"主密钥文件 {MASTER_SECRET_FILE.name} 为空")
-    master_secret = raw_value.encode("utf-8")
-    if len(master_secret) < MIN_SECRET_BYTES:
-        raise ActivationCodeError(f"主密钥文件 {MASTER_SECRET_FILE.name} 长度不足，至少需要 32 个字节")
-    _validate_secret_fingerprint(master_secret)
-    return master_secret
-
-
-def _resolve_embedded_keys() -> tuple[bytes, bytes] | None:
-    enc_key_hex = LICENSE_BUILD_CONFIG.embedded_enc_key_hex.strip()
-    mac_key_hex = LICENSE_BUILD_CONFIG.embedded_mac_key_hex.strip()
-    if not enc_key_hex or not mac_key_hex:
-        return None
-    try:
-        return bytes.fromhex(enc_key_hex), bytes.fromhex(mac_key_hex)
-    except ValueError as exc:
-        raise ActivationCodeError("内置 License 密钥格式无效，请重新打包应用") from exc
-
-
-def _resolve_codec_keys(explicit_secret: bytes | None = None) -> tuple[tuple[bytes, bytes], str]:
-    if explicit_secret is not None:
-        if not explicit_secret:
-            raise ActivationCodeError("传入的主密钥为空")
-        _validate_secret_fingerprint(explicit_secret)
-        return _derive_keys(explicit_secret), "explicit"
-
-    embedded_keys = _resolve_embedded_keys()
-    if embedded_keys is not None:
-        return embedded_keys, "embedded"
-
-    local_secret = _resolve_local_secret()
-    return _derive_keys(local_secret), "local-file"
-
-
-class LicenseCodec:
-    def __init__(self, secret: bytes | None = None):
-        (self._enc_key, self._mac_key), self._key_source = _resolve_codec_keys(secret)
-
-    def decode_and_verify(self, activation_code: str) -> DecodedLicense:
-        if len(activation_code) != ACTIVATION_CODE_LENGTH:
-            raise ActivationCodeError(f"激活码长度不正确，应为 {ACTIVATION_CODE_LENGTH} 个字符")
-
-        raw_code = self._decode_base64(activation_code)
-        if len(raw_code) != RAW_CODE_SIZE:
-            raise ActivationCodeError("激活码原始长度不正确")
-
-        magic = raw_code[: len(MAGIC)]
-        if magic != MAGIC:
-            raise ActivationCodeError("激活码版本头不匹配")
-
-        nonce = raw_code[len(MAGIC): len(MAGIC) + NONCE_SIZE]
-        ciphertext = raw_code[len(MAGIC) + NONCE_SIZE: -MAC_SIZE]
-        mac = raw_code[-MAC_SIZE:]
-        expected_mac = hmac.new(self._mac_key, magic + nonce + ciphertext, hashlib.sha256).digest()
-        if not hmac.compare_digest(mac, expected_mac):
-            message = "激活码签名校验失败，内容可能被篡改"
-            if self._key_source == "local-file":
-                message += f"。请确认当前程序读取的 {MASTER_SECRET_FILE.name} 与激活码生成器使用的是同一份文件"
-            raise ActivationCodeError(message)
-
-        payload = self._xor_with_keystream(ciphertext, nonce)
-        return self._unpack_payload(payload)
-
-    def _unpack_payload(self, payload: bytes) -> DecodedLicense:
-        if len(payload) != PAYLOAD_SIZE:
-            raise ActivationCodeError("内部载荷长度不正确")
-
-        token_bytes, generate_ts, expire_ts, license_days, expire_code_seconds, activated_count = struct.unpack(
-            ">16sQQIII", payload[:44]
-        )
-        offset = 44
-        machine_id, offset = self._unpack_text_field(payload, offset, MACHINE_FIELD_SIZE)
-        name, offset = self._unpack_text_field(payload, offset, NAME_FIELD_SIZE)
-        department, offset = self._unpack_text_field(payload, offset, DEPARTMENT_FIELD_SIZE)
-        email, offset = self._unpack_text_field(payload, offset, EMAIL_FIELD_SIZE)
-
-        return DecodedLicense(
-            token=str(uuid.UUID(bytes=token_bytes)),
-            generate_time=datetime.fromtimestamp(generate_ts),
-            expire_time=datetime.fromtimestamp(expire_ts),
-            license_days=license_days,
-            expire_code_seconds=expire_code_seconds,
-            activated_count=activated_count,
-            machine_id=machine_id,
-            user_info=LicenseUserInfo(name=name, department=department, email=email),
-        )
-
-    @staticmethod
-    def _unpack_text_field(payload: bytes, offset: int, max_bytes: int) -> tuple[str, int]:
-        size = payload[offset]
-        offset += 1
-        data = payload[offset: offset + max_bytes]
-        offset += max_bytes
-        return data[:size].decode("utf-8"), offset
-
-    def _xor_with_keystream(self, payload: bytes, nonce: bytes) -> bytes:
-        blocks: list[bytes] = []
-        counter = 0
-        generated_size = 0
-        while generated_size < len(payload):
-            block = hmac.new(self._enc_key, nonce + counter.to_bytes(4, "big"), hashlib.sha256).digest()
-            blocks.append(block)
-            generated_size += len(block)
-            counter += 1
-        keystream = b"".join(blocks)[: len(payload)]
-        return bytes(left ^ right for left, right in zip(payload, keystream, strict=True))
-
-    @staticmethod
-    def _decode_base64(activation_code: str) -> bytes:
-        padding = "=" * ((4 - len(activation_code) % 4) % 4)
-        try:
-            return base64.urlsafe_b64decode(activation_code + padding)
-        except Exception as exc:  # pragma: no cover - defensive path
-            raise ActivationCodeError("激活码Base64解码失败") from exc
 
 
 def _ensure_app_dir():
@@ -269,6 +93,15 @@ def normalize_activation_code(activation_code: str) -> str:
 
 
 def decode_activation_code(activation_code: str) -> DecodedLicense:
+    """程序端统一的激活码解析入口。
+
+    这里只做两件事：
+    1. 清理用户输入中的空白字符
+    2. 调用 LicenseCodec 完成底层校验和解码
+
+    任何“机器码是否一致”“是否允许激活”“是否过期”等业务判断，
+    都不在这里处理，而是在 get_license_info()/activate() 中继续判断。
+    """
     normalized_code = normalize_activation_code(activation_code)
     return LicenseCodec().decode_and_verify(normalized_code)
 
@@ -329,13 +162,13 @@ def _persisted_license_payload(info: LicenseInfo) -> dict:
     }
 
 
-def _extract_stored_activation_code(data: dict) -> str:
-    if not isinstance(data, dict):
-        return ""
-    return normalize_activation_code(str(data.get(ACTIVATION_CODE_KEY) or data.get("activation_code") or ""))
+def _extract_stored_activation_code(data: object) -> str:
+    if isinstance(data, dict):
+        return normalize_activation_code(str(data.get(ACTIVATION_CODE_KEY) or data.get("activation_code") or ""))
+    return ""
 
 
-def _is_expected_license_payload(data: dict) -> bool:
+def _is_expected_license_payload(data: object) -> bool:
     return isinstance(data, dict) and set(data.keys()) == {
         STATUS_KEY,
         MACHINE_ID_KEY,
@@ -345,10 +178,11 @@ def _is_expected_license_payload(data: dict) -> bool:
     }
 
 
-def _sync_persisted_license_payload(info: LicenseInfo, data: dict) -> None:
+def _sync_persisted_license_payload(info: LicenseInfo, data: object) -> None:
     expected_payload = _persisted_license_payload(info)
-    if _is_expected_license_payload(data) and all(data.get(key) == value for key, value in expected_payload.items()):
-        return
+    if isinstance(data, dict) and _is_expected_license_payload(data):
+        if all(data.get(key) == value for key, value in expected_payload.items()):
+            return
     _save_license(expected_payload)
 
 
@@ -357,12 +191,25 @@ def is_activated() -> bool:
 
 
 def get_license_info() -> LicenseInfo:
+    """读取当前本地授权信息，并给界面提供可直接展示的结果。
+
+    校验链路如下：
+    1. 从 license.json 中读取保存的激活码
+    2. 调用 decode_activation_code 做底层格式/内容校验
+    3. 获取当前机器码，并与激活码中的 machine_id 比较
+    4. 判断授权是否已经过期
+    5. 把解码结果整理成界面需要展示的 LicenseInfo
+
+    这个函数用于“查看当前授权状态”，不会写入新的激活码，
+    但在状态发生变化时会同步修正本地展示字段。
+    """
     data = _load_license()
     stored_code = _extract_stored_activation_code(data)
     if not stored_code:
         return _build_empty_license_info("未找到激活文件，请先录入激活码")
 
     try:
+        # 第一步：先确认激活码本身结构正确，且能成功还原出授权内容。
         decoded = decode_activation_code(stored_code)
     except ActivationCodeError as exc:
         info = _build_empty_license_info(f"本地激活信息无效：{exc}", status_text="校验失败")
@@ -370,6 +217,7 @@ def get_license_info() -> LicenseInfo:
         return info
 
     try:
+        # 第二步：获取当前设备机器码，并校验格式是否正常。
         current_machine = normalize_machine_id(get_machine_code())
     except ActivationCodeError as exc:
         info = _build_license_info(
@@ -382,6 +230,7 @@ def get_license_info() -> LicenseInfo:
         _sync_persisted_license_payload(info, data)
         return info
 
+    # 第三步：机器码匹配校验。激活码只能在生成时指定的设备上使用。
     if decoded.machine_id != current_machine:
         info = _build_license_info(
             decoded,
@@ -394,6 +243,7 @@ def get_license_info() -> LicenseInfo:
         return info
 
     now = datetime.now().replace(microsecond=0)
+    # 第四步：授权有效期校验。到期后即使激活码内容合法，也视为无效授权。
     if now > decoded.expire_time:
         info = _build_license_info(
             decoded,
@@ -417,29 +267,45 @@ def get_license_info() -> LicenseInfo:
 
 
 def activate(activation_code: str) -> ActivationResult:
+    """用户手动录入激活码时的业务入口。
+
+    激活流程如下：
+    1. 清理输入内容
+    2. 调用 decode_activation_code 做底层解码
+    3. 校验当前机器码是否与授权绑定一致
+    4. 校验“激活时限”是否已经失效
+    5. 校验授权是否已经过期
+    6. 将授权信息以精简展示字段写入本地 license.json
+    """
     normalized_code = normalize_activation_code(activation_code)
     if not normalized_code:
         return ActivationResult(False, "请输入激活码")
 
     try:
+        # 第一步：校验激活码本身是否合法且可解码。
         decoded = decode_activation_code(normalized_code)
     except ActivationCodeError as exc:
         return ActivationResult(False, str(exc))
 
     try:
+        # 第二步：检查当前设备机器码是否合法。
         current_machine = normalize_machine_id(get_machine_code())
     except ActivationCodeError as exc:
         return ActivationResult(False, f"当前机器码无效：{exc}")
 
+    # 第三步：机器码绑定校验。
     if decoded.machine_id != current_machine:
         return ActivationResult(False, "激活码中的 Machine ID 与当前设备不匹配！")
 
     now = datetime.now().replace(microsecond=0)
+    # 第四步：激活码本身存在“必须在某时限内完成激活”的限制。
     if now > decoded.activation_deadline:
         return ActivationResult(False, "激活时间已失效，请联系管理员重新申请新的激活码！")
+    # 第五步：授权有效期检查。
     if now > decoded.expire_time:
         return ActivationResult(False, "该授权已过期，无法激活！")
 
+    # 第六步：校验通过后，仅把界面展示需要的信息写入本地，避免暴露更多内部字段。
     _save_license(
         _persisted_license_payload(
             _build_license_info(

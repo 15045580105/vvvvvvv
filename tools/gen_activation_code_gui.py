@@ -18,7 +18,7 @@ class ActivationCodeGenerator(QtWidgets.QDialog):
         layout.setContentsMargins(16, 16, 16, 16)
         layout.setSpacing(12)
 
-        tip = QtWidgets.QLabel("旧的本地激活码生成方式已移除。此工具仅用于校验并解析新的 443 位激活码。")
+        tip = QtWidgets.QLabel("旧的本地激活码生成方式已移除。此工具仅用于校验并解析新的激活码。")
         tip.setWordWrap(True)
         layout.addWidget(tip)
 
