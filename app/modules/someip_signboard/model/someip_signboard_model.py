@@ -129,10 +129,12 @@ class PacketParserModel(BaseModel):
         if not self.search_query:
             self.filtered_packets = list(self.packets)
         else:
-            keywords = self.search_query.lower().split()
+            from app.common.utils.search_utils import SearchQueryEvaluator
+            search_evaluator = SearchQueryEvaluator(self.search_query)
+
             self.filtered_packets = [
                 packet for packet in self.packets
-                if self._packet_matches(packet, keywords)
+                if self._packet_matches(packet, search_evaluator)
             ]
 
         self.selected_node = None
@@ -152,10 +154,12 @@ class PacketParserModel(BaseModel):
             self.filtered_packets.extend(packets)
             return packets
 
-        keywords = self.search_query.lower().split()
+        from app.common.utils.search_utils import SearchQueryEvaluator
+        search_evaluator = SearchQueryEvaluator(self.search_query)
+
         appended_filtered = [
             packet for packet in packets
-            if self._packet_matches(packet, keywords)
+            if self._packet_matches(packet, search_evaluator)
         ]
         if appended_filtered:
             self.filtered_packets.extend(appended_filtered)
@@ -167,13 +171,23 @@ class PacketParserModel(BaseModel):
         return appended_filtered
 
     @staticmethod
-    def _packet_matches(packet: Dict[str, Any], keywords: List[str]) -> bool:
+    def _packet_matches(packet: Dict[str, Any], search_evaluator: 'SearchQueryEvaluator') -> bool:
+        summary = str(packet.get("summary", ""))
+
+        # Remove spaces after colons in summary to support queries like "Length:17" matching "Length: 17"
+        import re
+        summary_normalized = re.sub(r':\s+', ':', summary)
+
         text = " ".join([
             str(packet.get("no", "")),
             str(packet.get("timestamp", "")),
             str(packet.get("source", "")),
             str(packet.get("destination", "")),
             str(packet.get("protocol", "")),
-            str(packet.get("summary", "")),
+            summary_normalized,
         ]).lower()
-        return all(keyword in text for keyword in keywords)
+
+        # Also allow matching Chinese colons by replacing them with english colons in the text
+        text = text.replace("：", ":")
+
+        return search_evaluator.evaluate(text)

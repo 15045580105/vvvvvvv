@@ -460,7 +460,7 @@ class SomeIpSignboardController(BaseController):
         self._update_view()
 
     def on_search_changed(self, text):
-        self.search_query = text.lower().strip()
+        self.search_query = text.strip()
         self.current_page = 1  # Reset to page 1
         self._update_view()
 
@@ -514,6 +514,11 @@ class SomeIpSignboardController(BaseController):
     def _update_view(self):
         # Filter
         filtered = []
+        
+        # Prepare search evaluator
+        from app.common.utils.search_utils import SearchQueryEvaluator
+        search_evaluator = SearchQueryEvaluator(self.search_query) if self.search_query else None
+
         for item in self.all_data:
             uid = item['uid']
 
@@ -522,20 +527,25 @@ class SomeIpSignboardController(BaseController):
                 continue
 
             # Search logic
-            if self.search_query:
-                keywords = [k.strip() for k in self.search_query.split() if k.strip()]
-                all_found = True
-                for kw in keywords:
-                    kw_found = False
-                    if kw in item['service_name'].lower(): kw_found = True
-                    elif kw in item['service_id'].lower(): kw_found = True
-                    elif kw == str(item.get('index', '')): kw_found = True
-                    
-                    if not kw_found:
-                        all_found = False
-                        break
+            if search_evaluator:
+                parts = [
+                    str(item.get('index', '')),
+                    str(item.get('service_name', '')),
+                    str(item.get('service_id', '')),
+                    str(item.get('instance_id', '')),
+                    str(item.get('version', '')),
+                    str(item.get('major_version', '')),
+                    str(item.get('minor_version', '')),
+                    str(item.get('server_endpoint', '')),
+                ]
+                for sub in item.get('subscribe_info', []):
+                    parts.append(str(sub.get('subscriber_ip_port', '')))
+                for f_info in item.get('find_info', []):
+                    parts.append(str(f_info.get('finder_ip', '')))
+                    parts.append(str(f_info.get('find_version', '')))
 
-                if not all_found:
+                item_text = " ".join(parts).lower()
+                if not search_evaluator.evaluate(item_text):
                     continue
 
             filtered.append(item)
