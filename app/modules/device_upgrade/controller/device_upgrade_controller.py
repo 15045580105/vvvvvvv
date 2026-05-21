@@ -51,9 +51,10 @@ class UpgradeWorker(QThread):
             doip_client = self.device_service.get_doip_client()
             if doip_client and doip_client.connected:
                 try:
-                    # 使用进入默认会话(10 01)试探ECU是否已经能处理诊断请求
+                    # 使用进入默认会话(10 01)试探ECU是否已经能处理诊断请求，并打印收发日志
                     payload = bytes([0x10, 0x01])
-                    resp = self.device_service.send_doip_payload(payload, timeout=1.0)
+                    # 直接调用 _send_doip 以输出试探日志。暂存原有expect_positive以防失败强制退出
+                    resp = self._send_doip(payload, "试探 ECU 默认会话是否能建立连接")
                     if resp and len(resp) > 0:
                          self.log_signal.emit("ECU 诊断服务已就绪，准备开始升级", True)
                          return True
