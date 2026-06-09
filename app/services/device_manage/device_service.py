@@ -162,9 +162,9 @@ class DeviceService(QObject):
         self,
         device: Dict[str, Any],
         log_signal: Optional[object] = None,
-        cancel_event: threading.Event = None,
+        cancel_event: Optional[threading.Event] = None,
         reconnect: bool = False,
-        attempt_id: int = None,
+        attempt_id: Optional[int] = None,
         **kwargs
     ) -> None:
         """主入口：尝试并发连接所有可用协议（或者仅连接指定协议），将结果更新回 device 的各个状态字段。
@@ -177,7 +177,8 @@ class DeviceService(QObject):
         # 后向兼容：将优先尝试 DoIP，再尝试 SSH
         has_doip = bool(device.get("doip_ip"))
         has_someip = bool(device.get("someip_ip"))
-        has_ssh = bool(device.get("ssh_ip"))
+        # SSH IP 允许留空并回退到 DoIP/legacy IP（界面提示：若为空则同 DoIP IP）
+        has_ssh = bool(device.get("ssh_ip") or ((has_doip or connect_protocol == "ssh") and target_ip))
 
         if not has_doip and not has_ssh and not has_someip:
             if target_ip:
@@ -185,11 +186,12 @@ class DeviceService(QObject):
                 has_ssh = True
                 has_someip = True
 
-        futures = []
-
         import concurrent.futures
         with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
             future_to_task = {}
+            defer_ssh_until_doip_ready = bool(
+                has_ssh and has_doip and not connect_protocol
+            )
 
             if has_doip and (not connect_protocol or connect_protocol == "doip"):
                 future_to_task[executor.submit(self._connect_doip_task, device, log_signal, cancel_event)] = "DoIP"
@@ -197,11 +199,13 @@ class DeviceService(QObject):
             if has_someip and (not connect_protocol or connect_protocol == "someip"):
                 future_to_task[executor.submit(self._connect_someip_task, device, log_signal, cancel_event)] = "SomeIP"
 
-            if has_ssh and (not connect_protocol or connect_protocol == "ssh"):
+            if has_ssh and (not connect_protocol or connect_protocol == "ssh") and not defer_ssh_until_doip_ready:
                 future_to_task[executor.submit(self._connect_ssh_task, device, log_signal, cancel_event)] = "SSH"
 
             dispatched = set(future_to_task.values())
             for p, name in [("doip", "DoIP"), ("someip", "SomeIP"), ("ssh", "SSH")]:
+                if p == "ssh" and defer_ssh_until_doip_ready:
+                    continue
                 if (not connect_protocol or connect_protocol == p) and name not in dispatched:
                     if device.get(f"{p}_connect_status") == CONNECTING:
                         device[f"{p}_connect_status"] = CONNECT_FAILED
@@ -220,6 +224,20 @@ class DeviceService(QObject):
                     _log(f"连接任务失败: {e}")
 
                 # 每当一个协议完成（成功或失败），立即将状态推送到 UI，这样可以形成真实的分别转圈交互
+                self._change_status(device, attempt_id=attempt_id)
+
+            if defer_ssh_until_doip_ready:
+                if self._is_cancelled(cancel_event):
+                    return
+                doip_status = str(device.get("doip_connect_status", ""))
+                if "建链成功" in doip_status or "在线" in doip_status:
+                    _log("DoIP 建链完成，开始发送激活 SSH 报文并连接 SSH")
+                    self._connect_ssh_task(device, log_signal, cancel_event)
+                else:
+                    msg = "DoIP 未建链成功，跳过 SSH 激活与连接"
+                    _log(msg)
+                    device["ssh_connect_status"] = CONNECT_FAILED
+                    device["ssh_connect_info"] = msg
                 self._change_status(device, attempt_id=attempt_id)
 
         self._last_connected_device = device.copy()
@@ -343,6 +361,19 @@ class DeviceService(QObject):
                     break
                 time.sleep(min(interval, remaining))
         return False
+
+    def _is_doip_client_ready(self, client: Optional[DoIPClientHandler] = None) -> bool:
+        """判断当前 DoIP 客户端是否为用户已建立且仍可用的连接。"""
+        client = client or self.get_doip_client()
+        if client is None:
+            return False
+        try:
+            is_connected = getattr(client, "is_connected", None)
+            if callable(is_connected):
+                return bool(is_connected())
+        except Exception:
+            return False
+        return bool(getattr(client, "connected", False) and getattr(client, "doip_client", None) is not None)
 
     def reset_connection_clients(self, *, source: str = "DeviceService.reset_connection_clients", reason: str = "manual_reset") -> None:
         """强制关闭并清理当前客户端实例，确保后续重连为全新连接。(公开版本，供Controller调用)"""
@@ -578,7 +609,7 @@ class DeviceService(QObject):
           - doip_connect_info: 失败原因或成功提示
         """
         _log = self._get_log_emit(log_signal)
-        ip = device.get("ip") or ""
+        ip = device.get("doip_ip") or device.get("ip") or ""
         # 默认使用经典 DoIP 端口 13400，如有特殊端口可后续通过 device 字段扩展
         tcp_port = int(device.get("doip_port", 13400))
 
@@ -586,8 +617,8 @@ class DeviceService(QObject):
         doip_settings = self._config_service.doip_settings
         diag_layer_settings = self._config_service.diag_layer_settings
 
-        # Use device IP
-        ip = device.get("ip") or ""
+        # Use DoIP-specific IP first, fallback to legacy device IP
+        ip = device.get("doip_ip") or device.get("ip") or ""
 
         # 协议版本转换: 0 -> 0x02 (DoIP V2), 1 -> 0x03 (DoIP V3/Other)
         # 注意：界面上 Index 0 是 V2, Index 1 是 V1(但用户要求传3)
@@ -835,7 +866,7 @@ class DeviceService(QObject):
         interface_name: Optional[str],
         netmask: Optional[str],
     ) -> None:
-        target_ip = str(device.get("ip") or "").strip()
+        target_ip = str(device.get("doip_ip") or device.get("ip") or "").strip()
         same_subnet = self._same_subnet(local_ip, target_ip, netmask)
         need_check_interface = bool(
             local_ip and target_ip and same_subnet is False and "连接失败" in str(device.get("doip_connect_status", ""))
@@ -851,8 +882,8 @@ class DeviceService(QObject):
 
     def _change_status(self, device, attempt_id: Optional[int] = None):
         payload = {
-            "ip": device.get("ip"),
-            "port": device.get("port"),
+            "ip": device.get("ip") or device.get("doip_ip") or device.get("ssh_ip") or device.get("someip_ip"),
+            "port": device.get("port") or device.get("ssh_port"),
             "ssh_connect_status": device.get("ssh_connect_status"),
             "ssh_connect_info": device.get("ssh_connect_info"),
             "doip_connect_status": device.get("doip_connect_status"),
@@ -875,17 +906,32 @@ class DeviceService(QObject):
         cancel_event: Optional[threading.Event] = None,
     ) -> tuple[str, str, int] | None:
         _log = self._get_log_emit(log_signal)
-        host = device.get("ip")
-        port = int(device.get("port", 22))
+        host = device.get("ssh_ip") or device.get("ip") or device.get("doip_ip")
+        port = int(device.get("ssh_port") or device.get("port", 22))
         username = device.get("user") or device.get("username") or "root"
         password = device.get("password")
         if not host:
             device["ssh_connect_status"] = "连接失败"
             device["ssh_connect_info"] = "缺少 SSH 目标 IP"
-            return "", "缺��� SSH 目标 IP", 255
+            return "", "缺少 SSH 目标 IP", 255
 
         if self._is_cancelled(cancel_event):
             return None
+
+        doip_client = self.get_doip_client()
+        if not self._is_doip_client_ready(doip_client):
+            msg = "SSH 依赖用户已建立的 DoIP 连接；当前未检测到可用 DoIP，请先手动连接 DoIP 后再连接 SSH"
+            _log(msg)
+            device["ssh_connect_status"] = "连接失败"
+            device["ssh_connect_info"] = msg
+            return "", msg, 255
+
+        if self._is_cancelled(cancel_event):
+            return None
+
+        activation_result = self.active_ssh_command(log_signal=log_signal, cancel_event=cancel_event)
+        if not activation_result:
+            _log("激活 SSH 指令未确认成功，将继续探测 SSH 端口")
 
         ssh_ready = self._wait_for_ssh_port(
             host,
@@ -1012,7 +1058,7 @@ class DeviceService(QObject):
         _log("开始发送激活 SSH 指令...")
         # 31 01 BE E9
         routine = bytes.fromhex("31 01 BE E9")
-        self.execute_secure_routine(routine, sec_level=0x21, log_signal=log_signal, cancel_event=cancel_event)
+        return self.execute_secure_routine(routine, sec_level=0x21, log_signal=log_signal, cancel_event=cancel_event)
 
     def send_doip_payload(
             self,

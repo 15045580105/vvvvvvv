@@ -73,6 +73,8 @@ class DeviceModel(BaseModel):
 
         # Add any extended fields that were passed
         valid_extended_fields = [
+            "doip_ip", "doip_port",
+            "ssh_ip", "ssh_port",
             "controller_ip", "controller_port",
             "multicast_ip", "multicast_port",
             "vlan_id", "client_port", "client_id"
