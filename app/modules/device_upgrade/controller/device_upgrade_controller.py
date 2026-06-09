@@ -378,31 +378,45 @@ class UpgradeWorker(QThread):
     def _perform_security_access(self, level, phase):
         """Helper for Security Access Sequence"""
         req_seed_hex = f"27 {level:02X}"
-        resp = self._send_uds(req_seed_hex, "申请安全访问种子", phase, expect_positive=True, return_data=True, success_msg="安全访问种子请求通过")
-        if not resp: return False
-
-        # Resp: 67 Level Seed...
-        # Seed is remaining bytes. Usually 4 bytes?
-        # Log: 67 21 C5 74 62 C0 (4 bytes seed: C5 74 62 C0)
-        if len(resp) < 3:
-            self.log_signal.emit("种子响应长度错误", True)
-            return False
-
-        seed_bytes = resp[2:]
-        self.log_signal.emit(f"读取结果种子：{seed_bytes.hex()}", True)
-
-        # Calculate Key
-        key_bytes, err = SecurityAccessHelper.calculate_key(level, seed_bytes)
-        if not key_bytes:
-             # Fallback to dummy if DLL fails (for testing/sim) or error
-             self.log_signal.emit(f"计算密钥失败: {err}, 尝试使用全0密钥", True)
-             key_bytes = bytes([0x00] * len(seed_bytes))
-
-        key_str = key_bytes.hex()
-
-        # Send Key (Level + 1)
         send_key_level = level + 1
-        return self._send_uds(f"27 {send_key_level:02X} {key_str}", "申请安全访问密钥验证", phase, expect_positive=True, success_msg="安全访问密钥验证请求通过")
+
+        while self.running:
+            resp = self._send_uds(req_seed_hex, "申请安全访问种子", phase, expect_positive=True, return_data=True, success_msg="安全访问种子请求通过")
+            if not resp:
+                self.log_signal.emit("申请安全访问种子失败或无响应，等待1秒后重试...", True)
+                time.sleep(1)
+                continue
+
+            # Resp: 67 Level Seed...
+            # Seed is remaining bytes. Usually 4 bytes?
+            # Log: 67 21 C5 74 62 C0 (4 bytes seed: C5 74 62 C0)
+            if len(resp) < 3:
+                self.log_signal.emit("种子响应长度错误，等待1秒后重试...", True)
+                time.sleep(1)
+                continue
+
+            seed_bytes = resp[2:]
+            self.log_signal.emit(f"读取结果种子：{seed_bytes.hex()}", True)
+
+            # Calculate Key
+            key_bytes, err = SecurityAccessHelper.calculate_key(level, seed_bytes)
+            if not key_bytes:
+                 # Fallback to dummy if DLL fails (for testing/sim) or error
+                 self.log_signal.emit(f"计算密钥失败: {err}, 尝试使用全0密钥", True)
+                 key_bytes = bytes([0x00] * len(seed_bytes))
+
+            key_str = key_bytes.hex()
+
+            # Send Key (Level + 1)
+            key_resp = self._send_uds(f"27 {send_key_level:02X} {key_str}", "申请安全访问密钥验证", phase, expect_positive=True, success_msg="安全访问密钥验证请求通过")
+            if key_resp:
+                return True
+            else:
+                self.log_signal.emit("安全访问密钥验证失败，等待1秒后重新申请种子...", True)
+                time.sleep(1)
+                continue
+
+        return False
 
     def _parse_did_string(self, resp_bytes):
         if not resp_bytes or len(resp_bytes) < 4:

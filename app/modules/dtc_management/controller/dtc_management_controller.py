@@ -28,12 +28,14 @@ class DTCController(BaseController):
         super().__init__(self.model, self.view, parent)
 
         self.current_filter = "all"
+        self.current_search = ""
 
         # Connect view signals
         self.view.read_dtc_signal.connect(self.handle_read_dtcs)
         self.view.read_freeze_frame_signal.connect(self.handle_read_freeze_frame)
         self.view.filter_changed_signal.connect(self.handle_filter_changed)
         self.view.clear_dtc_signal.connect(self.handle_clear_dtcs)
+        self.view.search_changed_signal.connect(self.handle_search_changed)
 
         # Delay heavy initialization
         QtCore.QTimer.singleShot(0, self.delayed_init)
@@ -97,6 +99,8 @@ class DTCController(BaseController):
         self.dpt_status_signal.emit(status, message)
 
     def handle_dpt_status(self, status, message):
+        # We no longer show toast here, as the main controller handles global Toasts.
+        # But we still log it.
         self.view.append_log(f"系统: {message}")
 
     def on_model_changed(self):
@@ -110,18 +114,13 @@ class DTCController(BaseController):
         self.current_filter = filter_type
         self.refresh_view()
 
+    def handle_search_changed(self, text):
+        self.current_search = text.strip().lower()
+        self.refresh_view()
+
     def refresh_view(self):
         # Filter dtcs
-        filtered = []
-        if self.current_filter == "all":
-            filtered = self.model.dtcs
-        elif self.current_filter == "current":
-            filtered = [d for d in self.model.dtcs if d[4] == "当前故障"]
-        elif self.current_filter == "history":
-            filtered = [d for d in self.model.dtcs if d[4] == "历史故障"]
-        elif self.current_filter == "pending":
-            filtered = [d for d in self.model.dtcs if d[4] == "未决故障"]
-
+        filtered = self._get_filtered_dtcs()
         self.view.populate(self.model.categories, filtered)
 
     def handle_read_dtcs(self):
@@ -133,22 +132,31 @@ class DTCController(BaseController):
         self.view.set_last_read_time(datetime.now())
 
         device_service = di_container.resolve(DeviceService)
-        if not device_service:
-             self.view.append_log("未找到设备服务")
+        if not device_service or not device_service.get_doip_client():
+             from app.common.ui.modern_widgets import MessageToast
+             MessageToast(self.view).show_toast("请先连接设备 (DoIP)", 1)
              return
 
-        # 19 02 AF
-        req_data = bytes([0x19, 0x02, 0xAF])
-        self.log_message("TX", req_data)
+        self.view.read_btn.setEnabled(False)
+        self.view.clear_btn.setEnabled(False)
+        QtWidgets.QApplication.processEvents()
 
-        # Send request using device_service
-        resp = device_service.send_doip_payload(req_data, timeout=2.0)
+        try:
+            # 19 02 AF
+            req_data = bytes([0x19, 0x02, 0xAF])
+            self.log_message("TX", req_data)
 
-        if resp:
-             self.log_message("RX", resp)
-             self.parse_dtc_response(resp)
-        else:
-             self.view.append_log("无响应")
+            # Send request using device_service
+            resp = device_service.send_doip_payload(req_data, timeout=2.0)
+
+            if resp:
+                 self.log_message("RX", resp)
+                 self.parse_dtc_response(resp)
+            else:
+                 self.view.append_log("无响应")
+        finally:
+            self.view.read_btn.setEnabled(True)
+            self.view.clear_btn.setEnabled(True)
 
     def log_message(self, direction, data):
         # Format: YYYY-MM-DD HH:MM:SS.microseconds (6 digits)
@@ -206,7 +214,7 @@ class DTCController(BaseController):
                 except Exception as e:
                     self.view.append_log(f"获取 {dtc_code} 信息出错: {e}")
 
-                # Tuple: (code, desc, subsystem, status_code, fault_state, freeze_state)
+                # Tuple: (code, desc, subsystem, status_code, fault_state, freeze_state, freeze_data)
                 # Ensure all elements are strings to prevent UI crashes
                 parsed_dtcs.append((
                     str(dtc_code),
@@ -214,7 +222,8 @@ class DTCController(BaseController):
                     str(subsystem),
                     str(status_hex),
                     str(fault_state),
-                    "未读取"
+                    "未读取",
+                    ""
                 ))
 
             # Update model
@@ -266,62 +275,84 @@ class DTCController(BaseController):
         dtc_code = dtc_entry[0] # e.g. "P31AE87"
 
         self.view.append_log(f"开始读取冻结帧: {dtc_code}")
-        self.view.update_freeze_read_status(row_index, False) # Set to reading/failed initially? Or just keep as is.
+        self.view.update_freeze_read_status(row_index, "读取中...", "")
 
         # Clear previous freeze frames to show only latest
         self.model.freeze_frames = []
         self.model.dataChanged.emit()
 
         device_service = di_container.resolve(DeviceService)
-        if not device_service:
-             self.view.append_log("未找到设备服务")
+        if not device_service or not device_service.get_doip_client():
+             from app.common.ui.modern_widgets import MessageToast
+             MessageToast(self.view).show_toast("请先连接设备 (DoIP)", 1)
              return
 
-        # Convert DTC to bytes
-        dtc_bytes = self._dtc_code_to_bytes(dtc_code)
+        # Disable UI elements
+        self.view.fault_table.setEnabled(False)
+        self.view.read_btn.setEnabled(False)
+        self.view.clear_btn.setEnabled(False)
+        QtWidgets.QApplication.processEvents()
 
-        # 19 04 <DTC> FF
-        req_data = bytes([0x19, 0x04]) + dtc_bytes + bytes([0xFF])
-        self.log_message("TX", req_data)
+        try:
+            # Convert DTC to bytes
+            dtc_bytes = self._dtc_code_to_bytes(dtc_code)
 
-        resp = device_service.send_doip_payload(req_data, timeout=2.0)
+            # 19 04 <DTC> FF
+            req_data = bytes([0x19, 0x04]) + dtc_bytes + bytes([0xFF])
+            self.log_message("TX", req_data)
 
-        if resp:
-            self.log_message("RX", resp)
-            success = self.parse_freeze_frame_response(resp, dtc_code, dtc_entry[1])
-            self.view.update_freeze_read_status(row_index, success)
+            resp = device_service.send_doip_payload(req_data, timeout=2.0)
 
-            # Update model persistence
-            new_status = "读取成功" if success else "读取失败"
-            self._update_dtc_freeze_status(dtc_code, new_status)
-        else:
-            self.view.append_log("冻结帧无响应")
-            self.view.update_freeze_read_status(row_index, False)
-            self._update_dtc_freeze_status(dtc_code, "读取失败")
+            if resp:
+                self.log_message("RX", resp)
+                success, parsed_success, parsed_data = self.parse_freeze_frame_response(resp, dtc_code, dtc_entry[1])
 
-    def _update_dtc_freeze_status(self, code, status):
+                if success:
+                    if parsed_success:
+                        status_str = "读取成功解析成功"
+                    else:
+                        status_str = "读取成功解析失败"
+                else:
+                    status_str = "读取失败"
+
+                self.view.update_freeze_read_status(row_index, status_str, parsed_data)
+
+                # Update model persistence
+                self._update_dtc_freeze_status(dtc_code, status_str, parsed_data)
+            else:
+                self.view.append_log("冻结帧无响应")
+                self.view.update_freeze_read_status(row_index, "读取失败", "")
+                self._update_dtc_freeze_status(dtc_code, "读取失败", "")
+        finally:
+            self.view.fault_table.setEnabled(True)
+            self.view.read_btn.setEnabled(True)
+            self.view.clear_btn.setEnabled(True)
+
+    def _update_dtc_freeze_status(self, code, status, freeze_data=""):
         # Update the specific DTC in the main model list
         for i, dtc in enumerate(self.model.dtcs):
             if dtc[0] == code:
-                # dtc is tuple: (code, desc, subsystem, status_hex, fault_state, freeze_state)
-                # or (code, desc, subsystem, status_hex, fault_state)
-
-                # Check tuple length to be safe
-                if len(dtc) >= 5:
-                    new_dtc = (dtc[0], dtc[1], dtc[2], dtc[3], dtc[4], status)
-                    self.model.dtcs[i] = new_dtc
+                # dtc is tuple: (code, desc, subsystem, status_hex, fault_state, freeze_state, freeze_data)
+                
+                dtc_list = list(dtc)
+                while len(dtc_list) < 5:
+                    dtc_list.append("")
+                new_dtc = tuple(dtc_list[:5] + [status, freeze_data])
+                self.model.dtcs[i] = new_dtc
                 break
         self.save_dtc_list()
 
     def handle_clear_dtcs(self):
         device_service = di_container.resolve(DeviceService)
-        if not device_service:
-             self.view.append_log("未找到设备服务")
+        if not device_service or not device_service.get_doip_client():
+             from app.common.ui.modern_widgets import MessageToast
+             MessageToast(self.view).show_toast("请先连接设备 (DoIP)", 1)
              return
 
         client = device_service.get_doip_client()
         if not client or not client.is_connected():
-             self.view.append_log("DoIP 未连接")
+             from app.common.ui.modern_widgets import MessageToast
+             MessageToast(self.view).show_toast("请先连接设备 (DoIP)", 1)
              return
 
         # 14 FF FF FF
@@ -342,15 +373,20 @@ class DTCController(BaseController):
         self.save_dtc_list()
 
     def _get_filtered_dtcs(self):
-        if self.current_filter == "all":
-            return self.model.dtcs
-        elif self.current_filter == "current":
-            return [d for d in self.model.dtcs if d[4] == "当前故障"]
+        filtered = self.model.dtcs
+
+        if self.current_filter == "current":
+            filtered = [d for d in filtered if d[4] == "当前故障"]
         elif self.current_filter == "history":
-            return [d for d in self.model.dtcs if d[4] == "历史故障"]
+            filtered = [d for d in filtered if d[4] == "历史故障"]
         elif self.current_filter == "pending":
-            return [d for d in self.model.dtcs if d[4] == "未决故障"]
-        return self.model.dtcs
+            filtered = [d for d in filtered if d[4] == "未决故障"]
+
+        if self.current_search:
+            s = self.current_search
+            filtered = [d for d in filtered if s in d[0].lower() or s in d[1].lower()]
+
+        return filtered
 
     def _bytes_to_dtc_code(self, b):
         # ISO 15031-6 DTC format
@@ -472,16 +508,18 @@ class DTCController(BaseController):
     def parse_freeze_frame_response(self, resp, dtc_code, dtc_desc):
         # 59 04 [DTC 3] [Status 1] [RecNum 1] [NumID 1] [DID 2] [Data N] ...
         if len(resp) < 6:
-            return False
+            return False, False, ""
         if resp[0] != 0x59 or resp[1] != 0x04:
-            return False
+            return False, False, ""
 
         # Extract info
         # dtc_bytes = resp[2:5]
         status = resp[5] # Status of DTC
 
         offset = 6
-        success = False
+        success = True
+        parsed_success = True
+        parsed_data_parts = []
 
         # Determine Fault Type from Status? Or just uses Status byte.
         # User screenshot shows "Type A" in Type column.
@@ -523,6 +561,7 @@ class DTCController(BaseController):
 
                     if offset + did_len > len(resp):
                          self.view.append_log(f"DID {did_hex} 数据被截断")
+                         parsed_success = False
                          break
 
                     chunk = resp[offset : offset + did_len]
@@ -550,13 +589,15 @@ class DTCController(BaseController):
                          elif unit_txt and val_txt.endswith("(" + unit_txt + ")"):
                               val_txt = val_txt[:-len(unit_txt)-2].strip()
 
+                         param_name = f.name if not f.group else f"[{f.group}] {f.name}"
                          params.append({
                              "byte": byte_str,
                              "bit": bit_str,
-                             "name": f.name if not f.group else f"[{f.group}] {f.name}",
+                             "name": param_name,
                              "value": val_txt,
                              "unit": unit_txt
                          })
+                         parsed_data_parts.append(f"{param_name}: {val_txt}{unit_txt if unit_txt else ''}")
                 else:
                     # Unknown DID - Strategy: Stop parsing record?
                     # If we don't know length, we can't continue to next DID.
@@ -569,6 +610,7 @@ class DTCController(BaseController):
                         "value": "结构未知",
                         "unit": ""
                     })
+                    parsed_success = False
                     # Force break outer loop as we are desynchronized
                     offset = len(resp)
                     break
@@ -582,7 +624,9 @@ class DTCController(BaseController):
                     "length": did_len,
                     "params": params
                 })
-                success = True
 
         self.model.dataChanged.emit()
-        return success
+        parsed_data = "; ".join(parsed_data_parts)
+        if not parsed_data_parts and not parsed_success:
+            parsed_data = "解析失败"
+        return success, parsed_success, parsed_data

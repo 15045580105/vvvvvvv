@@ -275,6 +275,14 @@ class UDSSequenceView(QtWidgets.QWidget):
         self.clear_editor()
         QtCore.QTimer.singleShot(0, self._apply_responsive_layout)
 
+    def format_hex_string(self, text: str) -> str:
+        if not text:
+            return text
+        clean_text = ''.join(str(text).split())
+        if clean_text and len(clean_text) % 2 == 0 and all(c in "0123456789ABCDEFabcdef" for c in clean_text):
+            return ' '.join(clean_text[i:i+2] for i in range(0, len(clean_text), 2)).upper()
+        return text
+
     def _build_tree_model(self):
         # ...existing code...
         tree = QStandardItemModel()
@@ -441,6 +449,10 @@ class UDSSequenceView(QtWidgets.QWidget):
         self.req_label.setMinimumWidth(70)
 
         self.request_edit = QtWidgets.QTextEdit()
+        original_req_setPlainText = self.request_edit.setPlainText
+        def custom_req_setPlainText(text):
+            original_req_setPlainText(self.format_hex_string(text))
+        self.request_edit.setPlainText = custom_req_setPlainText
         self.request_edit.setPlaceholderText("输入请求数据，如: 10 03")
         self.request_edit.setMaximumHeight(50)
         self.request_edit.setMinimumHeight(50)
@@ -466,6 +478,10 @@ class UDSSequenceView(QtWidgets.QWidget):
         self.resp_label.setMinimumWidth(70)
 
         self.response_edit = QtWidgets.QTextEdit()
+        original_res_setPlainText = self.response_edit.setPlainText
+        def custom_res_setPlainText(text):
+            original_res_setPlainText(self.format_hex_string(text))
+        self.response_edit.setPlainText = custom_res_setPlainText
         self.response_edit.setPlaceholderText("预期响应数据，如: 50 03")
         self.response_edit.setMaximumHeight(50)
         self.response_edit.setMinimumHeight(50)
@@ -537,7 +553,7 @@ class UDSSequenceView(QtWidgets.QWidget):
 
         # --- Operation Buttons ---
         self.icon_btn_add = self.create_icon_button("➕", "添加参数", "#10B981", "添加")
-        self.icon_btn_delete = self.create_icon_button("➖", "删除选中参数", "#EF4444", "删除")
+        self.icon_btn_delete = self.create_icon_button("➖", "删除���中参数", "#EF4444", "删除")
         self.icon_btn_up = self.create_icon_button("↑", "上移", "#0EA5E9", "上移")
         self.icon_btn_down = self.create_icon_button("↓", "下移", "#0EA5E9", "上移")
 
@@ -622,9 +638,23 @@ class UDSSequenceView(QtWidgets.QWidget):
         self.run_sequence_btn.setSizePolicy(QtWidgets.QSizePolicy.Fixed, QtWidgets.QSizePolicy.Fixed)
         self.run_sequence_btn.clicked.connect(lambda: self.run_sequence_requested.emit(self.send_times_spin.value()))
 
+        self.search_input = QtWidgets.QLineEdit()
+        self.search_input.setPlaceholderText("搜索...")
+        self.search_input.setFixedWidth(160)
+        self.search_input.setMinimumWidth(120)
+        self.search_input.setSizePolicy(QtWidgets.QSizePolicy.Fixed, QtWidgets.QSizePolicy.Fixed)
+        self.search_input.setStyleSheet("QLineEdit { border: 1px solid #E5E7EB; border-radius: 4px; padding: 4px; }")
+        
+        self.search_btn = ModernButton("🔍", "#6B7280", "")
+        self.search_btn.setFixedSize(44, 32)
+        self.search_btn.setSizePolicy(QtWidgets.QSizePolicy.Fixed, QtWidgets.QSizePolicy.Fixed)
+
         self.toolbar_layout.addWidget(self.send_times_label, 0)
         self.toolbar_layout.addWidget(self.send_times_spin, 0)
         self.toolbar_layout.addWidget(self.run_sequence_btn, 0)
+        self.toolbar_layout.addSpacing(20)
+        self.toolbar_layout.addWidget(self.search_input, 0)
+        self.toolbar_layout.addWidget(self.search_btn, 0)
         self.toolbar_layout.addStretch(1)
 
         self.data_table = QtWidgets.QTableWidget()
@@ -850,6 +880,9 @@ class UDSSequenceView(QtWidgets.QWidget):
         self._scale_widget_width(self.run_sequence_btn, 110, ratio, 88, 120)
         self._scale_widget_height(self.run_sequence_btn, 32, ratio, 28, 32)
 
+        self.search_btn.setFixedSize(int(44 * ratio), int(32 * ratio))
+        self.search_input.setFixedWidth(120 if self.width() < 1500 else 160)
+
         self._apply_column_widths(force=True)
 
     def _scale_widget_width(self, widget, base_width, ratio, min_width, max_width=None):
@@ -866,6 +899,9 @@ class UDSSequenceView(QtWidgets.QWidget):
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
+        # Avoid unnecessary relayouts when height changes or typing happens (which might trigger spurious resize events)
+        if event.oldSize().width() == event.size().width():
+            return
         self._apply_responsive_layout(update_splitter=not self._user_resized_splitter)
 
 
@@ -885,6 +921,9 @@ class UDSSequenceView(QtWidgets.QWidget):
         self.response_edit.setEnabled(enabled)
         self.send_btn.setEnabled(enabled)
         self.insert_btn.setEnabled(enabled)
+        self.data_table.setEnabled(enabled)
+        for btn in (self.icon_btn_add, self.icon_btn_delete, self.delay_icon_btn, self.icon_btn_up, self.icon_btn_down):
+            btn.setEnabled(enabled)
 
     def set_placeholders(self, command: str):
         self.request_edit.setPlaceholderText(f"配置 {command} 的请求...")
@@ -908,11 +947,11 @@ class UDSSequenceView(QtWidgets.QWidget):
         # Name
         self.data_table.setItem(row, 1, QtWidgets.QTableWidgetItem(param_name))
         # Request
-        self.data_table.setItem(row, 2, QtWidgets.QTableWidgetItem(param_value))
+        self.data_table.setItem(row, 2, QtWidgets.QTableWidgetItem(self.format_hex_string(param_value)))
         # AddrType default
         self.data_table.setItem(row, 3, QtWidgets.QTableWidgetItem(addrtype))
         # Response
-        self.data_table.setItem(row, 4, QtWidgets.QTableWidgetItem(description))
+        self.data_table.setItem(row, 4, QtWidgets.QTableWidgetItem(self.format_hex_string(description)))
 
         try:
             self._apply_column_widths()
@@ -954,6 +993,11 @@ class UDSSequenceView(QtWidgets.QWidget):
     def log_message(self, message: str):
         OperationLogManager.instance().append_log("UDS指令编排", message)
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")
+
+        if message.startswith("TX: "):
+            message = "TX: " + self.format_hex_string(message[4:])
+        elif message.startswith("RX: "):
+            message = "RX: " + self.format_hex_string(message[4:])
 
         # Colorize based on content
         color = "#374151" # Default dark gray
@@ -1004,12 +1048,16 @@ class UDSSequenceView(QtWidgets.QWidget):
     def update_row_response(self, row: int, response: str):
         """Update the response column for a specific row."""
         if 0 <= row < self.data_table.rowCount():
-            self.data_table.setItem(row, 4, QtWidgets.QTableWidgetItem(response))
+            self.data_table.blockSignals(True)
+            self.data_table.setItem(row, 4, QtWidgets.QTableWidgetItem(self.format_hex_string(response)))
+            self.data_table.blockSignals(False)
 
     def update_row_request(self, row: int, request: str):
         """Update the request column for a specific row."""
         if 0 <= row < self.data_table.rowCount():
-            self.data_table.setItem(row, 2, QtWidgets.QTableWidgetItem(request))
+            self.data_table.blockSignals(True)
+            self.data_table.setItem(row, 2, QtWidgets.QTableWidgetItem(self.format_hex_string(request)))
+            self.data_table.blockSignals(False)
 
     def get_table_data(self):
         """Return list of dicts representing the table rows."""

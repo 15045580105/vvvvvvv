@@ -81,7 +81,7 @@ class TopologyService(QObject):
     def __init__(self, device_service: Optional[DeviceService] = None) -> None:
         super().__init__()
         self._device_service = device_service
-        self._dpt_service = DPTService()
+        self._dpt_service = di_container.resolve(DPTService) or DPTService()
         self._workers = [] # 管理内部 Worker
         self._mutex = QMutex() # 互斥锁，保护 DoIP/UDS 访问
         self._dpt_ready = False
@@ -434,7 +434,7 @@ class TopologyService(QObject):
             return "读取失败(可能需要解锁)"
 
         data = bytes(data)
-        self.log_signal.emit(f"证书信息原始响应长度: {len(data)} 字节")
+        self.log_signal.emit(f"证书信息原始响应长度: {len(data)} 字���")
         self.log_signal.emit(f"证书信息原始响应: {data.hex(' ').upper()}")
 
         # 使用 DPTService 解析数据
@@ -753,7 +753,7 @@ class TopologyService(QObject):
             self.log_signal.emit("DPT服务未就绪，无法解析数据")
 
         # 暂不清楚各节点对应 bit/byte 的精确含义，这里先挂原始 hex，方便 UI 或日志查看
-        result["eth_link_raw"] = data.hex().upper()
+        result["eth_link_raw"] = data.hex(' ').upper()
         self.log_signal.emit(f"Link状态解析结果: {result}")
         return result
 
@@ -1073,7 +1073,7 @@ class TopologyService(QObject):
     def _ping_synch(self, ip: str) -> bool:
         """同步执行 ping 命令"""
         client = self._device_service.get_ssh_client()
-        if not client or not client.is_connected():
+        if not client or not client.is_connected:
             return False
         cmd = f"ping -c 10 -i 0.1 {ip}" # 减少次数加快速度
         self.log_signal.emit(f"开始执行ping指令: {cmd}")
@@ -1200,7 +1200,7 @@ class TopologyService(QObject):
                 count = len(data) // 4
                 for i in range(count):
                     dtc_bytes = data[i*4 : i*4+3]
-                    dtc_hex = dtc_bytes.hex().upper()
+                    dtc_hex = dtc_bytes.hex(' ').upper()
                     dtc_list.append(dtc_hex)
             self.log_signal.emit(f"读取到的 DTC 列表: {dtc_list}")
         else:
@@ -1312,7 +1312,7 @@ class TopologyService(QObject):
                 # 简单 hex 查找匹配 DTC 码
                 # 响应格式通常为 [59 02 2F] [StatusAvailabilityMask] [DTC1] [Status1] ...
                 # 这里简化处理，直接在 hex 字符串中查找
-                hex_str = rx.hex().upper()
+                hex_str = rx.hex(' ').upper()
                 hits = []
                 for code, desc in codes.items():
                     # 移除可能存在的 0x 前缀，确保纯 hex 匹配
@@ -1344,4 +1344,6 @@ class TopologyService(QObject):
         worker.result_signal.connect(on_finished)
         self._workers.append(worker)
         worker.start()
+
+
 

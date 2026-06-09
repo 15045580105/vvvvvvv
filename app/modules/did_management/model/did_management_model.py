@@ -116,7 +116,7 @@ class DIDModel(BaseModel):
         self.did_rows = rows
         self.dataChanged.emit()
 
-    def update_row(self, index: int, **updates) -> None:
+    def update_row(self, index: int, emit_signal: bool = True, **updates) -> None:
         """按索引更新单行属性并通知视图。"""
         if index < 0 or index >= len(self.did_rows):
             return
@@ -124,7 +124,8 @@ class DIDModel(BaseModel):
         for key, value in updates.items():
             if hasattr(row, key):
                 setattr(row, key, value)
-        self.dataChanged.emit()
+        if emit_signal:
+            self.dataChanged.emit()
 
     def clear_all_values(self) -> None:
         """Clear values of all rows."""

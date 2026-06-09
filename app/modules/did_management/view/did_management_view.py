@@ -500,7 +500,7 @@ class DIDView(BaseView):
         # 增加 indicator 样式以增强拖拽提示可见性
         self.table.setStyleSheet(
             "QTableWidget::item{ padding-left:6px; padding-right:6px; }"
-            "QTableWidget::item:selected{ background: #e6f7ff; }"
+            "QTableWidget::item:selected{ background: #bfdbfe; }"
             # 与现有界面风格一致的细微横/纵分隔线
             "QTableView::item{ border-bottom: 1px solid rgba(0,0,0,0.06); border-right: 1px solid rgba(0,0,0,0.04); }"
             # Style vertical header
@@ -574,7 +574,21 @@ class DIDView(BaseView):
         OperationLogManager.instance().append_log("DID数据管理", message)
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")
         log_entry = f"[{timestamp}] {message}"
-        self.raw_text.append(log_entry)
+
+        color = "#374151"
+        if "TX:" in message or "TX " in message:
+            color = "#2563EB"
+        elif "RX:" in message or "RX " in message:
+            color = "#059669"
+        elif "Error" in message or "失败" in message or "错误" in message or "Fail" in message:
+            color = "#DC2626"
+        elif "Warning" in message or "警告" in message:
+            color = "#D97706"
+
+        log_escaped = log_entry.replace("<", "&lt;").replace(">", "&gt;")
+        html_msg = f'<span style="color: {color};">{log_escaped}</span>'
+
+        self.raw_text.append(html_msg)
         self.raw_text.moveCursor(QtGui.QTextCursor.End)
 
     def resizeEvent(self, event):
@@ -1123,9 +1137,23 @@ class ValueDetailDialog(QtWidgets.QDialog):
             self.table.setRowCount(len(rows))
             for r, row_data in enumerate(rows):
                 for c, val in enumerate(row_data):
-                    item = QtWidgets.QTableWidgetItem(str(val))
+                    val_str = str(val) if val is not None else ""
+                    tooltip_str = val_str
+                    if c in (2, 3):
+                        if " " in val_str:
+                            parts = val_str.split(" ")
+                            if len(parts) > 15:
+                                val_str = " ".join(parts[:15]) + " ..."
+                            # 悬浮显示每行最多50个字节
+                            tooltip_str = "\n".join([" ".join(parts[i:i+50]) for i in range(0, len(parts), 50)])
+                        else:
+                            if len(val_str) > 30:
+                                val_str = val_str[:30] + "..."
+                            # 悬浮显示每行最多100个字符(50个字节)
+                            tooltip_str = "\n".join([tooltip_str[i:i+100] for i in range(0, len(tooltip_str), 100)])
+                    item = QtWidgets.QTableWidgetItem(val_str)
                     item.setFlags(item.flags() ^ Qt.ItemIsEditable)  # 只读
-                    item.setToolTip(str(val)) # 悬浮显示完整内容
+                    item.setToolTip(tooltip_str) # 悬浮显示完整内容
                     self.table.setItem(r, c, item)
 
         # 底部按钮
@@ -1133,3 +1161,22 @@ class ValueDetailDialog(QtWidgets.QDialog):
         btn_box.rejected.connect(self.close)
         layout.addWidget(btn_box)
 
+    def showEvent(self, event):
+        super().showEvent(event)
+        parent = self.parent()
+        if parent:
+            top_level = parent.window()
+            if top_level:
+                parent_rect = top_level.geometry()
+                self.move(
+                    parent_rect.x() + (parent_rect.width() - self.width()) // 2,
+                    parent_rect.y() + (parent_rect.height() - self.height()) // 2
+                )
+                return
+
+        # Fallback to screen center
+        screen = QtWidgets.QApplication.primaryScreen().geometry()
+        self.move(
+            (screen.width() - self.width()) // 2,
+            (screen.height() - self.height()) // 2
+        )

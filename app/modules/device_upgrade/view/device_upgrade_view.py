@@ -36,8 +36,8 @@ class UpgradeView(BaseView):
         main_layout.setContentsMargins(0, 0, 0, 0)
         main_layout.setSpacing(0)
 
-        splitter = LogAreaSplitter(self, min_log_height=300, max_log_ratio=0.9)
-        main_layout.addWidget(splitter)
+        self.splitter = LogAreaSplitter(self, min_log_height=300, max_log_ratio=0.9)
+        main_layout.addWidget(self.splitter)
 
         content_widget = QtWidgets.QWidget()
         content_layout = QtWidgets.QVBoxLayout(content_widget)
@@ -63,12 +63,23 @@ class UpgradeView(BaseView):
         LogPanelBuilder.attach_search(log_layout, self.upgrade_log, trailing_widgets=[self.clear_btn])
         log_layout.addWidget(self.upgrade_log)
 
-        splitter.set_panels(content_widget, log_group, initial_log_height=800)
+        self.splitter.set_panels(content_widget, log_group, initial_log_height=800)
 
         # Set initial sizes (Tab minimum, Log maximum)
-        splitter.setStretchFactor(0, 0) # Tab
-        splitter.setStretchFactor(1, 1) # Log
-        splitter.setCollapsible(1, False)
+        self.splitter.setStretchFactor(0, 0) # Tab
+        self.splitter.setStretchFactor(1, 1) # Log
+        self.splitter.setCollapsible(1, False)
+
+        # Adjust the log height behavior based on selected tab
+        self.tab.currentChanged.connect(self._on_tab_changed)
+
+    def _on_tab_changed(self, index):
+        if index == 0: # 常规升级
+            self.splitter.setStretchFactor(0, 0)
+            self.splitter.set_initial_log_height(800)
+        elif index == 1: # 升级压测
+            self.splitter.setStretchFactor(0, 1)
+            self.splitter.set_initial_log_height("50%")
 
     # -------------------- 常规升级 Tab --------------------
     def _init_normal_upgrade_tab(self):

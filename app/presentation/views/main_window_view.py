@@ -158,11 +158,11 @@ class MainView(QtWidgets.QMainWindow):
         for lbl in [self.doip_status_label, self.ssh_status_label, self.someip_status_label]:
             lbl.setStyleSheet("color: #6B7280;")
 
-        # self.status_bar.addPermanentWidget(self.doip_status_label)
-        # self.status_bar.addPermanentWidget(self.ssh_status_label)
-        # self.status_bar.addPermanentWidget(self.someip_status_label)
-        # self.status_bar.addPermanentWidget(QtWidgets.QLabel(" | "))
-        self.performance_label = QtWidgets.QLabel("💻 CPU: -- | 内存: -- | 📡 --设备在线")
+        self.status_bar.addPermanentWidget(self.doip_status_label)
+        self.status_bar.addPermanentWidget(self.ssh_status_label)
+        self.status_bar.addPermanentWidget(self.someip_status_label)
+        self.status_bar.addPermanentWidget(QtWidgets.QLabel(" | "))
+        self.performance_label = QtWidgets.QLabel("💻 CPU: -- | 内存: --")
         self.status_bar.addPermanentWidget(self.performance_label)
         self.setStatusBar(self.status_bar)
 
@@ -198,17 +198,28 @@ class MainView(QtWidgets.QMainWindow):
     def update_performance_summary(self, payload: dict):
         cpu = payload.get("cpu_percent")
         mem = payload.get("memory_usage")
-        online = payload.get("device_online")
-        total = payload.get("device_total")
         cpu_txt = f"{cpu:.0f}%" if isinstance(cpu, (int, float)) else "--"
         mem_txt = mem if isinstance(mem, str) else "--"
-        if isinstance(online, int) and isinstance(total, int) and total:
-            device_txt = f"{online}/{total}设备在线"
-        elif isinstance(online, int):
-            device_txt = f"{online}设备在线"
+        self.performance_label.setText(f"💻 CPU: {cpu_txt} | 内存: {mem_txt}")
+
+        protocol_status = payload.get("protocol_status", {})
+        ssh_status = protocol_status.get("ssh", "离线")
+        doip_status = protocol_status.get("doip", "离线")
+        someip_status = protocol_status.get("someip", "离线")
+        doip_device = protocol_status.get("doip_device")
+
+        self.ssh_status_label.setText(f"SSH: {'✅' if ssh_status == '在线' else '⏸️'} {ssh_status}")
+        self.ssh_status_label.setStyleSheet("color: #10B981;" if ssh_status == "在线" else "color: #6B7280;")
+
+        if doip_status == "在线" and doip_device:
+            self.doip_status_label.setText(f"DoIP (设备{doip_device}): ✅ 在线")
+            self.doip_status_label.setStyleSheet("color: #10B981;")
         else:
-            device_txt = "--设备在线"
-        self.performance_label.setText(f"💻 CPU: {cpu_txt} | 内存: {mem_txt} | 📡 {device_txt}")
+            self.doip_status_label.setText("DoIP: ⏸️ 离线")
+            self.doip_status_label.setStyleSheet("color: #6B7280;")
+
+        self.someip_status_label.setText(f"SOMEIP: {'✅' if someip_status == '在线' else '⏸️'} {someip_status}")
+        self.someip_status_label.setStyleSheet("color: #10B981;" if someip_status == "在线" else "color: #6B7280;")
 
     def show_settings_dialog(self, page_id: str | None = None, focus_target: str | None = None):
         if self.settings_controller is None:

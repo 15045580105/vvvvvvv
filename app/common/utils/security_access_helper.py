@@ -56,12 +56,14 @@ class SecurityAccessHelper:
             # 隐藏控制台窗口 (Windows)
             startupinfo = subprocess.STARTUPINFO()
             startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+            child_env = SecurityAccessHelper._build_32bit_child_env(python_32bit)
 
             process = subprocess.Popen(
                 cmd,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 startupinfo=startupinfo,
+                env=child_env,
                 text=True
             )
             stdout, stderr = process.communicate()
@@ -202,6 +204,28 @@ class SecurityAccessHelper:
         return None
 
     @staticmethod
+    def _build_32bit_child_env(python_32bit: str) -> dict:
+        """Build an isolated environment for the 32-bit helper process.
+
+        The main application is a 64-bit process.  Do not prepend bundled
+        32-bit DLL/Python paths to the main process PATH; only the child process
+        that loads the 32-bit DLL receives those paths.
+        """
+        env = os.environ.copy()
+        runtime_home = os.path.dirname(os.path.abspath(python_32bit))
+        dll_dirs = [
+            runtime_home,
+            os.path.join(runtime_home, "DLLs"),
+            os.path.join(runtime_home, "Library", "bin"),
+        ]
+        existing_path = env.get("PATH", "")
+        env["PATH"] = os.pathsep.join([p for p in dll_dirs if os.path.isdir(p)] + [existing_path])
+        env.setdefault("PYTHONHOME", runtime_home)
+        env.setdefault("PYTHON32_HOME", runtime_home)
+        env.setdefault("PYTHON_32BIT", os.path.abspath(python_32bit))
+        return env
+
+    @staticmethod
     def _create_shim_script() -> str:
         """
         在临时目录创建 shim 脚本文件，并返回其路径。
@@ -333,7 +357,7 @@ def main():
              sys.exit(1)
 
         key_bytes = bytes(key_array[:key_len])
-        print(f"KEY:{key_bytes.hex().upper()}")
+        print(f"KEY:{key_bytes.hex(' ').upper()}")
         sys.exit(0)
 
     except Exception as e:

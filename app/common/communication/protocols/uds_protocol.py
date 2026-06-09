@@ -30,7 +30,7 @@ class UDSParser:
 
         try:
             result = {
-                "raw_data": uds_payload.hex().upper(),
+                "raw_data": uds_payload.hex(' ').upper(),
                 "length": len(uds_payload)
             }
 
@@ -60,7 +60,7 @@ class UDSParser:
             return result
 
         except Exception as e:
-            return {"error": f"解析失败: {str(e)}", "raw_data": uds_payload.hex().upper()}
+            return {"error": f"解析失败: {str(e)}", "raw_data": uds_payload.hex(' ').upper()}
 
     def _parse_negative_response(self, uds_payload):
         """解析负响应"""
@@ -69,7 +69,7 @@ class UDSParser:
             "request_service": f"0x{uds_payload[1]:02X}",
             "response_code": f"0x{uds_payload[2]:02X}",
             "response_name": self._get_negative_response_name(uds_payload[2]),
-            "raw_data": uds_payload.hex().upper()
+            "raw_data": uds_payload.hex(' ').upper()
         }
 
     def _parse_read_data_by_identifier(self, uds_payload, result):
@@ -78,7 +78,7 @@ class UDSParser:
             data_identifier = int.from_bytes(uds_payload[1:3], 'big')
             result["data_identifier"] = f"0x{data_identifier:04X}"
             if len(uds_payload) > 3:
-                result["data"] = uds_payload[3:].hex().upper()
+                result["data"] = uds_payload[3:].hex(' ').upper()
 
     def _parse_write_data_by_identifier(self, uds_payload, result):
         """解析写数据标识符"""
@@ -86,7 +86,7 @@ class UDSParser:
             data_identifier = int.from_bytes(uds_payload[1:3], 'big')
             result["data_identifier"] = f"0x{data_identifier:04X}"
             if len(uds_payload) > 3:
-                result["data_to_write"] = uds_payload[3:].hex().upper()
+                result["data_to_write"] = uds_payload[3:].hex(' ').upper()
 
     def _parse_diagnostic_session_control(self, uds_payload, result):
         """解析诊断会话控制"""

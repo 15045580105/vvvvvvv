@@ -85,4 +85,11 @@ class SplashScreen(QtWidgets.QWidget):
             painter.drawRoundedRect(x, y, int(fg_width), bar_height, bar_height / 2, bar_height / 2)
 
     def finish(self, main_window):
+        if self.animation_timer.isActive():
+            self.animation_timer.stop()
+        if main_window is not None:
+            main_window.raise_()
+            main_window.activateWindow()
+        self.hide()
         self.close()
+        self.deleteLater()

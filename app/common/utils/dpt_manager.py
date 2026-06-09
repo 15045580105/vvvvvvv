@@ -1231,7 +1231,7 @@ class DPTManager:
                          final_bytes[start_byte + i] = b
                          bytes_set[start_byte + i] = True
 
-                 _log(f"Encoded '{val_str}' to ASCII bytes (len={length}): {encoded_val.hex().upper()}")
+                 _log(f"Encoded '{val_str}' to ASCII bytes (len={length}): {encoded_val.hex(' ').upper()}")
                  continue
 
              # Resolve State Value for this item (Standard Enum/Int Logic)

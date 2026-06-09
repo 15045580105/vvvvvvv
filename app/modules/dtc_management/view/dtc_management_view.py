@@ -15,6 +15,7 @@ class DTCView(BaseView):
     read_freeze_frame_signal = QtCore.pyqtSignal(int)
     filter_changed_signal = QtCore.pyqtSignal(str)
     clear_dtc_signal = QtCore.pyqtSignal()
+    search_changed_signal = QtCore.pyqtSignal(str)
 
     def setup_ui(self):
         # Main Layout
@@ -92,7 +93,7 @@ class DTCView(BaseView):
 
         # Connect Actions
         self.read_btn.clicked.connect(self.on_read_dtcs)
-        self.clear_btn.clicked.connect(self.on_clear_dtcs)
+        self.clear_btn.clicked.connect(self.on_clear_dtc_clicked)
 
         # Log Window (Output)
         log_group = QtWidgets.QGroupBox("操作日志")
@@ -125,6 +126,55 @@ class DTCView(BaseView):
         header_layout.addWidget(self.last_read_label)
 
         header_layout.addStretch()
+
+        # Search Box Container
+        search_container = QtWidgets.QWidget()
+        search_container.setFixedSize(304, 36)
+        search_layout = QtWidgets.QHBoxLayout(search_container)
+        search_layout.setContentsMargins(0, 0, 0, 0)
+        search_layout.setSpacing(0)
+
+        self.search_input = QtWidgets.QLineEdit()
+        self.search_input.setPlaceholderText("在此搜索故障码或描述...")
+        self.search_input.setFixedSize(260, 36)
+        self.search_input.setStyleSheet("""
+            QLineEdit {
+                border: 1px solid #E5E7EB;
+                border-right: none;
+                border-top-left-radius: 4px;
+                border-bottom-left-radius: 4px;
+                border-top-right-radius: 0px;
+                border-bottom-right-radius: 0px;
+                padding: 4px 10px;
+                background: white;
+            }
+            QLineEdit:focus {
+                border-color: #3B82F6;
+            }
+        """)
+
+        self.search_btn = ModernButton("🔍", "#6B7280", "")
+        self.search_btn.setToolTip("执行搜索")
+        self.search_btn.setFixedSize(44, 36)
+        # 覆写按钮的圆角以实现右边圆左边平的紧贴效果
+        self.search_btn.setStyleSheet(self.search_btn.styleSheet() + """
+            QPushButton { 
+                border-top-left-radius: 0px; 
+                border-bottom-left-radius: 0px; 
+                border-top-right-radius: 4px; 
+                border-bottom-right-radius: 4px; 
+            }
+        """)
+
+        search_layout.addWidget(self.search_input)
+        search_layout.addWidget(self.search_btn)
+
+        self.search_input.returnPressed.connect(self.on_search_triggered)
+        self.search_btn.clicked.connect(self.on_search_triggered)
+
+        header_layout.addWidget(search_container)
+
+        header_layout.addSpacing(10)
 
         # Filter Buttons
         self.filter_group = QtWidgets.QButtonGroup(self)
@@ -162,7 +212,7 @@ class DTCView(BaseView):
 
         # Table
         self.fault_table = QtWidgets.QTableWidget()
-        cols = ["序号", "故障码", "故障描述", "上报子系统", "状态码", "故障状态", "冻结帧状态", "冻结帧操作"]
+        cols = ["序号", "故障码", "故障描述", "上报子系统", "状态码", "故障状态", "冻结帧状态", "冻结帧操作", "冻结帧数据"]
         self.fault_table.setColumnCount(len(cols))
         self.fault_table.setHorizontalHeaderLabels(cols)
         self.fault_table.verticalHeader().setVisible(False)
@@ -309,12 +359,27 @@ class DTCView(BaseView):
     def append_log(self, message: str):
         OperationLogManager.instance().append_log("DTC故障诊断", message)
         ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")
+        log_entry = f"[{ts}] {message}"
+
         if hasattr(self, 'log_edit'):
-            self.log_edit.appendPlainText(f"[{ts}] {message}")
+            color = "#374151"
+            if "TX:" in message or "TX " in message:
+                color = "#2563EB"
+            elif "RX:" in message or "RX " in message:
+                color = "#059669"
+            elif "Error" in message or "失败" in message or "错误" in message or "Fail" in message:
+                color = "#DC2626"
+            elif "Warning" in message or "警告" in message:
+                color = "#D97706"
+
+            log_escaped = log_entry.replace("<", "&lt;").replace(">", "&gt;")
+            html_msg = f'<span style="color: {color};">{log_escaped}</span>'
+
+            self.log_edit.appendHtml(html_msg)
             # Scroll to bottom
             self.log_edit.moveCursor(QtGui.QTextCursor.End)
         else:
-            print(f"[{ts}] {message}")
+            print(log_entry)
 
     def populate(self, categories, dtcs):
         """
@@ -327,66 +392,84 @@ class DTCView(BaseView):
             self.btn_filter_hist.setText(categories[2])
             self.btn_filter_pend.setText(categories[3])
 
-        # Update Fault Table
-        self.fault_table.setRowCount(len(dtcs))
+        # Optimize GUI refresh
+        self.fault_table.setUpdatesEnabled(False)
+        self.fault_table.blockSignals(True)
+        try:
+            # Update Fault Table
+            self.fault_table.setRowCount(len(dtcs))
 
-        # Update Pagination Info (Mock)
-        self.page_info_label.setText(f"每页显示10条，共1页，共{len(dtcs)}条")
+            # Update Pagination Info (Mock)
+            self.page_info_label.setText(f"每页显示10条，共1页，共{len(dtcs)}条")
 
-        for r, row in enumerate(dtcs):
-            if len(row) == 6:
-                code, desc, subsystem, status_code, fault_state, freeze_state = row
-            else:
-                code, desc, subsystem, status_code, fault_state = row
-                freeze_state = "未读取"
+            for r, row in enumerate(dtcs):
+                if len(row) >= 7:
+                    code, desc, subsystem, status_code, fault_state, freeze_state = row[:6]
+                    freeze_data = row[6]
+                elif len(row) == 6:
+                    code, desc, subsystem, status_code, fault_state, freeze_state = row
+                    freeze_data = ""
+                else:
+                    code, desc, subsystem, status_code, fault_state = row
+                    freeze_state = "未读取"
+                    freeze_data = ""
 
-            seq_item = QtWidgets.QTableWidgetItem(str(r + 1))
-            seq_item.setTextAlignment(Qt.AlignCenter)
-            self.fault_table.setItem(r, 0, seq_item)
+                seq_item = QtWidgets.QTableWidgetItem(str(r + 1))
+                seq_item.setTextAlignment(Qt.AlignCenter)
+                self.fault_table.setItem(r, 0, seq_item)
 
-            def make_center(text):
-                it = QtWidgets.QTableWidgetItem(text)
-                it.setTextAlignment(Qt.AlignCenter)
-                return it
+                def make_center(text):
+                    it = QtWidgets.QTableWidgetItem(text)
+                    it.setTextAlignment(Qt.AlignCenter)
+                    return it
 
-            self.fault_table.setItem(r, 1, make_center(code))
-            self.fault_table.setItem(r, 2, make_center(desc))
-            self.fault_table.setItem(r, 3, make_center(subsystem))
-            self.fault_table.setItem(r, 4, make_center(status_code))
-            self.fault_table.setItem(r, 5, make_center(fault_state))
+                self.fault_table.setItem(r, 1, make_center(code))
+                self.fault_table.setItem(r, 2, make_center(desc))
+                self.fault_table.setItem(r, 3, make_center(subsystem))
+                self.fault_table.setItem(r, 4, make_center(status_code))
+                self.fault_table.setItem(r, 5, make_center(fault_state))
 
-            # Freeze Status with Dot
-            status_widget = QtWidgets.QWidget()
-            status_layout = QtWidgets.QHBoxLayout(status_widget)
-            status_layout.setContentsMargins(5, 0, 5, 0)
-            status_layout.setAlignment(Qt.AlignCenter)
+                # Freeze Status with Dot
+                status_widget = QtWidgets.QWidget()
+                status_layout = QtWidgets.QHBoxLayout(status_widget)
+                status_layout.setContentsMargins(5, 0, 5, 0)
+                status_layout.setAlignment(Qt.AlignCenter)
 
-            dot = QtWidgets.QLabel()
-            dot.setFixedSize(10, 10)
-            dot.setStyleSheet(f"background-color: {self._get_status_color(freeze_state)}; border-radius: 5px;")
+                dot = QtWidgets.QLabel()
+                dot.setFixedSize(10, 10)
+                dot.setStyleSheet(f"background-color: {self._get_status_color(freeze_state)}; border-radius: 5px;")
 
-            lbl = QtWidgets.QLabel(freeze_state)
-            lbl.setStyleSheet("margin-left: 5px;")
+                lbl = QtWidgets.QLabel(freeze_state)
+                lbl.setStyleSheet("margin-left: 5px;")
 
-            status_layout.addWidget(dot)
-            status_layout.addWidget(lbl)
-            self.fault_table.setCellWidget(r, 6, status_widget)
+                status_layout.addWidget(dot)
+                status_layout.addWidget(lbl)
+                self.fault_table.setCellWidget(r, 6, status_widget)
 
-            # Operation Button
-            op_widget = QtWidgets.QWidget()
-            op_layout = QtWidgets.QHBoxLayout(op_widget)
-            op_layout.setContentsMargins(0, 0, 0, 0)
-            op_layout.setAlignment(Qt.AlignCenter)
+                # Operation Button
+                op_widget = QtWidgets.QWidget()
+                op_layout = QtWidgets.QHBoxLayout(op_widget)
+                op_layout.setContentsMargins(0, 0, 0, 0)
+                op_layout.setAlignment(Qt.AlignCenter)
 
-            btn = QtWidgets.QPushButton("读取冻结帧")
-            btn.setCursor(QtGui.QCursor(Qt.PointingHandCursor))
-            btn.setProperty("row", r)
-            btn.clicked.connect(self.on_click_freeze_btn)
+                btn = QtWidgets.QPushButton("读取冻结帧")
+                btn.setCursor(QtGui.QCursor(Qt.PointingHandCursor))
+                btn.setProperty("row", r)
+                btn.clicked.connect(self.on_click_freeze_btn)
 
-            op_layout.addWidget(btn)
-            self.fault_table.setCellWidget(r, 7, op_widget)
+                op_layout.addWidget(btn)
+                self.fault_table.setCellWidget(r, 7, op_widget)
 
-            self.fault_table.setRowHeight(r, 50)
+                # Freeze Data
+                data_item = make_center(freeze_data)
+                data_item.setToolTip(freeze_data)
+                self.fault_table.setItem(r, 8, data_item)
+
+                self.fault_table.setRowHeight(r, 50)
+        finally:
+            self.fault_table.blockSignals(False)
+            self.fault_table.setUpdatesEnabled(True)
+            self.fault_table.viewport().update()
 
         # Trigger resize adjustment after data load to ensure layout is correct
         QtCore.QTimer.singleShot(0, self.adjust_column_widths)
@@ -394,67 +477,64 @@ class DTCView(BaseView):
     def populate_freeze_frame(self, data):
         """
         Populate the freeze frame table.
-        data: List of freeze frame records.
-        Each record structure:
-        {
-            "code": "P31AE87",
-            "desc": "...",
-            "type": "Type A",
-            "did": "0x0501",
-            "length": 8,
-            "params": [
-                {"byte": "0~1", "bit": "All", "name": "Speed", "value": "100", "unit": "km/h"},
-                ...
-            ]
-        }
         """
-        self.freeze_table.setRowCount(0)
-        row_idx = 0
+        self.freeze_table.setUpdatesEnabled(False)
+        self.freeze_table.blockSignals(True)
+        try:
+            self.freeze_table.setRowCount(0)
+            row_idx = 0
 
-        for item in data:
-            params = item.get("params", [])
-            start_row = row_idx
-            count = len(params)
+            for item in data:
+                params = item.get("params", [])
+                start_row = row_idx
+                count = len(params)
 
-            self.freeze_table.setRowCount(start_row + count)
+                self.freeze_table.setRowCount(start_row + count)
 
-            # Common columns (merged)
-            # 0: Code, 1: Desc, 2: Type, 3: DID, 4: Length
-            common_vals = [item["code"], item["desc"], item["type"], item["did"], str(item["length"])]
+                # Common columns (merged)
+                # 0: Code, 1: Desc, 2: Type, 3: DID, 4: Length
+                common_vals = [item["code"], item["desc"], item["type"], item["did"], str(item["length"])]
 
-            for i, val in enumerate(common_vals):
-                it = QtWidgets.QTableWidgetItem(val)
-                it.setTextAlignment(Qt.AlignCenter)
-                self.freeze_table.setItem(start_row, i, it)
-                if count > 1:
-                    self.freeze_table.setSpan(start_row, i, count, 1)
-
-            # Param columns
-            for p_idx, param in enumerate(params):
-                r = start_row + p_idx
-
-                def set_item(c, txt):
-                    it = QtWidgets.QTableWidgetItem(str(txt))
+                for i, val in enumerate(common_vals):
+                    it = QtWidgets.QTableWidgetItem(val)
                     it.setTextAlignment(Qt.AlignCenter)
-                    self.freeze_table.setItem(r, c, it)
+                    self.freeze_table.setItem(start_row, i, it)
+                    if count > 1:
+                        self.freeze_table.setSpan(start_row, i, count, 1)
 
-                set_item(5, param["byte"])
-                set_item(6, param["bit"])
-                set_item(7, param["name"])
-                set_item(8, param["value"])
-                set_item(9, param["unit"])
+                # Param columns
+                for p_idx, param in enumerate(params):
+                    r = start_row + p_idx
 
-                self.freeze_table.setRowHeight(r, 40)
+                    def set_item(c, txt):
+                        it = QtWidgets.QTableWidgetItem(str(txt))
+                        it.setTextAlignment(Qt.AlignCenter)
+                        self.freeze_table.setItem(r, c, it)
 
-            row_idx += count
+                    set_item(5, param["byte"])
+                    set_item(6, param["bit"])
+                    set_item(7, param["name"])
+                    set_item(8, param["value"])
+                    set_item(9, param["unit"])
+
+                    self.freeze_table.setRowHeight(r, 40)
+
+                row_idx += count
+        finally:
+            self.freeze_table.blockSignals(False)
+            self.freeze_table.setUpdatesEnabled(True)
+            self.freeze_table.viewport().update()
 
     def _get_status_color(self, text):
         color_map = {
             "未读取": "#94A3B8",
             "读取中...": "#3B82F6",
-            "读取成功": "#10B981",
+            "读取成功解析成功": "#10B981",
+            "读取成功解析失败": "#F59E0B",
             "读取失败": "#EF4444"
         }
+        if text == "读取成功":
+            return "#10B981"
         return color_map.get(text, "#94A3B8")
 
     def set_last_read_time(self, dt: datetime):
@@ -475,59 +555,27 @@ class DTCView(BaseView):
         # Emit signal instead of handling logic
         self.read_dtc_signal.emit()
 
-    def on_clear_dtcs(self):
+    def on_clear_dtc_clicked(self):
+        OperationLogManager.instance().append_log("UI", "点击清除故障码")
         self.clear_dtc_signal.emit()
+
+    def on_search_triggered(self):
+        text = self.search_input.text()
+        self.search_changed_signal.emit(text)
+
+    def on_filter_group_clicked(self, btn):
+        text = btn.text()
+        self.filter_changed_signal.emit(text)
 
     def on_click_freeze_btn(self):
         btn = self.sender()
-        if not btn:
-            return
-        row = btn.property("row")
-        self.read_freeze_frame_signal.emit(row)
+        if btn:
+            row = btn.property("row")
+            if row is not None:
+                self.read_freeze_frame_signal.emit(row)
 
-    def on_filter_group_clicked(self, btn):
-        if btn == self.btn_filter_all:
-            self.filter_changed_signal.emit("all")
-        elif btn == self.btn_filter_curr:
-            self.filter_changed_signal.emit("current")
-        elif btn == self.btn_filter_hist:
-            self.filter_changed_signal.emit("history")
-        elif btn == self.btn_filter_pend:
-            self.filter_changed_signal.emit("pending")
-
-    def update_freeze_read_status(self, row: int, success: bool):
-        # Update status dot
-        status_widget = self.fault_table.cellWidget(row, 6)
-        if status_widget:
-            # Rebuild the widget content
-            # Clear layout
-            layout = status_widget.layout()
-            while layout.count():
-                child = layout.takeAt(0)
-                if child.widget():
-                    child.widget().deleteLater()
-
-            new_text = "读取成功" if success else "读取失败"
-
-            dot = QtWidgets.QLabel()
-            dot.setFixedSize(10, 10)
-            dot.setStyleSheet(f"background-color: {self._get_status_color(new_text)}; border-radius: 5px;")
-
-            lbl = QtWidgets.QLabel(new_text)
-            lbl.setStyleSheet("margin-left: 5px;")
-
-            layout.addWidget(dot)
-            layout.addWidget(lbl)
-
-            if success:
-                # Switch to freeze tab and show mock data
-                # In real app, controller would call populate_freeze_frame
-                self.tab_widget.setCurrentIndex(1)
-
-    def eventFilter(self, source, event):
-        if source == self.fault_table and event.type() == QtCore.QEvent.Resize:
-            self.adjust_column_widths()
-        return super().eventFilter(source, event)
+    def on_device_status_changed(self, is_connected):
+        pass
 
     def adjust_column_widths(self):
         if not self.fault_table or self.fault_table.columnCount() == 0:
@@ -614,8 +662,3 @@ class DTCView(BaseView):
             self._freeze_widths_initialized = True
         except Exception:
             pass
-
-
-
-
-

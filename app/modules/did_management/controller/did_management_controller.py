@@ -66,6 +66,235 @@ class DIDLoaderThread(QtCore.QThread):
             self.finished_signal.emit([])
 
 
+class DIDProcessThread(QtCore.QThread):
+    apply_update_signal = QtCore.pyqtSignal(dict)
+    update_row_signal = QtCore.pyqtSignal(int, dict)
+    warn_signal = QtCore.pyqtSignal(str)
+
+    def __init__(self, selected_rows, is_write, resolve_dpt_params_func, device_service, dpt_service, config_service, parent=None):
+        super().__init__(parent)
+        self.selected_rows = selected_rows
+        self.is_write = is_write
+        self._resolve_dpt_params = resolve_dpt_params_func
+        self._device_service = device_service
+        self._dpt_service = dpt_service
+        self._config_service = config_service
+
+    def run(self):
+        for row_index, row in self.selected_rows:
+            self._process_did_row(row_index, row, self.is_write)
+            # Sleep slightly to allow event loop processing if needed
+            self.msleep(10)
+
+    def _apply_update(self, **kwargs):
+        self.apply_update_signal.emit(kwargs)
+
+    def _update_row(self, row_index, **kwargs):
+        self.update_row_signal.emit(row_index, kwargs)
+
+    def _process_did_row(self, row_index: int, row, is_write: bool = False) -> None:
+        target_session_name = row.diagnostic_session
+        target_security_name = row.security_access
+
+        if row.follow_dpt:
+            if not self._dpt_service.is_ready():
+                self.warn_signal.emit("DPT解析未完成，请稍候")
+                return
+
+            did_info = self._dpt_service.get_did_info(row.did)
+            if did_info:
+                target_session_name, target_security_name = self._resolve_dpt_params(
+                    did_info, is_write
+                )
+
+        # 1. 诊断会话控制 (0x10)
+        target_session = 0x01
+        sess_str = target_session_name
+
+        match = re.search(r"0x([0-9A-Fa-f]+)", sess_str)
+        if match:
+            target_session = int(match.group(1), 16)
+        else:
+            if "Programming" in sess_str:
+                target_session = 0x02
+            elif "Extended" in sess_str:
+                target_session = 0x03
+            elif "Default" in sess_str:
+                target_session = 0x01
+            else:
+                try:
+                    target_session = int(sess_str)
+                except:
+                    if "Extended" in sess_str:
+                        target_session = 0x03
+                    pass
+
+        tx_session = bytes([0x10, target_session])
+        self._apply_update(tx=f"会话控制: {tx_session.hex(' ').upper()}")
+        rx_session = self._device_service.send_doip_payload(tx_session)
+
+        if not rx_session or rx_session[0] != 0x50:
+             self._apply_update(rx=f"会话控制失败: {rx_session.hex(' ').upper() if rx_session else '无响应'}")
+             self._update_row(row_index, value="", value_color="#EF4444")
+             return
+        self._apply_update(rx=f"会话控制成功: {rx_session.hex(' ').upper()}")
+
+        # 2. 安全访问 (0x27)
+        sec_level = 0
+        sec_str = target_security_name
+
+        if "Locked" in sec_str or "None" in sec_str:
+            sec_level = 0
+        else:
+            match = re.search(r"0x([0-9A-Fa-f]+)", sec_str)
+            if match:
+                sec_level = int(match.group(1), 16)
+            else:
+                try:
+                    if sec_str.isdigit():
+                        sec_level = int(sec_str)
+                    else:
+                        nums = re.findall(r'\d+', sec_str)
+                        if nums:
+                            sec_level = int(nums[-1])
+                except:
+                    pass
+
+        if sec_level > 0:
+            req_seed_level = sec_level
+            if req_seed_level % 2 == 0:
+                req_seed_level -= 1
+
+            tx_seed = bytes([0x27, req_seed_level])
+            self._apply_update(tx=f"请求种子: {tx_seed.hex(' ').upper()}")
+            rx_seed = self._device_service.send_doip_payload(tx_seed)
+            self._apply_update(rx=f"收到种子: {rx_seed.hex(' ').upper()}")
+            if not rx_seed or rx_seed[0] != 0x67:
+                self._apply_update(rx=f"请求种子失败: {rx_seed.hex(' ').upper() if rx_seed else '无响应'}")
+                self._update_row(row_index, value="", value_color="#EF4444")
+                return
+
+            if len(rx_seed) < 3:
+                 self._apply_update(rx=f"种子响应长度不足")
+                 self._update_row(row_index, value="", value_color="#EF4444")
+                 return
+
+            seed = rx_seed[2:]
+
+            dll_path = self._config_service.diag_layer_settings.get("dll_path")
+            if dll_path:
+                key, error_msg = SecurityAccessHelper.calculate_key(sec_level, seed, dll_path=dll_path)
+            else:
+                key, error_msg = SecurityAccessHelper.calculate_key(sec_level, seed)
+
+            if key:
+                tx_key = bytes([0x27, req_seed_level + 1]) + key
+                self._apply_update(tx=f"发送密钥: {tx_key.hex(' ').upper()}")
+                rx_key = self._device_service.send_doip_payload(tx_key)
+
+                if not rx_key or rx_key[0] != 0x67:
+                    self._apply_update(rx=f"安全访问失败: {rx_key.hex(' ').upper() if rx_key else '无响应'}")
+                    self._update_row(row_index, value="", value_color="#EF4444")
+                    return
+                self._apply_update(rx=f"安全访问成功: {rx_key.hex(' ').upper()}")
+            else:
+                self._apply_update(rx=error_msg or "密钥计算失败")
+                self._update_row(row_index, value="", value_color="#EF4444")
+                return
+
+        # 3. 读/写 DID
+        did_str = row.did.strip().replace(" ", "")
+        try:
+            did_val = int(did_str, 16)
+        except ValueError:
+            self._apply_update(rx=f"无效 DID: {did_str}")
+            return
+
+        hi = (did_val >> 8) & 0xFF
+        lo = did_val & 0xFF
+
+        if is_write:
+            value_str = row.value.strip()
+            payload = b""
+
+            fmt = (row.data_format or "STR").upper()
+            try:
+                if fmt == "HEX":
+                    filtered = "".join(ch for ch in value_str if ch not in {" ", "-"})
+                    if len(filtered) % 2:
+                        filtered = "0" + filtered
+                    payload = bytes.fromhex(filtered)
+                else: # STR
+                    payload = value_str.encode("utf-8")
+            except ValueError:
+                self._apply_update(rx=f"写入值无效: {value_str}")
+                return
+
+            tx_bytes = bytes([0x2E, hi, lo]) + payload
+            self._apply_update(tx=f"写入 DID: {tx_bytes.hex(' ').upper()}")
+            rx_bytes = self._device_service.send_doip_payload(tx_bytes)
+
+            if not rx_bytes:
+                self._apply_update(rx="写入失败: 无响应")
+                self._update_row(row_index, value="", value_color="#EF4444")
+                return
+
+            self._apply_update(rx=f"写入响应: {rx_bytes.hex(' ').upper()}")
+
+            if rx_bytes[0] == 0x6E:
+                 self._update_row(row_index, value_color=None)
+            else:
+                 self._update_row(row_index, value_color="#EF4444")
+
+        else:
+            tx_bytes = bytes([0x22, hi, lo])
+            self._apply_update(tx=f"读取 DID: {tx_bytes.hex(' ').upper()}")
+            rx_bytes = self._device_service.send_doip_payload(tx_bytes)
+
+            if not rx_bytes:
+                self._apply_update(rx="读取失败: 无响应")
+                self._update_row(row_index, value="", value_color="#EF4444")
+                return
+
+            self._apply_update(rx=f"读取响应: {rx_bytes.hex(' ').upper()}")
+
+            if rx_bytes[0] == 0x62 and len(rx_bytes) >= 3:
+                data_bytes = rx_bytes[3:]
+
+                rows_parsed = None
+                if self._dpt_service.is_ready():
+                    did_clean = row.did.strip().replace(" ", "").upper()
+                    if did_clean.startswith("0X"):
+                        did_clean = did_clean[2:]
+
+                    result = self._dpt_service.parse_bytes(data_bytes, did=did_clean)
+                    if result:
+                        rows_parsed = [
+                            DIDBitRow(
+                                bit=cols[0],
+                                function=cols[1],
+                                binary_value=cols[2],
+                                status=cols[3],
+                            )
+                            for cols in result.to_table_rows()
+                        ]
+                self._apply_update(rows=rows_parsed)
+
+                fmt = (row.data_format or "STR").upper()
+                display_val = ""
+                if fmt == "HEX":
+                    display_val = data_bytes.hex(' ').upper()
+                else:
+                    try:
+                        display_val = data_bytes.decode("utf-8")
+                    except:
+                        display_val = data_bytes.hex(' ').upper()
+
+                self._update_row(row_index, value=display_val, value_color=None)
+            else:
+                self._update_row(row_index, value="", value_color="#EF4444")
+
+
 class DIDController(BaseController):
     """DID 控制器：负责界面交互、消息监听与 DPT 解析的协调逻辑。"""
     switch_page = QtCore.pyqtSignal(dict, str)
@@ -187,14 +416,8 @@ class DIDController(BaseController):
         self.dpt_status_signal.emit(status, message)
 
     def handle_dpt_status(self, status, message):
-        if status == "loading":
-            MessageToast(self.view).show_toast(message, 2)
-        elif status == "completed":
-            MessageToast(self.view).show_toast(message, 0)
-        elif status == "error":
-            MessageToast(self.view).show_toast(message, 1)
-
-        # Also append to log
+        # We no longer show toast here, as the main controller handles global Toasts. 
+        # But we still log it.
         self.view.append_log(f"系统: {message}")
 
     def _save_dids_to_file(self):
@@ -373,240 +596,8 @@ class DIDController(BaseController):
     # -------------------- 顶部按钮行为 --------------------
 
     def _process_did_row(self, row_index: int, row, is_write: bool = False) -> None:
-        """处理单行 DID 的读/写操作。
-
-        流程：
-        1. 获取 DoIP 客户端
-        2. 切换 Diagnostic Session (0x10)
-        3. 执行 Security Access (0x27)
-        4. 执行 Read (0x22) 或 Write (0x2E)
-        5. 更新 UI
-        """
-
-        target_session_name = row.diagnostic_session
-        target_security_name = row.security_access
-
-        # 如果勾选了 Follow DPT，尝试从 DPT 获取会话和安全等级
-        # 修改逻辑：不改变界面配置，仅在执行时使用 DPT 中的信息
-        if row.follow_dpt:
-            if not self._dpt_service.is_ready():
-                MessageToast.show_message(self.view, "DPT解析未完成，请稍候", "warning")
-                return
-
-            did_info = self._dpt_service.get_did_info(row.did)
-            # 即使 did_info 为空，也可能需要按照 Follow DPT 的逻辑（如默认扩展会话）执行？
-            # 这里保守起见，只有 info 存在才覆盖
-            if did_info:
-                target_session_name, target_security_name = self._resolve_dpt_params(
-                    did_info, is_write
-                )
-
-        # 1. 诊断会话控制 (0x10)
-        target_session = 0x01
-        sess_str = target_session_name
-
-        # 1. 尝试解析 "0xXX" 格式 (支持括号、方括号或直接写)
-        match = re.search(r"0x([0-9A-Fa-f]+)", sess_str)
-        if match:
-            target_session = int(match.group(1), 16)
-        else:
-            # 兼容旧逻辑或纯文本
-            if "Programming" in sess_str:
-                target_session = 0x02
-            elif "Extended" in sess_str:
-                target_session = 0x03
-            elif "Default" in sess_str:
-                target_session = 0x01
-            else:
-                try:
-                    target_session = int(sess_str)
-                except:
-                    # 如果无法解析，尝试保持 0x01 (Default) 或改为 0x03 (Extended)？
-                    # 鉴于"Normal circumstances go extended"，如果 Follow DPT 且解析失败，也许应该 0x03。
-                    # 但这里还是保持原本逻辑（Fallthrough to 0x01 initialized above or int conversion）
-                    if "Extended" in sess_str: # Double check case
-                        target_session = 0x03
-                    pass
-
-        tx_session = bytes([0x10, target_session])
-        self.model.apply_update(tx=f"会话控制: {tx_session.hex(' ').upper()}")
-        rx_session = self._device_service.send_doip_payload(tx_session)
-
-        if not rx_session or rx_session[0] != 0x50:
-             self.model.apply_update(rx=f"会话控制失败: {rx_session.hex(' ').upper() if rx_session else '无响应'}")
-             self.model.update_row(row_index, value="", value_color="#EF4444")
-             return
-        self.model.apply_update(rx=f"会话控制成功: {rx_session.hex(' ').upper()}")
-
-        # 2. 安全访问 (0x27)
-        sec_level = 0
-        sec_str = target_security_name
-
-        # 如果是 Locked 或 None，则不进行安全访问
-        if "Locked" in sec_str or "None" in sec_str:
-            sec_level = 0
-        else:
-            # 尝试解析 "LevelX [0xXX]" 或 "0xXX" 格式
-            match = re.search(r"0x([0-9A-Fa-f]+)", sec_str)
-            if match:
-                sec_level = int(match.group(1), 16)
-            else:
-                try:
-                    if sec_str.isdigit():
-                        sec_level = int(sec_str)
-                    else:
-                        # 尝试提取数字
-                        nums = re.findall(r'\d+', sec_str)
-                        if nums:
-                            sec_level = int(nums[-1])
-                except:
-                    pass
-
-        if sec_level > 0:
-            # 请求种子: 27 Level (奇数)
-            req_seed_level = sec_level
-            if req_seed_level % 2 == 0:
-                req_seed_level -= 1
-
-            tx_seed = bytes([0x27, req_seed_level])
-            self.model.apply_update(tx=f"请求种子: {tx_seed.hex(' ').upper()}")
-            rx_seed = self._device_service.send_doip_payload(tx_seed)
-            self.model.apply_update(rx=f"收到种子: {rx_seed.hex(' ').upper()}")
-            if not rx_seed or rx_seed[0] != 0x67:
-                self.model.apply_update(rx=f"请求种子失败: {rx_seed.hex(' ').upper() if rx_seed else '无响应'}")
-                self.model.update_row(row_index, value="", value_color="#EF4444")
-                return
-
-            # 计算密钥
-            if len(rx_seed) < 3:
-                 self.model.apply_update(rx=f"种子响应长度不足")
-                 self.model.update_row(row_index, value="", value_color="#EF4444")
-                 return
-
-            seed = rx_seed[2:]
-
-            dll_path = self._config_service.diag_layer_settings.get("dll_path")
-            if dll_path:
-                key, error_msg = SecurityAccessHelper.calculate_key(sec_level, seed, dll_path=dll_path)
-            else:
-                key, error_msg = SecurityAccessHelper.calculate_key(sec_level, seed)
-
-            if key:
-                # 发送密钥: 27 Level+1 Key
-                tx_key = bytes([0x27, req_seed_level + 1]) + key
-                self.model.apply_update(tx=f"发送密钥: {tx_key.hex(' ').upper()}")
-                rx_key = self._device_service.send_doip_payload(tx_key)
-
-                if not rx_key or rx_key[0] != 0x67:
-                    self.model.apply_update(rx=f"安全访问失败: {rx_key.hex(' ').upper() if rx_key else '无响应'}")
-                    self.model.update_row(row_index, value="", value_color="#EF4444")
-                    return
-                self.model.apply_update(rx=f"安全访问成功: {rx_key.hex(' ').upper()}")
-            else:
-                self.model.apply_update(rx=error_msg or "密钥计算失败")
-                self.model.update_row(row_index, value="", value_color="#EF4444")
-                return
-
-        # 3. 读/写 DID
-        did_str = row.did.strip().replace(" ", "")
-        try:
-            did_val = int(did_str, 16)
-        except ValueError:
-            self.model.apply_update(rx=f"无效 DID: {did_str}")
-            return
-
-        hi = (did_val >> 8) & 0xFF
-        lo = did_val & 0xFF
-
-        if is_write:
-            # 写入 (0x2E)
-            value_str = row.value.strip()
-            payload = b""
-
-            # 处理 STR/HEX 格式
-            fmt = (row.data_format or "STR").upper()
-            try:
-                if fmt == "HEX":
-                    filtered = "".join(ch for ch in value_str if ch not in {" ", "-"})
-                    if len(filtered) % 2:
-                        filtered = "0" + filtered
-                    payload = bytes.fromhex(filtered)
-                else: # STR
-                    payload = value_str.encode("utf-8")
-            except ValueError:
-                self.model.apply_update(rx=f"写入值无效: {value_str}")
-                return
-
-            tx_bytes = bytes([0x2E, hi, lo]) + payload
-            self.model.apply_update(tx=f"写入 DID: {tx_bytes.hex(' ').upper()}")
-            rx_bytes = self._device_service.send_doip_payload(tx_bytes)
-
-            if not rx_bytes:
-                self.model.apply_update(rx="写入失败: 无响应")
-                self.model.update_row(row_index, value="", value_color="#EF4444")
-                return
-
-            self.model.apply_update(rx=f"写入响应: {rx_bytes.hex(' ').upper()}")
-
-            if rx_bytes[0] == 0x6E: # 肯定响应
-                 self.model.update_row(row_index, value_color=None)
-            else:
-                 self.model.update_row(row_index, value_color="#EF4444")
-
-        else:
-            # 读取 (0x22)
-            tx_bytes = bytes([0x22, hi, lo])
-            self.model.apply_update(tx=f"读取 DID: {tx_bytes.hex(' ').upper()}")
-            rx_bytes = self._device_service.send_doip_payload(tx_bytes)
-
-            if not rx_bytes:
-                self.model.apply_update(rx="读取失败: 无响应")
-                self.model.update_row(row_index, value="", value_color="#EF4444")
-                return
-
-            self.model.apply_update(rx=f"读取响应: {rx_bytes.hex(' ').upper()}")
-
-            # 解析响应: 62 DID_HI DID_LO DATA...
-            if rx_bytes[0] == 0x62 and len(rx_bytes) >= 3:
-                data_bytes = rx_bytes[3:]
-
-                # 如果有 DPT 服务则解析
-                rows = None
-                if self._dpt_service.is_ready():
-                    # Pass data_bytes instead of rx_bytes
-                    # Pass DID
-                    did_clean = row.did.strip().replace(" ", "").upper()
-                    if did_clean.startswith("0X"):
-                        did_clean = did_clean[2:]
-
-                    result = self._dpt_service.parse_bytes(data_bytes, did=did_clean)
-                    if result:
-                        rows = [
-                            DIDBitRow(
-                                bit=cols[0],
-                                function=cols[1],
-                                binary_value=cols[2],
-                                status=cols[3],
-                            )
-                            for cols in result.to_table_rows()
-                        ]
-                self.model.apply_update(rows=rows)
-
-                # 根据 STR/HEX 设置格式化值
-                fmt = (row.data_format or "STR").upper()
-                display_val = ""
-                if fmt == "HEX":
-                    display_val = data_bytes.hex(' ').upper()
-                else:
-                    try:
-                        display_val = data_bytes.decode("utf-8")
-                    except:
-                        display_val = data_bytes.hex(' ').upper() # 解码失败回退到 HEX
-
-                self.model.update_row(row_index, value=display_val, value_color=None)
-            else:
-                self.model.update_row(row_index, value="", value_color="#EF4444")
-
+        """这个方法已在后台线程实现。不应被直接调用。"""
+        pass
 
     def _on_search_clicked(self):
         """Handle search button clicked or Enter pressed."""
@@ -637,10 +628,36 @@ class DIDController(BaseController):
                     break
 
         if found_row != -1:
-            self.view.table.selectRow(found_row)
             self.view.table.scrollToItem(self.view.table.item(found_row, 0))
+            self._highlight_search_row(found_row)
         else:
             MessageToast(self.view).show_toast("未找到匹配的 DID", 1)
+
+    def _highlight_search_row(self, row: int):
+        """Temporarily highlight the found row with a noticeable color."""
+        self.view.table.clearSelection()
+        self.view.table.selectRow(row)
+
+        orig_style = self.view.table.styleSheet()
+        if "#FDE047" not in orig_style:
+            self._normal_stylesheet = orig_style
+
+        # 修改选中行的背景色为亮黄色
+        new_style = getattr(self, "_normal_stylesheet", orig_style).replace("#bfdbfe", "#FDE047")
+        self.view.table.setStyleSheet(new_style)
+
+        if hasattr(self, "_highlight_timer"):
+            self._highlight_timer.stop()
+        else:
+            self._highlight_timer = QtCore.QTimer()
+            self._highlight_timer.setSingleShot(True)
+            self._highlight_timer.timeout.connect(self._restore_highlight)
+
+        self._highlight_timer.start(1200)
+
+    def _restore_highlight(self):
+        if hasattr(self, "_normal_stylesheet"):
+            self.view.table.setStyleSheet(self._normal_stylesheet)
 
     def _match_row(self, row, text):
         """Check if DID (col 2) matches text."""
@@ -665,13 +682,17 @@ class DIDController(BaseController):
             MessageToast(self.view).show_toast("请先连接设备 (DoIP)", 1)
             return
 
-        # Clear value and status for selected rows before reading
-        for row_index, row in selected_rows:
-            self.model.update_row(row_index, value="", value_color=None)
+        self.view.read_btn.setEnabled(False)
+        self.view.write_btn.setEnabled(False)
+        self.view.clear_btn.setEnabled(False)
 
-        for row_index, row in selected_rows:
-            self._process_did_row(row_index, row, is_write=False)
-            QtWidgets.QApplication.processEvents()
+        # Clear value and status for selected rows before reading
+        if selected_rows:
+            for row_index, row in selected_rows:
+                self.model.update_row(row_index, emit_signal=False, value="", value_color=None)
+            self.model.dataChanged.emit()
+
+        self._start_process_thread(selected_rows, is_write=False)
 
     def _on_write_clicked(self) -> None:
         """点击“写入”：按勾选顺序处理每一行。"""
@@ -681,20 +702,47 @@ class DIDController(BaseController):
             if row.selected
         ]
         if not selected_rows:
-            MessageToast(self.view).show_toast("请先勾选需要写入的 DID", 2)
+            MessageToast(self.view).show_toast("请先勾选需要写入�� DID", 2)
             return
 
         if not self._device_service.get_doip_client():
              MessageToast(self.view).show_toast("请先连接设备 (DoIP)", 1)
              return
 
-        # Clear status for selected rows before writing (keeping value as it is the input)
-        for row_index, row in selected_rows:
-            self.model.update_row(row_index, value_color=None)
+        self.view.read_btn.setEnabled(False)
+        self.view.write_btn.setEnabled(False)
+        self.view.clear_btn.setEnabled(False)
 
-        for row_index, row in selected_rows:
-            self._process_did_row(row_index, row, is_write=True)
-            QtWidgets.QApplication.processEvents()
+        # Clear status for selected rows before writing
+        if selected_rows:
+            for row_index, row in selected_rows:
+                self.model.update_row(row_index, emit_signal=False, value_color=None)
+            self.model.dataChanged.emit()
+
+        self._start_process_thread(selected_rows, is_write=True)
+
+    def _start_process_thread(self, selected_rows, is_write: bool):
+        self._process_thread = DIDProcessThread(
+            selected_rows,
+            is_write,
+            self._resolve_dpt_params,
+            self._device_service,
+            self._dpt_service,
+            self._config_service,
+            self
+        )
+        self._process_thread.apply_update_signal.connect(lambda kwargs: self.model.apply_update(**kwargs))
+        self._process_thread.update_row_signal.connect(lambda idx, kwargs: self.model.update_row(idx, **kwargs))
+        self._process_thread.warn_signal.connect(lambda msg: MessageToast(self.view).show_toast(msg, 2))
+        self._process_thread.finished.connect(self._on_process_finished)
+        self._process_thread.start()
+
+    def _on_process_finished(self):
+        self.view.read_btn.setEnabled(True)
+        self.view.write_btn.setEnabled(True)
+        self.view.clear_btn.setEnabled(True)
+        self._process_thread.deleteLater()
+        self._process_thread = None
 
     def on_ecu_init_log(self, type_: str, message: str) -> None:
         """Handle log messages from ECUInitController."""
@@ -710,15 +758,43 @@ class DIDController(BaseController):
         # 视图层已处理显示/隐藏逻辑，此处可添加业务逻辑（如初始化数据）
         pass
 
+    def _format_log_html(self, log_entry: str) -> str:
+        color = "#374151" 
+        if "] TX" in log_entry:
+            color = "#2563EB"
+        elif "] RX" in log_entry:
+            color = "#059669"
+        elif "Error" in log_entry or "失败" in log_entry or "错误" in log_entry or "Fail" in log_entry:
+            color = "#DC2626"
+        elif "Warning" in log_entry or "警告" in log_entry:
+            color = "#D97706"
+        
+        log_escaped = log_entry.replace("<", "&lt;").replace(">", "&gt;")
+        return f'<span style="color: {color};">{log_escaped}</span>'
+
+    def _update_raw_text(self):
+        current_log_count = len(self.model.raw_log)
+        last_count = getattr(self, '_last_log_count', 0)
+
+        # Check if we should append incrementally
+        if current_log_count > last_count > 0:
+            for i in range(last_count, current_log_count):
+                self.view.raw_text.append(self._format_log_html(self.model.raw_log[i]))
+        else:
+            # Full replace if count decreased (cleared) or it's first update
+            self.view.raw_text.clear()
+            for line in self.model.raw_log:
+                self.view.raw_text.append(self._format_log_html(line))
+            self.view.raw_text.moveCursor(QtGui.QTextCursor.End)
+
+        self._last_log_count = current_log_count
 
     def on_model_changed(self):
         """模型更新时刷表格与原始数据显示。"""
         # 如果变更源自 View 自身的操作（如用户点击复选框），则无需反向刷新 View
         if self._is_handling_view_update:
             # 仅更新日志显示（如果需要），跳过表格重建
-            if self.view.raw_text.toPlainText() != self.model.raw_data:
-                self.view.raw_text.setText(self.model.raw_data)
-                self.view.raw_text.moveCursor(QtGui.QTextCursor.End)
+            self._update_raw_text()
             return
 
         # 针对编辑操作被回滚的问题：
@@ -729,7 +805,7 @@ class DIDController(BaseController):
             # 我们可以尝试只更新其他单元格。或者如果不紧急，暂时推迟更新？
             # 简单起见，如果正在编辑，我们暂缓自动刷新，除非行数变了这种大动作。
             # 但是如果读取操作返回了结果，我们需要显示结果。
-            # 如果读取操作返回结果，通常用户不是在编辑同一行。
+            # 如果读取操作返回结果，��常用户不是在编辑同一行。
 
             # 所以，diff update 策略配合 blockSignals 应该能保住编辑器？
             # 不，setItem 设置文本可能会导致编辑器关闭（如果是在同一个 cell）。
@@ -851,8 +927,7 @@ class DIDController(BaseController):
                 self.view.table.selectRow(current_row)
 
         # Update raw text log
-        self.view.raw_text.setText(self.model.raw_data)
-        self.view.raw_text.moveCursor(QtGui.QTextCursor.End)
+        self._update_raw_text()
 
     # 被移除的拖拽逻辑占位
     # def _on_row_moved_by_drag(self, from_row: int, to_row: int):
@@ -1181,7 +1256,7 @@ class DIDController(BaseController):
         # 触发 Model 更新信号
         # 注意：因为我们在 on_model_changed 中跳过了非结构性变更的 Rebuild，
         # 所以这里全选操作后，必须手动刷新 View，或者让 on_model_changed 知道需要强制刷新。
-        # 但既然我们现在修改了 model 中的对象，而 View 还持有旧状态（如果之前没有 rebuild），
+        # 但既然��们现在修改了 model 中的对象，而 View 还持有旧状态（如果之前没有 rebuild），
         # View 并不会自动变成 checked，因为 View 中的 Item 还没变。
         # 所以全选这种批量操作需要强制 Rebuild 或批量更新 View。
         self._rebuild_table()
@@ -1305,7 +1380,7 @@ class DIDController(BaseController):
             elif col == 6:
                 self.model.update_row(row, security_access=text)
             elif col == 7:
-                # Value 列直接使用表格项文本同步到模型
+                # Value 列直接使��表格项文本同步到模型
                 self.model.update_row(row, value=text)
 
             self._save_dids_to_file()
@@ -1422,5 +1497,4 @@ class DIDController(BaseController):
             return data, None
         except ValueError:
             return None, "Value 字段不是合法的十六进制字符串"
-
 

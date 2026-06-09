@@ -27,6 +27,42 @@ OFFLINE_ICON = "🟥"
 class DeviceView(BaseView):
     log_link_clicked = pyqtSignal(str)
 
+    def _open_settings(self, page_id: str):
+        main_win = self.window()
+        if main_win and hasattr(main_win, "show_settings_dialog"):
+            main_win.show_settings_dialog(page_id)
+            if hasattr(main_win, "settings_controller") and main_win.settings_controller:
+                from PyQt5 import QtCore
+                view = main_win.settings_controller.view
+                view.setWindowModality(QtCore.Qt.ApplicationModal)
+                view.setWindowFlags(view.windowFlags() | QtCore.Qt.WindowStaysOnTopHint)
+                view.show()
+                view.raise_()
+                view.activateWindow()
+
+    def _create_help_button(self, tooltip_text: str, btn_text: str):
+        btn = QtWidgets.QPushButton(btn_text)
+        btn.setToolTip(tooltip_text)
+        btn.setFixedHeight(24)
+        btn.setStyleSheet("""
+            QPushButton {
+                background-color: #E5E7EB;
+                color: #4B5563;
+                border-radius: 12px;
+                font-weight: bold;
+                font-size: 12px;
+                padding: 0px 10px;
+                border: none;
+            }
+            QPushButton:hover {
+                background-color: #D1D5DB;
+            }
+            QPushButton:pressed {
+                background-color: #9CA3AF;
+            }
+        """)
+        return btn
+
     def setup_ui(self):
         self.layout = QtWidgets.QVBoxLayout(self)
         self.layout.setSpacing(16)
@@ -37,15 +73,14 @@ class DeviceView(BaseView):
         # 统一维护设备表列索引与尺寸阈值，方便后期扩展。
         self._status_column = 7
         self._detail_column = 8
-        self._action_column = 9
-        self._column_ids = tuple(range(10))
+        self._column_ids = tuple(range(9))
         self._compact_action_threshold = 236
         self._compact_viewport_threshold = 1366
         self._input_widgets = []
         # 小屏下优先压缩详情，再压缩一般信息列；连接状态最后压缩，保证可读性。
-        self._column_shrink_priority = [8, 5, 6, 1, 3, 2, 4, 0, 9, 7]
+        self._column_shrink_priority = [8, 5, 6, 1, 3, 2, 4, 0, 7]
         # 有额外空间时优先补给连接状态与操作列，让关键操作更突出。
-        self._column_grow_priority = [7, 9, 8, 5, 3, 1, 6, 2, 4, 0]
+        self._column_grow_priority = [7, 8, 5, 3, 1, 6, 2, 4, 0]
 
         self._settings = QSettings("oneboxforgac", "device_management")
         self._column_settings_key = "device_table/column_widths_v1"
@@ -59,28 +94,28 @@ class DeviceView(BaseView):
         self._column_profiles = [
             {
                 "min_viewport": 1680,
-                "preferred_widths": {0: 56, 1: 140, 2: 96, 3: 150, 4: 82, 5: 160, 6: 124, 7: 176, 8: 240, 9: 286},
-                "min_widths": {0: 48, 1: 112, 2: 76, 3: 118, 4: 66, 5: 126, 6: 96, 7: 128, 8: 150, 9: 150},
+                "preferred_widths": {0: 56, 1: 140, 2: 96, 3: 150, 4: 82, 5: 160, 6: 124, 7: 176, 8: 300},
+                "min_widths": {0: 48, 1: 112, 2: 76, 3: 118, 4: 66, 5: 126, 6: 96, 7: 128, 8: 150},
             },
             {
                 "min_viewport": 1440,
-                "preferred_widths": {0: 52, 1: 126, 2: 88, 3: 136, 4: 76, 5: 146, 6: 114, 7: 160, 8: 208, 9: 244},
-                "min_widths": {0: 46, 1: 104, 2: 72, 3: 112, 4: 64, 5: 118, 6: 92, 7: 124, 8: 140, 9: 142},
+                "preferred_widths": {0: 52, 1: 126, 2: 88, 3: 136, 4: 76, 5: 146, 6: 114, 7: 160, 8: 250},
+                "min_widths": {0: 46, 1: 104, 2: 72, 3: 112, 4: 64, 5: 118, 6: 92, 7: 124, 8: 140},
             },
             {
                 "min_viewport": 1320,
-                "preferred_widths": {0: 46, 1: 110, 2: 76, 3: 118, 4: 68, 5: 126, 6: 94, 7: 170, 8: 128, 9: 180},
-                "min_widths": {0: 40, 1: 90, 2: 62, 3: 100, 4: 56, 5: 102, 6: 74, 7: 136, 8: 102, 9: 146},
+                "preferred_widths": {0: 46, 1: 110, 2: 76, 3: 118, 4: 68, 5: 126, 6: 94, 7: 170, 8: 200},
+                "min_widths": {0: 40, 1: 90, 2: 62, 3: 100, 4: 56, 5: 102, 6: 74, 7: 136, 8: 102},
             },
             {
                 "min_viewport": 1200,
-                "preferred_widths": {0: 46, 1: 108, 2: 76, 3: 116, 4: 68, 5: 126, 6: 96, 7: 156, 8: 126, 9: 170},
-                "min_widths": {0: 40, 1: 88, 2: 62, 3: 98, 4: 56, 5: 100, 6: 76, 7: 128, 8: 100, 9: 138},
+                "preferred_widths": {0: 46, 1: 108, 2: 76, 3: 116, 4: 68, 5: 126, 6: 96, 7: 156, 8: 180},
+                "min_widths": {0: 40, 1: 88, 2: 62, 3: 98, 4: 56, 5: 100, 6: 76, 7: 128, 8: 100},
             },
             {
                 "min_viewport": 0,
-                "preferred_widths": {0: 42, 1: 98, 2: 70, 3: 108, 4: 62, 5: 116, 6: 88, 7: 144, 8: 116, 9: 162},
-                "min_widths": {0: 38, 1: 82, 2: 60, 3: 92, 4: 52, 5: 94, 6: 72, 7: 120, 8: 96, 9: 132},
+                "preferred_widths": {0: 42, 1: 98, 2: 70, 3: 108, 4: 62, 5: 116, 6: 88, 7: 144, 8: 150},
+                "min_widths": {0: 38, 1: 82, 2: 60, 3: 92, 4: 52, 5: 94, 6: 72, 7: 120, 8: 96},
             },
         ]
 
@@ -93,66 +128,138 @@ class DeviceView(BaseView):
 
         # 输入区根据可用宽度自动分栏，小屏也不会挤压到不可见。
         input_group = QtWidgets.QGroupBox("添加设备")
-        self._input_grid = QtWidgets.QGridLayout()
-        self._input_grid.setSpacing(12)
+        input_vlayout = QtWidgets.QVBoxLayout(input_group)
+        input_vlayout.setSpacing(12)
 
-        def _create_input_field(label_text: str, widget: QtWidgets.QWidget):
-            container = QtWidgets.QWidget()
-            layout = QtWidgets.QHBoxLayout(container)
-            layout.setContentsMargins(0, 0, 0, 0)
-            layout.setSpacing(8)
-            label = QtWidgets.QLabel(label_text + "：")
-            label.setSizePolicy(QtWidgets.QSizePolicy.Fixed, QtWidgets.QSizePolicy.Fixed)
-            widget.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
-            layout.addWidget(label)
-            layout.addWidget(widget)
-            return container
-
-        self.ip_input = QtWidgets.QLineEdit()
-        self.port_input = QtWidgets.QLineEdit()
-        self.port_input.setText("22")
+        # 基本信息布局
+        base_info_layout = QtWidgets.QFormLayout()
         self.name_input = QtWidgets.QLineEdit()
+        self.type_input = QtWidgets.QComboBox()
+        self.type_input.addItems(["ECU", "网关", "域控", "其他"])
+        base_info_layout.addRow("设备名：", self.name_input)
+        base_info_layout.addRow("设备类型：", self.type_input)
+
+        # 协议配置Tabs
+        self.protocol_tabs = QtWidgets.QTabWidget()
+        
+        # DoIP Tab
+        self.doip_tab = QtWidgets.QWidget()
+        doip_layout = QtWidgets.QFormLayout(self.doip_tab)
+        doip_layout.setContentsMargins(16, 16, 16, 16)
+        self.doip_ip_input = QtWidgets.QLineEdit()
+        self.doip_ip_input.setPlaceholderText("例: 192.168.1.100")
+        self.doip_port_input = QtWidgets.QLineEdit("13400")
+        doip_layout.addRow("DoIP IP：", self.doip_ip_input)
+        doip_layout.addRow("DoIP 端口：", self.doip_port_input)
+
+        self.btn_doip_adv = self._create_help_button("Doip层高级配置", "DoIP ⚙")
+        self.btn_diag_adv = self._create_help_button("诊断层高级配置", "诊断 ⚙")
+        self.btn_doip_adv.clicked.connect(lambda: self._open_settings("doip"))
+        self.btn_diag_adv.clicked.connect(lambda: self._open_settings("diag_layer"))
+        doip_btn_layout = QtWidgets.QHBoxLayout()
+        doip_btn_layout.addWidget(QtWidgets.QLabel("高级配置："))
+        doip_btn_layout.addWidget(self.btn_doip_adv)
+        doip_btn_layout.addWidget(self.btn_diag_adv)
+        doip_btn_layout.addStretch()
+        doip_layout.addRow(doip_btn_layout)
+
+        # SomeIP Tab
+        self.someip_tab = QtWidgets.QWidget()
+        someip_layout = QtWidgets.QFormLayout(self.someip_tab)
+        someip_layout.setContentsMargins(16, 16, 16, 16)
+        self.someip_ip_input = QtWidgets.QLineEdit()
+        self.someip_ip_input.setPlaceholderText("选填，SomeIP 目标 IP")
+        self.multicast_ip_input = QtWidgets.QLineEdit("239.71.0.2")
+        self.multicast_port_input = QtWidgets.QLineEdit("30490")
+        self.vlan_id_input = QtWidgets.QLineEdit("4")
+        self.client_port_input = QtWidgets.QLineEdit("30813")
+        self.client_id_input = QtWidgets.QLineEdit("30813")
+        someip_layout.addRow("SomeIP IP：", self.someip_ip_input)
+        someip_layout.addRow("标准组播 IP：", self.multicast_ip_input)
+        someip_layout.addRow("标准组播端口：", self.multicast_port_input)
+        someip_layout.addRow("VLAN ID：", self.vlan_id_input)
+        someip_layout.addRow("客户端端口：", self.client_port_input)
+        someip_layout.addRow("客户端 ID：", self.client_id_input)
+
+        self.btn_someip_adv = self._create_help_button("someip高级配置", "SomeIP ⚙")
+        self.btn_someip_adv.clicked.connect(lambda: self._open_settings("someip"))
+        someip_btn_layout = QtWidgets.QHBoxLayout()
+        someip_btn_layout.addWidget(QtWidgets.QLabel("高级配置："))
+        someip_btn_layout.addWidget(self.btn_someip_adv)
+        someip_btn_layout.addStretch()
+        someip_layout.addRow(someip_btn_layout)
+
+        # SSH Tab
+        self.ssh_tab = QtWidgets.QWidget()
+        ssh_layout = QtWidgets.QFormLayout(self.ssh_tab)
+        ssh_layout.setContentsMargins(16, 16, 16, 16)
+        self.ssh_ip_input = QtWidgets.QLineEdit()
+        self.ssh_ip_input.setPlaceholderText("选填，若为空则同 DoIP IP")
+        self.ssh_port_input = QtWidgets.QLineEdit("22")
         self.user_input = QtWidgets.QLineEdit()
         self.password_input = QtWidgets.QLineEdit()
         self.password_input.setEchoMode(QtWidgets.QLineEdit.Password)
-        self.type_input = QtWidgets.QComboBox()
-        self.type_input.addItems(["ECU", "网关", "域控", "其他"])
+        ssh_layout.addRow("SSH IP：", self.ssh_ip_input)
+        ssh_layout.addRow("SSH 端口：", self.ssh_port_input)
+        ssh_layout.addRow("用户名：", self.user_input)
+        ssh_layout.addRow("密码：", self.password_input)
 
-        self.multicast_ip_input = QtWidgets.QLineEdit()
-        self.multicast_ip_input.setText("239.71.0.2")
-        self.multicast_port_input = QtWidgets.QLineEdit()
-        self.multicast_port_input.setText("30490")
-        self.vlan_id_input = QtWidgets.QLineEdit()
-        self.vlan_id_input.setText("4")
-        self.client_port_input = QtWidgets.QLineEdit()
-        self.client_port_input.setText("30813")
-        self.client_id_input = QtWidgets.QLineEdit()
-        self.client_id_input.setText("30813")
+        self.protocol_tabs.addTab(self.doip_tab, "DoIP")
+        self.protocol_tabs.addTab(self.someip_tab, "SomeIP")
+        self.protocol_tabs.addTab(self.ssh_tab, "SSH")
+
         self.add_btn = ModernButton("添加设备", "#0EA5E9", "➕")
         self.add_btn.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
 
-        self._input_widgets = [
-            _create_input_field("IP地址", self.ip_input),
-            _create_input_field("SSH端口", self.port_input),
-            _create_input_field("用户名", self.user_input),
-            _create_input_field("密码", self.password_input),
-            _create_input_field("设备名", self.name_input),
-            _create_input_field("设备类型", self.type_input),
-            _create_input_field("标准组播 IP", self.multicast_ip_input),
-            _create_input_field("标准组播端口", self.multicast_port_input),
-            _create_input_field("VLAN ID", self.vlan_id_input),
-            _create_input_field("客户端端口", self.client_port_input),
-            _create_input_field("客户端 ID", self.client_id_input),
-            self.add_btn,
-        ]
-        input_group.setLayout(self._input_grid)
-        content_layout.addWidget(input_group)
+        input_vlayout.addLayout(base_info_layout)
+        input_vlayout.addWidget(self.protocol_tabs)
+        input_vlayout.addWidget(self.add_btn)
+        input_vlayout.addStretch()
+
+        self.main_h_splitter = QtWidgets.QSplitter(_Qt.Horizontal)
+        input_group.setMinimumWidth(320)
+        self.main_h_splitter.addWidget(input_group)
+
+        right_panel = QtWidgets.QWidget()
+        right_layout = QtWidgets.QVBoxLayout(right_panel)
+        right_layout.setContentsMargins(0, 0, 0, 0)
+        right_layout.setSpacing(8)
+
+        # 顶部操作工具栏 (Toolbar)
+        toolbar_layout = QtWidgets.QHBoxLayout()
+        self.toolbar_doip_btn = ModernButton("连接 DoIP", "#10B981", "🔌")
+        self.toolbar_ssh_btn = ModernButton("连接 SSH", "#10B981", "🔌")
+        self.toolbar_someip_btn = ModernButton("连接 SomeIP", "#10B981", "🔌")
+
+        toolbar_layout.addWidget(self.toolbar_doip_btn)
+        toolbar_layout.addWidget(self.toolbar_ssh_btn)
+        toolbar_layout.addWidget(self.toolbar_someip_btn)
+        toolbar_layout.addSpacing(16)
+
+        self.toolbar_edit_btn = ModernButton("修改信息", "#3B82F6", "✏️")
+        self.toolbar_delete_btn = ModernButton("删除设备", "#EF4444", "🗑️")
+        self.toolbar_upgrade_btn = ModernButton("软件升级", "#6366F1", "⏫")
+        self.toolbar_query_btn = ModernButton("状态查询", "#0EA5E9", "🔍")
+
+        toolbar_layout.addWidget(self.toolbar_edit_btn)
+        toolbar_layout.addWidget(self.toolbar_upgrade_btn)
+        toolbar_layout.addWidget(self.toolbar_query_btn)
+        toolbar_layout.addWidget(self.toolbar_delete_btn)
+        toolbar_layout.addStretch()
+
+        self.toolbar_btns = (self.toolbar_doip_btn, self.toolbar_ssh_btn, self.toolbar_someip_btn,
+                             self.toolbar_edit_btn, self.toolbar_delete_btn, self.toolbar_upgrade_btn, self.toolbar_query_btn)
+        for btn in self.toolbar_btns:
+            btn.setEnabled(False)
+            btn.setFixedHeight(32)
+
+        right_layout.addLayout(toolbar_layout)
 
         # 表格宽度始终与视口一致，不依赖水平滚动条。
-        self.table = QtWidgets.QTableWidget(0, 10)
+        self.table = QtWidgets.QTableWidget(0, 9)
         self.table.setHorizontalHeaderLabels([
             "序号", "设备名", "设备类型", "IP地址", "SSH端口",
-            "标准组播 IP", "标准组播端口", "连接状态", "详情", "操作"
+            "标准组播 IP", "标准组播端口", "连接状态", "详情"
         ])
         self.table.verticalHeader().setVisible(False)
         self.table.setWordWrap(False)
@@ -169,17 +276,26 @@ class DeviceView(BaseView):
 
         hheader = self.table.horizontalHeader()
         hheader.setSectionResizeMode(HEADER_INTERACTIVE_MODE)
-        hheader.setStretchLastSection(False)
+        hheader.setStretchLastSection(True)
         hheader.setMinimumSectionSize(56)
 
         for column, width in self._default_column_widths(max(1280, self.width())).items():
-            self.table.setColumnWidth(column, width)
+            if column < 9:
+                self.table.setColumnWidth(column, width)
 
         self._restore_user_column_widths()
 
-        content_layout.addWidget(self.table)
+        right_layout.addWidget(self.table)
+        self.main_h_splitter.addWidget(right_panel)
+        self.main_h_splitter.setSizes([380, 1200])
+        self.main_h_splitter.setStretchFactor(0, 0)
+        self.main_h_splitter.setStretchFactor(1, 1)
+
+        content_layout.addWidget(self.main_h_splitter)
+
         self.table.horizontalHeader().sectionResized.connect(self._on_header_section_resized)
         self.table.viewport().installEventFilter(self)
+        self.table.itemSelectionChanged.connect(self._on_table_selection)
 
         log_group = QtWidgets.QGroupBox("操作日志")
         log_layout = QtWidgets.QVBoxLayout()
@@ -216,56 +332,55 @@ class DeviceView(BaseView):
         self._schedule_column_width_persist()
 
     def _should_use_compact_actions(self):
-        return self._should_use_compact_actions_for_width(self.table.viewport().width(), self.table.columnWidth(self._action_column))
+        return False
 
     def _should_use_compact_actions_for_width(self, viewport_width, action_width):
-        if not hasattr(self, "table"):
-            return False
-        return viewport_width <= self._compact_viewport_threshold or action_width <= self._compact_action_threshold
+        return False
 
     def _is_small_screen_layout(self, viewport_width):
         return viewport_width <= 1366
+
+    def _on_table_selection(self):
+        row = self.table.currentRow()
+        if not hasattr(self, "_current_devices") or row < 0 or row >= len(self._current_devices):
+            for btn in self.toolbar_btns:
+                btn.setEnabled(False)
+            return
+
+        for btn in self.toolbar_btns:
+            btn.setEnabled(True)
+
+        dev = self._current_devices[row]
+        doip_status = str(dev.get("doip_connect_status", "离线"))
+        ssh_status = str(dev.get("ssh_connect_status", "离线"))
+        someip_status = str(dev.get("someip_connect_status", "离线"))
+
+        doip_connected = "建链成功" in doip_status or "在线" in doip_status
+        ssh_connected = "建链成功" in ssh_status or "在线" in ssh_status
+        someip_connected = "建链成功" in someip_status or "在线" in someip_status
+
+        self.toolbar_doip_btn.setText("断开 DoIP" if doip_connected else "连接 DoIP")
+        self.toolbar_ssh_btn.setText("断开 SSH" if ssh_connected else "连接 SSH")
+        self.toolbar_someip_btn.setText("断开 SomeIP" if someip_connected else "连接 SomeIP")
+
+        # 根据状态更改按钮颜色
+        def _set_btn_color(btn, connected):
+            color = "#F59E0B" if connected else "#10B981"
+            # ModernButton 的颜色属性只在创建时生效，如需动态变色，可以重新设置 StyleSheet，但为了简单起见，文本已足够区分
 
     def _refresh_table_layout(self, resized_column=None):
         if not hasattr(self, "table") or self._table_layout_updating:
             return
         self._table_layout_updating = True
         try:
-            self._relayout_input_grid()
             self._apply_responsive_column_hints(resized_column)
             self._refresh_row_widgets()
         finally:
             self._table_layout_updating = False
 
     def _relayout_input_grid(self):
-        """根据当前可用宽度重排输入区，避免小屏幕下控件被压得不可见。"""
-        if not hasattr(self, "_input_grid") or not self._input_widgets:
-            return
-
-        width = max(self.width(), self.table.viewport().width(), 1)
-        if width >= 1780:
-            columns = 6
-        elif width >= 1480:
-            columns = 5
-        elif width >= 1260:
-            columns = 4
-        elif width >= 920:
-            columns = 3
-        elif width >= 720:
-            columns = 2
-        else:
-            columns = 1
-
-        while self._input_grid.count():
-            self._input_grid.takeAt(0)
-
-        for column in range(columns):
-            self._input_grid.setColumnStretch(column, 1)
-
-        for index, widget in enumerate(self._input_widgets):
-            row = index // columns
-            column = index % columns
-            self._input_grid.addWidget(widget, row, column)
+        """已改用Tab布局，无需动态调整grid。"""
+        pass
 
     def _apply_responsive_column_hints(self, resized_column=None):
         viewport_width = self.table.viewport().width()
@@ -293,21 +408,11 @@ class DeviceView(BaseView):
     def _default_column_widths(self, viewport_width):
         profile = self._current_column_profile(viewport_width)
         preferred_widths = dict(profile["preferred_widths"])
-        compact = self._should_use_compact_actions_for_width(viewport_width, preferred_widths[self._action_column])
-        if compact:
-            preferred_widths[self._action_column] = min(preferred_widths[self._action_column], 176)
-            preferred_widths[self._detail_column] = min(preferred_widths[self._detail_column], 132)
-            preferred_widths[self._status_column] = max(preferred_widths[self._status_column], 150)
         return preferred_widths
 
     def _column_min_widths_for_viewport(self, viewport_width):
         profile = self._current_column_profile(viewport_width)
         min_widths = dict(profile["min_widths"])
-        compact = self._should_use_compact_actions_for_width(viewport_width, min_widths[self._action_column])
-        if compact:
-            min_widths[self._action_column] = max(136, min(min_widths[self._action_column], 148))
-            min_widths[self._detail_column] = min(min_widths[self._detail_column], 104)
-            min_widths[self._status_column] = max(min_widths[self._status_column], 128)
         return min_widths
 
     def _target_column_widths(self, viewport_width):
@@ -391,22 +496,13 @@ class DeviceView(BaseView):
 
     def _refresh_row_widgets(self):
         compact = self._should_use_compact_actions()
-        action_min_width = self._column_min_widths_for_viewport(self.table.viewport().width())[self._action_column]
         for row in range(self.table.rowCount()):
-            action_widget = self.table.cellWidget(row, self._action_column)
-            if isinstance(action_widget, QtWidgets.QWidget):
-                if hasattr(action_widget, "set_compact_mode"):
-                    action_widget.set_compact_mode(compact)
-                target_width = max(112 if compact else action_min_width, self.table.columnWidth(self._action_column) - 8)
-                action_widget.resize(target_width, action_widget.height())
-                action_widget.updateGeometry()
-
             detail_widget = self.table.cellWidget(row, self._detail_column)
             if isinstance(detail_widget, QtWidgets.QWidget):
                 detail_widget.updateGeometry()
 
             heights = []
-            for col in (self._status_column, self._detail_column, self._action_column):
+            for col in (self._status_column, self._detail_column):
                 widget = self.table.cellWidget(row, col)
                 if isinstance(widget, QtWidgets.QWidget):
                     heights.append(widget.sizeHint().height())
@@ -420,8 +516,9 @@ class DeviceView(BaseView):
 
         设备字典中的连接状态与详情字段由上层逻辑填充，此处仅负责视图渲染。
         """
+        self._current_devices = devices
         self.table.setRowCount(len(devices))
-        compact_layout = self._should_use_compact_actions_for_width(self.table.viewport().width(), self.table.columnWidth(self._action_column))
+        compact_layout = self._should_use_compact_actions_for_width(self.table.viewport().width(), 100)
         detail_word_wrap = not self._is_small_screen_layout(self.table.viewport().width()) and not compact_layout
 
         def _create_status_row(protocol_name, status):
@@ -451,8 +548,9 @@ class DeviceView(BaseView):
         for row, dev in enumerate(devices):
             name = dev.get("name", "")
             dev_type = dev.get("type", "未知")
-            ip = dev.get("ip", "")
-            port = dev.get("port", dev.get("ssh_port", "22"))
+            
+            ip = dev.get("doip_ip") or dev.get("ip") or dev.get("ssh_ip") or dev.get("someip_ip", "")
+            port = dev.get("ssh_port", dev.get("port", "22"))
 
             ssh_status = str(dev.get("ssh_connect_status", "离线"))
             doip_status = str(dev.get("doip_connect_status", "离线"))
@@ -527,38 +625,9 @@ class DeviceView(BaseView):
 
             self.table.setCellWidget(row, self._detail_column, detail_widget)
 
-            action_widget = ResponsiveButtonFlowPanel(spacing=8, row_spacing=6, margins=(4, 4, 4, 4))
-            connect_btn = TableButton("连接设备", "#059669")
-            disconnect_btn = TableButton("断开连接", "#F59E0B")
-            edit_btn = TableButton("修改信息", "#3B82F6")
-            delete_btn = TableButton("删除设备", "#EF4444")
-            upgrade_btn = TableButton("软件升级", "#6366F1")
-            query_btn = TableButton("状态查询", "#0EA5E9")
+            # 操作列已移除，所有按钮在顶部工具栏中统一控制
 
-            button_text_pairs = [
-                (connect_btn, "连接设备", "连接", "connect"),
-                (disconnect_btn, "断开连接", "断开", "disconnect"),
-                (edit_btn, "修改信息", "修改", "edit"),
-                (delete_btn, "删除设备", "删除", "delete"),
-                (upgrade_btn, "软件升级", "升级", "upgrade"),
-                (query_btn, "状态查询", "查询", "query"),
-            ]
-            for btn, full_text, compact_text, action_key in button_text_pairs:
-                btn.setProperty("full_text", full_text)
-                btn.setProperty("compact_text", compact_text)
-                btn.setProperty("action_key", action_key)
-                btn.setObjectName(action_key)
-                btn.setToolTip(full_text)
-
-
-            for btn in (connect_btn, disconnect_btn, edit_btn, delete_btn, upgrade_btn, query_btn):
-                action_widget.add_button(btn)
-
-            action_widget.set_compact_mode(self._should_use_compact_actions())
-            action_widget.heightChanged.connect(self._refresh_table_layout)
-            self.table.setCellWidget(row, self._action_column, action_widget)
-            self.table.setRowHeight(row, max(70, action_widget.minimumSizeHint().height() + 8))
-
+        self._on_table_selection()
         self._refresh_table_layout()
 
     def _append_log_entry(self, text: str, *, link_text: str | None = None, link_target: str | None = None):
@@ -608,4 +677,6 @@ class DeviceView(BaseView):
         if url is None:
             return
         self.log_link_clicked.emit(url.toString())
+
+
 

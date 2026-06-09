@@ -37,12 +37,39 @@ class PerformanceStatusService:
 
     def collect_summary(self) -> dict:
         online, total = self._collect_device_counts()
+        protocol_status = self._collect_protocol_status()
         return {
             "cpu_percent": self._collect_cpu_percent(),
             "memory_usage": self._collect_memory_usage(),
             "device_online": online,
             "device_total": total,
+            "protocol_status": protocol_status,
         }
+
+    def _collect_protocol_status(self) -> dict:
+        status = {
+            "ssh": "离线",
+            "doip": "离线",
+            "someip": "离线",
+            "doip_device": None
+        }
+        if not self._device_model:
+            return status
+
+        from app.modules.device_management.models.device_model import ONLINE
+
+        devices = getattr(self._device_model, "devices", []) or []
+
+        for idx, d in enumerate(devices, start=1):
+            if d.get("ssh_connect_status") == ONLINE:
+                status["ssh"] = "在线"
+            if d.get("doip_connect_status") == ONLINE:
+                status["doip"] = "在线"
+                status["doip_device"] = str(d.get("id", idx))
+            if d.get("someip_connect_status") == ONLINE:
+                status["someip"] = "在线"
+
+        return status
 
     def _collect_cpu_percent(self) -> Optional[float]:
         # Prefer psutil when available; sample briefly to avoid returning 0.0 on first call

@@ -19,6 +19,8 @@ logger = logging.getLogger(__name__)
 
 class MainController(BaseController):
 
+    dpt_status_signal = QtCore.pyqtSignal(str, str)
+
     SEARCH_DEBOUNCE_MS = 300
     PERFORMANCE_POLL_MS = 3000
     LICENSE_MONITOR_INTERVAL_MS = 30_000
@@ -42,12 +44,18 @@ class MainController(BaseController):
         self._active_workers = []
         self._license_warning_marker: str = ""
         self._license_locked: bool = False
+        self._last_dpt_toast_key: str = ""
+        self._dpt_toasts = []
+        self.dpt_status_signal.connect(self._handle_dpt_status_main_thread)
         self._init_ui()
         self._init_search()
         self._init_navigation()
         self._init_device_metrics_source()
         self._init_performance_monitor()
         self._init_license_guard()
+
+        # Ensure DPTService is initialized early so it can auto-load on startup
+        self._init_dpt_service()
 
         self.device_service = di_container.resolve("DeviceService")
         # 如果获取不到(可能还未注册)，可以在init_dependencies中再试
@@ -231,6 +239,47 @@ class MainController(BaseController):
         license_page = getattr(settings_controller.view, "license_page", None)
         if license_page is not None and hasattr(license_page, "refresh_license_info"):
             license_page.refresh_license_info()
+
+    def _init_dpt_service(self) -> None:
+        from app.services.diagnostic.dpt_service import DPTService
+        dpt_service = di_container.resolve(DPTService)
+        if not dpt_service:
+            dpt_service = DPTService()
+            di_container.register_singleton(DPTService, dpt_service)
+        dpt_service.add_status_callback(self._on_dpt_status)
+        status, message = dpt_service.get_current_status()
+        if status in ("completed", "error"):
+            self.dpt_status_signal.emit(status, message)
+
+    def _on_dpt_status(self, status: str, message: str) -> None:
+        # Route to main thread to avoid QTimer crashes from worker thread
+        self.dpt_status_signal.emit(status, message)
+
+    def _handle_dpt_status_main_thread(self, status: str, message: str) -> None:
+        from app.common.ui.modern_widgets import MessageToast
+
+        if status not in ("completed", "error"):
+            return
+
+        toast_key = f"{status}|{message}"
+        if toast_key == self._last_dpt_toast_key:
+            return
+        self._last_dpt_toast_key = toast_key
+
+        def _show_toast_when_ready():
+            if not getattr(self, 'view', None) or not self.view.isVisible():
+                QtCore.QTimer.singleShot(500, _show_toast_when_ready)
+                return
+            toast = MessageToast(self.view)
+            toast.setAttribute(Qt.WA_DeleteOnClose, True)
+            self._dpt_toasts.append(toast)
+            toast.destroyed.connect(lambda _=None, t=toast: self._dpt_toasts.remove(t) if t in self._dpt_toasts else None)
+            if status == "completed":
+                toast.show_toast(message or "DPT 加载成功", 0)
+            elif status == "error":
+                toast.show_toast(message or "DPT 加载失败", 1)
+
+        QtCore.QTimer.singleShot(0, _show_toast_when_ready)
 
     # ----------------- 页面与Tab构建 -----------------
     def _build_pages(self) -> None:
@@ -479,7 +528,7 @@ class MainController(BaseController):
         QtCore.QThreadPool.globalInstance().start(worker)
 
     def _on_protocol_status_changed(self, device_data: dict):
-        # 协议状态变化可能影响"在线设备"计数，因此立即更新性能概要
+        # 协议状态变化可能影响"在线设备"计数，因此立即更新性能��要
         self._refresh_performance()
 
     # ----------------- 工具方法 -----------------
@@ -521,3 +570,5 @@ class _PerformanceWorker(QtCore.QRunnable):
         payload = self._service.collect_summary()
         self.signals.result.emit(payload)
         self.signals.finished.emit()
+
+

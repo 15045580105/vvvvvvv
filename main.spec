@@ -1,7 +1,7 @@
 # -*- mode: python ; coding: utf-8 -*-
 
 import os
-from PyInstaller.building.build_main import Analysis, PYZ, EXE
+from PyInstaller.building.build_main import Analysis, PYZ, EXE, COLLECT
 
 _spec_dir = os.path.abspath(os.getcwd())
 
@@ -9,7 +9,8 @@ _spec_dir = os.path.abspath(os.getcwd())
 # 如需临时覆盖，仍可通过环境变量 PYTHON32_HOME 指定。
 _default_python32_home = r"C:\Program Files (x86)\Python39-32"
 
-# 收集 32 位 Python 运行时到 onefile exe 内部（运行时解压到 sys._MEIPASS/runtime32）
+# 收集 32 位 Python 运行时到 onedir 安装目录内部（_internal/runtime32）。
+# 主程序仍使用 64 位 Python 运行时；runtime32 仅供需要加载 32 位 DLL 的子进程使用。
 _python32_home = os.environ.get("PYTHON32_HOME", _default_python32_home)
 
 
@@ -27,8 +28,23 @@ def _collect_dir_datas(src_root: str, dest_prefix: str):
 binaries = []
 datas = []
 
+_resources_dir = os.path.join(_spec_dir, "app", "resources")
+if os.path.exists(_resources_dir):
+    datas += _collect_dir_datas(_resources_dir, os.path.join("app", "resources"))
+
+_dpt_config = os.path.join(_spec_dir, "dpt_config.json")
+if os.path.exists(_dpt_config):
+    datas.append((_dpt_config, "."))
+
 if _python32_home and os.path.exists(_python32_home):
     datas += _collect_dir_datas(_python32_home, "runtime32")
+
+_runtime_hook = os.path.join(_spec_dir, "packaging", "pyinstaller_runtime_hook.py")
+runtime_hooks = [_runtime_hook] if os.path.exists(_runtime_hook) else []
+
+_icon_path = os.path.join(_spec_dir, "app", "resources", "images", "vcc_logo.ico")
+if not os.path.exists(_icon_path):
+    _icon_path = None
 
 
 a = Analysis(
@@ -39,20 +55,18 @@ a = Analysis(
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},
-    runtime_hooks=[],
+    runtime_hooks=runtime_hooks,
     excludes=[],
     noarchive=False,
-    optimize=0,
+    optimize=2,
 )
 pyz = PYZ(a.pure)
 
 exe = EXE(
     pyz,
     a.scripts,
-    a.binaries,
-    a.datas,
     [],
-    name='main',
+    name='VCC',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -65,8 +79,16 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon=['D:\\UID01728\\Downloads\\vcc_logo\\vcc_logo.ico'],
-    exclude_binaries=False,
+    icon=_icon_path,
+    exclude_binaries=True,
 )
 
-# onefile 模式：不使用 COLLECT（COLLECT 会生成 onedir 文件夹）
+coll = COLLECT(
+    exe,
+    a.binaries,
+    a.datas,
+    strip=False,
+    upx=True,
+    upx_exclude=[],
+    name='VCC',
+)

@@ -73,11 +73,11 @@ class SequenceWorker(QtCore.QThread):
                                         if key:
                                             # Construct new request: 27 <sub_func> <key>
                                             new_req = bytearray([0x27, sub_func]) + key
-                                            request = new_req.hex().upper()
+                                            request = new_req.hex(' ').upper()
 
                                             # Update UI with calculated key
                                             self.update_request_signal.emit(row_index, request)
-                                            self.log_signal.emit(f"计算Key成功 (Level {seed_level}): {key.hex().upper()}")
+                                            self.log_signal.emit(f"计算Key成功 (Level {seed_level}): {key.hex(' ').upper()}")
 
                                             # Remove used seed
                                             del self.seed_map[seed_level]
@@ -103,7 +103,7 @@ class SequenceWorker(QtCore.QThread):
                                     if sub_func % 2 != 0:
                                         seed = resp_bytes[2:]
                                         self.seed_map[sub_func] = seed
-                                        self.log_signal.emit(f"记录Seed (Level {sub_func}): {seed.hex().upper()}")
+                                        self.log_signal.emit(f"记录Seed (Level {sub_func}): {seed.hex(' ').upper()}")
                             except Exception:
                                 pass
 
@@ -144,12 +144,13 @@ class SequenceWorker(QtCore.QThread):
             payload = bytes.fromhex(req_hex)
 
             # Use DeviceService to send payload (it handles timeout from config)
-            resp = self.device_service.send_doip_payload(payload, timeout=timeout)
+            resp = self._device_service.send_doip_payload(payload, timeout=timeout)
+
 
             if resp is None:
                 return "No Response"
 
-            return resp.hex().upper()
+            return resp.hex(' ').upper()
         except Exception as e:
             return f"Error: {str(e)}"
 
@@ -179,7 +180,7 @@ class BatchSendWorker(QtCore.QThread):
 
                     resp_str = "No Response"
                     if resp is not None:
-                        resp_str = resp.hex().upper()
+                        resp_str = resp.hex(' ').upper()
 
                     self.log_signal.emit(f"RX: {resp_str}")
                 except Exception as e:
@@ -234,6 +235,10 @@ class UDSSequenceController(BaseController):
         self.view.command_selected.connect(self._on_command_selected)
         self.view.table_data_changed.connect(self._on_table_data_changed)
 
+        # Search bindings
+        self.view.search_btn.clicked.connect(self._on_search_clicked)
+        self.view.search_input.returnPressed.connect(self._on_search_clicked)
+
         # Load initial config names
         self.view.update_config_list(self.model.get_config_names())
         self._on_config_load_requested("默认")
@@ -244,23 +249,102 @@ class UDSSequenceController(BaseController):
         self.tester_present_mode = "80" # Default 3E 80
 
     def _on_table_data_changed(self):
-        """Auto-save current configuration when table data changes."""
-        if self.is_loading:
-            return
-        if self.current_config_name:
+        if self.current_config_name == "默认":
+            # auto save when default
             data = self.view.get_table_data()
             self.model.save_config(self.current_config_name, data)
 
-    # --- Signal handlers ---
+    def _on_search_clicked(self):
+        """Handle search button clicked or Enter pressed in UDS module."""
+        text = self.view.search_input.text().strip().lower()
+        if not text:
+            return
+
+        start_row = 0
+        current_rows = self.view.data_table.selectionModel().selectedRows()
+        if current_rows:
+            start_row = current_rows[-1].row() + 1 # Search from next row
+
+        row_count = self.view.data_table.rowCount()
+        found_row = -1
+
+        # Search downward
+        for i in range(start_row, row_count):
+            if self._match_row(i, text):
+                found_row = i
+                break
+
+        # Wrap around
+        if found_row == -1 and start_row > 0:
+            for i in range(0, start_row):
+                if self._match_row(i, text):
+                    found_row = i
+                    break
+
+        if found_row != -1:
+            self.view.data_table.scrollToItem(self.view.data_table.item(found_row, 0))
+            self._highlight_search_row(found_row)
+        else:
+            from app.common.ui.modern_widgets import MessageToast
+            MessageToast(self.view).show_toast("未找到匹配的指令或描述", 1)
+
+    def _match_row(self, row, text):
+        """Check if UDS Name (1), Request (2) or Response (4) matches text."""
+        for col in [1, 2, 4]:
+            item = self.view.data_table.item(row, col)
+            if item and text in item.text().lower():
+                return True
+        return False
+
+    def _highlight_search_row(self, row: int):
+        self.view.data_table.clearSelection()
+        self.view.data_table.selectRow(row)
+
+        orig_style = self.view.data_table.styleSheet()
+        if "#FDE047" not in orig_style:
+            self._normal_stylesheet = orig_style
+
+        # Add yellow highlight for selected items to only affect the selected row
+        new_style = getattr(self, "_normal_stylesheet", orig_style) + "\nQTableWidget::item:selected { background-color: #FDE047; color: #1F2937; }"
+        self.view.data_table.setStyleSheet(new_style)
+
+        if hasattr(self, "_highlight_timer"):
+            self._highlight_timer.stop()
+        else:
+            from PyQt5 import QtCore
+            self._highlight_timer = QtCore.QTimer()
+            self._highlight_timer.setSingleShot(True)
+            self._highlight_timer.timeout.connect(self._restore_highlight)
+
+        self._highlight_timer.start(1200)
+
+    def _restore_highlight(self):
+        if hasattr(self, "_normal_stylesheet"):
+            self.view.data_table.setStyleSheet(self._normal_stylesheet)
+
     def _on_add_command_requested(self, code: str):
-        node, _ = self.model.find_node_by_code(code)
-        if node:
-            name = node.get('name', '')
-            cn = NAME_CN.get(name)
-            display_name = f"{name} ({cn})" if cn else name
-            request = ' '.join(code.split('.'))
-            self.view.append_table_row(display_name, request, "")
-            self.view.log_message(f"添加指令: {code} {display_name}")
+        # find the command config
+        cmd = self.model.get_command(code)
+        if cmd is not None:
+            # enable editor and set placeholders using human readable name
+            display = f"{code} {cmd.get('name')}" if cmd.get('name') else code
+            self.view.set_editor_enabled(True)
+            self.view.set_placeholders(display)
+
+            # Fill the request field automatically: '10' -> '10', '10.01' -> '10 01'
+            request_text = ' '.join(code.split('.'))
+            try:
+                # QTextEdit: setPlainText to place the code into the editor
+                self.view.request_edit.setPlainText(request_text)
+            except Exception:
+                # fallback: if view doesn't expose request_edit, use placeholder only
+                pass
+
+            # IMPORTANT: do NOT change/clear the right-hand table when clicking the tree.
+            # The table should remain under user control; only update editor placeholders and request text.
+        else:
+            # Don't clear the table on invalid selection — just disable editor inputs.
+            self.view.set_editor_enabled(False)
 
     def _on_insert_command_requested(self, code: str):
         node, _ = self.model.find_node_by_code(code)
@@ -279,34 +363,26 @@ class UDSSequenceController(BaseController):
             self.view.insert_table_row(current_row, display_name, request, "")
             self.view.log_message(f"插入指令: {code} {display_name}")
 
+    def _do_send_tester_present(self, cmd, timeout):
+        resp = self._send_uds_command(cmd, timeout=timeout)
+        # Log heartbeat response via signal/main thread safe way is needed?
+        # Actually view.log_message uses signal/slots internally if needed, or we should use QMetaObject.invokeMethod.
+        # But UDSSequenceView log_message does not use signals. So we just print or let the SequenceWorker handle it?
+        # A simple solution is to just suppress logs for heartbeat to avoid thread-safety issues with GUI unless error.
+        pass
+
     def _send_tester_present(self):
         # Send 3E <mode>
-        # This runs in main thread via QTimer, so it might block slightly but usually fast.
-        # If we are in a loop in _on_run_sequence_requested, processEvents handles this timer?
-        # Yes, processEvents will process timer events.
+        # Run in a background thread to prevent UI freezing
         cmd = f"3E {self.tester_present_mode}"
-
-        # Log heartbeat request
-        self.view.log_message(f"TX: {cmd} (Heartbeat)")
 
         # Use short timeout for 3E 80 (Suppress Positive Response)
         timeout = None
         if self.tester_present_mode == "80":
             timeout = 0.05
 
-        resp = self._send_uds_command(cmd, timeout=timeout)
-
-        # Log heartbeat response
-        if "Error" in resp:
-             # Log error if any (e.g. No Client)
-             # self.view.log_message(f"Error sending Heartbeat: {resp}")
-             pass
-        elif "No Response" in resp:
-             # Log no response if that's the case (common for 3E 80)
-             # self.view.log_message(f"RX: No Response (Heartbeat)")
-             pass
-        else:
-             self.view.log_message(f"RX: {resp} (Heartbeat)")
+        import threading
+        threading.Thread(target=self._do_send_tester_present, args=(cmd, timeout), daemon=True).start()
 
     def _on_run_sequence_requested(self, times: int):
         """Execute the checked instructions in the table sequentially."""
@@ -315,28 +391,14 @@ class UDSSequenceController(BaseController):
             self.view.log_message("序列为空，无法执行")
             return
 
-        if not self._device_service.get_doip_client():
-            self.view.log_message("错误: 未连接 DoIP 客户端")
-            # For testing without client, we might want to proceed or return
-            # return
+        if not self._device_service.get_doip_client() or not self._device_service.get_doip_client().is_connected():
+            from app.common.ui.modern_widgets import MessageToast
+            MessageToast(self.view).show_toast("请先连接设备 (DoIP)", 1)
+            self.view.log_message("Error: 未连接 DoIP 客户端")
+            return
 
-        # Get options
-        stop_on_fail = self.view.btn_stop_fail.isChecked()
-        self.tester_present_mode = "00" if self.view.btn_3e.isChecked() else "80"
-
-        self.view.log_message(f"开始执行序列，循环次数: {times}")
-        self.view.log_message(f"配置: 3E {self.tester_present_mode}, 遇错停止: {stop_on_fail}")
-
-        # Disable UI during execution to prevent modification
-        self.view.set_editor_enabled(False)
-        self.view.run_sequence_btn.setEnabled(False)
-
-        # Start Tester Present
-        self._send_tester_present()
-        self.tester_present_timer.start(2000) # 2 seconds
-
-        # Create and start worker
-        self.worker = SequenceWorker(self._device_service, data, times, stop_on_fail, self._config_service)
+        # Start execution thread
+        self.worker = SequenceWorker(self._device_service, data, times, True, self._config_service)
         self.worker.log_signal.connect(self.view.log_message)
         self.worker.update_row_signal.connect(self.view.update_row_response)
         self.worker.update_request_signal.connect(self.view.update_row_request)
@@ -352,21 +414,47 @@ class UDSSequenceController(BaseController):
         self.worker = None
 
     def _on_send_requested(self, request_data: str):
+        if not self._device_service.get_doip_client() or not self._device_service.get_doip_client().is_connected():
+            from app.common.ui.modern_widgets import MessageToast
+            MessageToast(self.view).show_toast("请先连接设备 (DoIP)", 1)
+            self.view.log_message("Error: 未连接 DoIP 客户端")
+            return
+
         if request_data:
             self.model.log += f"TX: {request_data}\n"
             self.view.log_message(f"TX: {request_data}")
 
-            # Actually send the command
-            resp = self._send_uds_command(request_data)
-            self.view.log_message(f"RX: {resp}")
+            self.view.set_editor_enabled(False)
+            self.view.run_sequence_btn.setEnabled(False)
+            QtWidgets.QApplication.processEvents()
 
-            # Update response field if it's a single send
-            try:
-                self.view.response_edit.setPlainText(resp)
-            except Exception:
-                pass
+            # Execute send in background thread
+            import threading
+            def bg_send():
+                try:
+                    resp = self._send_uds_command(request_data)
+                    # Safely update UI
+                    QtCore.QMetaObject.invokeMethod(self, "_on_single_send_finished",
+                                                    QtCore.Qt.QueuedConnection,
+                                                    QtCore.Q_ARG(str, resp))
+                except Exception as e:
+                    QtCore.QMetaObject.invokeMethod(self, "_on_single_send_finished",
+                                                    QtCore.Qt.QueuedConnection,
+                                                    QtCore.Q_ARG(str, f"Error: {str(e)}"))
+
+            threading.Thread(target=bg_send, daemon=True).start()
         else:
             self.view.log_message("请求数据为空，无法发送")
+
+    @QtCore.pyqtSlot(str)
+    def _on_single_send_finished(self, resp: str):
+        self.view.log_message(f"RX: {resp}")
+        try:
+            self.view.response_edit.setPlainText(resp)
+        except Exception:
+            pass
+        self.view.set_editor_enabled(True)
+        self.view.run_sequence_btn.setEnabled(True)
 
     def _on_insert_requested(self, response_data: str):
         if response_data:
@@ -405,18 +493,34 @@ class UDSSequenceController(BaseController):
         self.view.log_message(f"插入延迟: {d} ms")
 
     def _on_send_batch_requested(self, times: int):
-        """Send the current Request multiple times (as configured in the spinbox).
+        """Send the current Request multiple times using BatchSendWorker."""
+        if not self._device_service.get_doip_client() or not self._device_service.get_doip_client().is_connected():
+            from app.common.ui.modern_widgets import MessageToast
+            MessageToast(self.view).show_toast("请先连接设备 (DoIP)", 1)
+            self.view.log_message("Error: 未连接 DoIP 客户端")
+            return
 
-        This uses the existing _on_send_requested handler to keep logging/behavior consistent.
-        """
         req = self.view.get_request_text()
         if not req:
             self.view.log_message("请求数据为空，无法列表发送")
             return
+
         self.view.log_message(f"开始 列表发送 x{times}: {req}")
-        for i in range(times):
-            self._on_send_requested(req)
-        self.view.log_message(f"完成 列表发送 x{times}")
+
+        self.view.set_editor_enabled(False)
+        self.view.run_sequence_btn.setEnabled(False)
+        QtWidgets.QApplication.processEvents()
+
+        self.batch_worker = BatchSendWorker(self._device_service, req, times)
+        self.batch_worker.log_signal.connect(self.view.log_message)
+        self.batch_worker.finished_signal.connect(self._on_batch_send_finished)
+        self.batch_worker.start()
+
+    def _on_batch_send_finished(self):
+        self.view.set_editor_enabled(True)
+        self.view.run_sequence_btn.setEnabled(True)
+        self.view.log_message("完成 列表发送")
+        self.batch_worker = None
 
     def _on_command_selected(self, code: str):
         # code is like '10' or '10.01'
@@ -459,7 +563,7 @@ class UDSSequenceController(BaseController):
             if resp is None:
                 return "No Response"
 
-            return resp.hex().upper()
+            return resp.hex(' ').upper()
         except Exception as e:
             return f"Error: {str(e)}"
 
@@ -616,4 +720,3 @@ if __name__ == "__main__":
     v = UDSSequenceView(m)
     v.show()
     sys.exit(app.exec_())
-

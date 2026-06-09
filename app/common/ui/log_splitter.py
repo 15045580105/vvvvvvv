@@ -55,7 +55,13 @@ class LogAreaSplitter(QtWidgets.QSplitter):
 
         self.setStretchFactor(0, 1)
         self.setStretchFactor(1, 0)
-        self._initial_log_height = max(self._min_log_height, int(initial_log_height))
+        
+        self._initial_log_height_val = initial_log_height
+        if isinstance(initial_log_height, str) and initial_log_height.endswith('%'):
+            self._initial_log_height = self._min_log_height # Will be computed in _apply_sizes
+        else:
+            self._initial_log_height = max(self._min_log_height, int(initial_log_height))
+            
         self._initial_sizes_applied = False
         self._apply_initial_sizes(initial_log_height)
 
@@ -109,6 +115,14 @@ class LogAreaSplitter(QtWidgets.QSplitter):
         if self.count() < 2:
             return
         total = self._total_available_height()
+
+        if isinstance(log_height, str) and log_height.endswith('%'):
+            try:
+                ratio = float(log_height[:-1]) / 100.0
+                log_height = int(total * ratio)
+            except ValueError:
+                log_height = self._min_log_height
+
         handle_total = self._handle_total_height()
         usable_total = max(1, total - handle_total)
         log_height = self._clamp_log_height(log_height)
@@ -147,10 +161,15 @@ class LogAreaSplitter(QtWidgets.QSplitter):
             return
         if self._initial_sizes_applied:
             return
-        self._apply_sizes(self._initial_log_height or self._min_log_height)
+        val = getattr(self, '_initial_log_height_val', self._initial_log_height)
+        self._apply_sizes(val if val else self._min_log_height)
         self._initial_sizes_applied = True
 
     def set_initial_log_height(self, height):
-        self._initial_log_height = max(self._min_log_height, int(height))
+        self._initial_log_height_val = height
+        if isinstance(height, str) and height.endswith('%'):
+            self._initial_log_height = self._min_log_height
+        else:
+            self._initial_log_height = max(self._min_log_height, int(height))
         self._initial_sizes_applied = False
         QtCore.QTimer.singleShot(0, self._ensure_initial_sizes)

@@ -82,7 +82,7 @@ class AppConfigController(BaseController):
         self.view.window_shown.connect(self.on_model_changed)  # Refresh UI on show
 
         # Register status callback
-        self.dpt_status_signal.connect(self.handle_dpt_status)
+        self.dpt_status_signal.connect(self._handle_dpt_status_with_popup)
         self.ecu_config_loaded_signal.connect(self.on_ecu_config_loaded)
 
         # Delay heavy initialization
@@ -117,6 +117,13 @@ class AppConfigController(BaseController):
         self.view.doip_page.update_ui(self.model.doip_settings)
         self.view.someip_page.load_settings(self.model.someip_settings)
 
+        # update DPT status display based on current service status
+        dpt_service = di_container.resolve(DPTService)
+        if dpt_service:
+            status, message = dpt_service.get_current_status()
+            if status:
+                self.handle_dpt_status(status, message)
+
         # Load ECU config if path exists
         ecu_config_path = self.model.diag_layer_settings.get("ecu_config_path")
         if ecu_config_path and os.path.exists(ecu_config_path):
@@ -146,6 +153,7 @@ class AppConfigController(BaseController):
             if not dpt_service:
                 dpt_service = DPTService()
                 di_container.register_singleton(DPTService, dpt_service)
+                dpt_service.add_status_callback(self._on_dpt_status)
 
             try:
                 dpt_service.load_from_file(dpt_file, persist=False)
@@ -196,9 +204,19 @@ class AppConfigController(BaseController):
         pending = getattr(self.view, "_pending_all_settings", None)
         if isinstance(pending, dict) and pending:
             try:
+                old_dpt_file = self.model._config_service.doip_settings.get("dpt_file", "")
+
                 self.model._config_service.update_all_settings(pending)
                 # Reload in-memory settings so other parts of the app can immediately use them
                 self.model._config_service.reload()
+
+                new_dpt_file = self.model._config_service.doip_settings.get("dpt_file", "")
+                if new_dpt_file and new_dpt_file != old_dpt_file:
+                    from app.services.diagnostic.dpt_service import DPTService
+                    dpt_service = di_container.resolve(DPTService)
+                    if dpt_service:
+                        dpt_service.load_from_file(new_dpt_file, persist=False)
+
             except Exception as e:
                 print(f"[AppConfigController] Failed to persist settings: {e}")
         else:
@@ -253,6 +271,9 @@ class AppConfigController(BaseController):
 
     def _on_dpt_status(self, status, message):
         self.dpt_status_signal.emit(status, message)
+
+    def _handle_dpt_status_with_popup(self, status, message):
+        self.handle_dpt_status(status, message)
 
     def handle_dpt_status(self, status, message):
         if hasattr(self.view.doip_page, "set_dpt_status"):

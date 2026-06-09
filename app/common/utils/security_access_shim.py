@@ -140,7 +140,7 @@ def main():
 
         key_bytes = bytes(key_array[:key_len])
         # 使用特定前缀以便调用者提取
-        print(f"KEY:{key_bytes.hex().upper()}")
+        print(f"KEY:{key_bytes.hex(' ').upper()}")
         sys.exit(0)
 
     except Exception as e:

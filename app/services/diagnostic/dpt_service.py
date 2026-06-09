@@ -426,6 +426,8 @@ class DPTService:
         self._current_path: Optional[str] = None
         self._loading = False
         self._status_callbacks = []
+        self._last_status: str = ""
+        self._last_message: str = ""
 
         # Load from config
         dpt_file = self._config_service.doip_settings.get("dpt_file")
@@ -442,6 +444,8 @@ class DPTService:
             self._status_callbacks.remove(callback)
 
     def _notify_status(self, status: str, message: str = ""):
+        self._last_status = status
+        self._last_message = message
         for cb in self._status_callbacks:
             try:
                 cb(status, message)
@@ -679,6 +683,10 @@ class DPTService:
 
     def is_ready(self) -> bool:
         return bool(self._parsers or self._parser or self._dtc_map)
+
+    def get_current_status(self) -> tuple[str, str]:
+        """Return the current status and message of the DPT service."""
+        return self._last_status, self._last_message
 
     def get_parser(self, did: str) -> Optional[DPTParser]:
         did_key = did.strip().upper().replace("0X", "")

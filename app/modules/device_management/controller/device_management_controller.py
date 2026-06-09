@@ -19,6 +19,152 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 logger = logging.getLogger(__name__)
 
 
+class DeviceEditDialog(QtWidgets.QDialog):
+    def __init__(self, device, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("修改设备信息")
+        self.setMinimumWidth(400)
+
+        layout = QtWidgets.QVBoxLayout(self)
+
+        tabs = QtWidgets.QTabWidget()
+
+        # 基本信息 Tab
+        base_tab = QtWidgets.QWidget()
+        base_layout = QtWidgets.QFormLayout(base_tab)
+        self.name_input = QtWidgets.QLineEdit(device.get("name", ""))
+        self.type_input = QtWidgets.QComboBox()
+        self.type_input.addItems(["ECU", "网关", "域控", "其他"])
+        self.type_input.setCurrentText(device.get("type", "ECU"))
+        base_layout.addRow("设备名：", self.name_input)
+        base_layout.addRow("设备类型：", self.type_input)
+        tabs.addTab(base_tab, "基本功能")
+
+        # DoIP Tab
+        doip_tab = QtWidgets.QWidget()
+        doip_layout = QtWidgets.QFormLayout(doip_tab)
+        self.doip_ip_input = QtWidgets.QLineEdit(device.get("doip_ip", ""))
+        self.doip_port_input = QtWidgets.QLineEdit(str(device.get("doip_port", "13400")))
+        doip_layout.addRow("DoIP IP：", self.doip_ip_input)
+        doip_layout.addRow("DoIP 端口：", self.doip_port_input)
+
+        def create_help_button(tooltip_text, btn_text):
+            btn = QtWidgets.QPushButton(btn_text)
+            btn.setToolTip(tooltip_text)
+            btn.setFixedHeight(24)
+            btn.setStyleSheet("""
+                QPushButton {
+                    background-color: #E5E7EB;
+                    color: #4B5563;
+                    border-radius: 12px;
+                    font-weight: bold;
+                    font-size: 12px;
+                    padding: 0px 10px;
+                    border: none;
+                }
+                QPushButton:hover {
+                    background-color: #D1D5DB;
+                }
+                QPushButton:pressed {
+                    background-color: #9CA3AF;
+                }
+            """)
+            return btn
+
+        doip_btn_layout = QtWidgets.QHBoxLayout()
+        self.btn_doip_adv = create_help_button("Doip层高级配置", "DoIP ⚙")
+        self.btn_doip_adv.clicked.connect(lambda: self._open_settings("doip"))
+        self.btn_diag_adv = create_help_button("诊断层高级配置", "诊断 ⚙")
+        self.btn_diag_adv.clicked.connect(lambda: self._open_settings("diag_layer"))
+        doip_btn_layout.addWidget(QtWidgets.QLabel("高级配置："))
+        doip_btn_layout.addWidget(self.btn_doip_adv)
+        doip_btn_layout.addWidget(self.btn_diag_adv)
+        doip_btn_layout.addStretch()
+        doip_layout.addRow(doip_btn_layout)
+
+        tabs.addTab(doip_tab, "DoIP")
+
+        # SomeIP Tab
+        someip_tab = QtWidgets.QWidget()
+        someip_layout = QtWidgets.QFormLayout(someip_tab)
+        self.someip_ip_input = QtWidgets.QLineEdit(device.get("someip_ip", ""))
+        self.multicast_ip_input = QtWidgets.QLineEdit(device.get("multicast_ip", "239.71.0.2"))
+        self.multicast_port_input = QtWidgets.QLineEdit(str(device.get("multicast_port", "30490")))
+        self.vlan_id_input = QtWidgets.QLineEdit(str(device.get("vlan_id", "4")))
+        self.client_port_input = QtWidgets.QLineEdit(str(device.get("client_port", "30813")))
+        self.client_id_input = QtWidgets.QLineEdit(str(device.get("client_id", "30813")))
+        someip_layout.addRow("SomeIP IP：", self.someip_ip_input)
+        someip_layout.addRow("标准组播 IP：", self.multicast_ip_input)
+        someip_layout.addRow("标准组播端口：", self.multicast_port_input)
+        someip_layout.addRow("VLAN ID：", self.vlan_id_input)
+        someip_layout.addRow("客户端端口：", self.client_port_input)
+        someip_layout.addRow("客户端 ID：", self.client_id_input)
+
+        someip_btn_layout = QtWidgets.QHBoxLayout()
+        self.btn_someip_adv = create_help_button("someip高级配置", "SomeIP ⚙")
+        self.btn_someip_adv.clicked.connect(lambda: self._open_settings("someip"))
+        someip_btn_layout.addWidget(QtWidgets.QLabel("高级配置："))
+        someip_btn_layout.addWidget(self.btn_someip_adv)
+        someip_btn_layout.addStretch()
+        someip_layout.addRow(someip_btn_layout)
+
+        tabs.addTab(someip_tab, "SomeIP")
+
+        # SSH Tab
+        ssh_tab = QtWidgets.QWidget()
+        ssh_layout = QtWidgets.QFormLayout(ssh_tab)
+        self.ssh_ip_input = QtWidgets.QLineEdit(device.get("ssh_ip", ""))
+        self.ssh_port_input = QtWidgets.QLineEdit(str(device.get("ssh_port", "22")))
+        self.user_input = QtWidgets.QLineEdit(device.get("user", ""))
+        self.password_input = QtWidgets.QLineEdit(device.get("password", ""))
+        self.password_input.setEchoMode(QtWidgets.QLineEdit.Password)
+        ssh_layout.addRow("SSH IP：", self.ssh_ip_input)
+        ssh_layout.addRow("SSH 端口：", self.ssh_port_input)
+        ssh_layout.addRow("用户名：", self.user_input)
+        ssh_layout.addRow("密码：", self.password_input)
+        tabs.addTab(ssh_tab, "SSH")
+
+        layout.addWidget(tabs)
+
+        btns = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel)
+        btns.accepted.connect(self.accept)
+        btns.rejected.connect(self.reject)
+        layout.addWidget(btns)
+
+    def _open_settings(self, page_id: str):
+        main_win = self.parent().window() if self.parent() else None
+        if main_win and hasattr(main_win, "show_settings_dialog"):
+            main_win.show_settings_dialog(page_id)
+            if hasattr(main_win, "settings_controller") and main_win.settings_controller:
+                # 修复可能被模态对话框遮挡/无法点击的问题
+                from PyQt5 import QtCore
+                view = main_win.settings_controller.view
+                view.setWindowModality(QtCore.Qt.ApplicationModal)
+                view.setWindowFlags(view.windowFlags() | QtCore.Qt.WindowStaysOnTopHint)
+                view.show()
+                view.raise_()
+                view.activateWindow()
+
+    def get_data(self):
+        return {
+            "name": self.name_input.text().strip(),
+            "doip_ip": self.doip_ip_input.text().strip(),
+            "doip_port": int(self.doip_port_input.text().strip() or "13400"),
+            "someip_ip": self.someip_ip_input.text().strip(),
+            "multicast_ip": self.multicast_ip_input.text().strip(),
+            "multicast_port": self.multicast_port_input.text().strip(),
+            "vlan_id": self.vlan_id_input.text().strip(),
+            "client_port": self.client_port_input.text().strip(),
+            "client_id": self.client_id_input.text().strip(),
+            "ssh_ip": self.ssh_ip_input.text().strip(),
+            "ssh_port": int(self.ssh_port_input.text().strip() or "22"),
+            "user": self.user_input.text().strip(),
+            "password": self.password_input.text().strip(),
+            "ip": self.doip_ip_input.text().strip() or self.someip_ip_input.text().strip() or self.ssh_ip_input.text().strip(),
+            "port": int(self.ssh_port_input.text().strip() or "22"),
+        }
+
+
 class ConnectWorker(QThread):
     def __init__(self, service, device, log_signal=None, *, startup_auto_reconnect=False, reconnect=False, attempt_id=None):
         super().__init__()
@@ -101,6 +247,34 @@ class DeviceController(BaseController):
         self.device_service.protocol_status_changed_signal.connect(self._on_protocol_status_changed)
         # 重连请求信号
         self.device_service.reconnect_requested_signal.connect(self._on_reconnect_requested)
+
+        # 绑定工具栏按钮
+        self.view.toolbar_doip_btn.clicked.connect(lambda: self._handle_toolbar_action("doip"))
+        self.view.toolbar_ssh_btn.clicked.connect(lambda: self._handle_toolbar_action("ssh"))
+        self.view.toolbar_someip_btn.clicked.connect(lambda: self._handle_toolbar_action("someip"))
+        self.view.toolbar_edit_btn.clicked.connect(lambda: self._handle_toolbar_action("edit"))
+        self.view.toolbar_delete_btn.clicked.connect(lambda: self._handle_toolbar_action("delete"))
+        self.view.toolbar_upgrade_btn.clicked.connect(lambda: self._handle_toolbar_action("upgrade"))
+        self.view.toolbar_query_btn.clicked.connect(lambda: self._handle_toolbar_action("query"))
+
+    def _handle_toolbar_action(self, action: str):
+        row = self.view.table.currentRow()
+        if row < 0:
+            return
+        if action == "doip":
+            self._handle_protocol_action(row, "doip", self.view.toolbar_doip_btn.text())
+        elif action == "ssh":
+            self._handle_protocol_action(row, "ssh", self.view.toolbar_ssh_btn.text())
+        elif action == "someip":
+            self._handle_protocol_action(row, "someip", self.view.toolbar_someip_btn.text())
+        elif action == "edit":
+            self._do_edit(row)
+        elif action == "delete":
+            self._do_delete(row)
+        elif action == "upgrade":
+            self._do_upgrade(row)
+        elif action == "query":
+            self._do_query(row)
 
     def _on_reconnect_requested(self, device_info: dict, custom_log_signal=None):
         """处理来自 DeviceService 的重连请求"""
@@ -331,42 +505,55 @@ class DeviceController(BaseController):
 
     # -------------------- 设备添加 --------------------
     def _on_add_clicked(self):
-        ip = self.view.ip_input.text().strip()
-        port = self.view.port_input.text().strip() or "22"
-        user = self.view.user_input.text().strip()
-        password = self.view.password_input.text().strip()
         name = self.view.name_input.text().strip()
         dev_type = self.view.type_input.currentText()
 
-        # New fields from the view update
+        doip_ip = self.view.doip_ip_input.text().strip()
+        doip_port = self.view.doip_port_input.text().strip() or "13400"
+
+        someip_ip = self.view.someip_ip_input.text().strip()
         multicast_ip = self.view.multicast_ip_input.text().strip()
         multicast_port = self.view.multicast_port_input.text().strip()
         vlan_id = self.view.vlan_id_input.text().strip()
         client_port = self.view.client_port_input.text().strip()
         client_id = self.view.client_id_input.text().strip()
 
-        if not ip:
-            self.view.show_message("请输入IP地址", "warning")
+        ssh_ip = self.view.ssh_ip_input.text().strip()
+        ssh_port = self.view.ssh_port_input.text().strip() or "22"
+        user = self.view.user_input.text().strip()
+        password = self.view.password_input.text().strip()
+
+        if not name:
+            self.view.show_message("请输入设备名", "warning")
+            return
+        if not doip_ip and not ssh_ip and not someip_ip:
+            self.view.show_message("请至少输入一种协议的IP地址", "warning")
             return
 
         device = {
-            "ip": ip,
-            "port": int(port),
-            "user": user,
-            "password": password,
             "name": name,
             "type": dev_type,
+            "doip_ip": doip_ip,
+            "doip_port": int(doip_port),
+            "someip_ip": someip_ip,
             "multicast_ip": multicast_ip,
             "multicast_port": multicast_port,
             "vlan_id": vlan_id,
             "client_port": client_port,
             "client_id": client_id,
+            "ssh_ip": ssh_ip,
+            "ssh_port": int(ssh_port),
+            "user": user,
+            "password": password,
             "ssh_connect_status": "未连接",
             "doip_connect_status": "未连接",
             "someip_connect_status": "未连接",
             "ssh_connect_info": "",
             "doip_connect_info": "",
-            "someip_connect_info": ""
+            "someip_connect_info": "",
+            # Backward defaults mappings
+            "ip": doip_ip or someip_ip or ssh_ip,
+            "port": int(ssh_port),
         }
 
         # Use unpacking to pass dictionary items as arguments
@@ -376,289 +563,76 @@ class DeviceController(BaseController):
         self.on_model_changed()
 
     def _clear_inputs(self):
-        self.view.ip_input.clear()
-        self.view.port_input.setText("22")
-        self.view.user_input.clear()
-        self.view.password_input.clear()
         self.view.name_input.clear()
         self.view.type_input.setCurrentIndex(0)
 
+        self.view.doip_ip_input.clear()
+        self.view.doip_port_input.setText("13400")
+
+        self.view.someip_ip_input.clear()
         self.view.multicast_ip_input.setText("239.71.0.2")
         self.view.multicast_port_input.setText("30490")
         self.view.vlan_id_input.setText("4")
         self.view.client_port_input.setText("30813")
         self.view.client_id_input.setText("30813")
 
+        self.view.ssh_ip_input.clear()
+        self.view.ssh_port_input.setText("22")
+        self.view.user_input.clear()
+        self.view.password_input.clear()
+
     def on_model_changed(self):
         self.view.populate(self.model.devices)
         self._bind_row_buttons()
 
     def _bind_row_buttons(self):
-        """为当前表格中的每一行重新绑定操作按钮的信号。
+        pass
 
-        注意：视图中列序为：
-        0 序号 / 1 设备名 / 2 设备类型 / 3 IP / 4 端口 / 5 控制器IP / 6 控制器端口 / 7 连接状态 / 8 详情 / 9 操作
-        因此操作按钮容器位于列索引 9。
-        """
-        table = self.view.table
-        row_count = table.rowCount()
-        action_aliases = {
-            "连接设备": ("连接设备", "连接", "connect"),
-            "断开连接": ("断开连接", "断开", "disconnect"),
-            "修改信息": ("修改信息", "修改", "edit"),
-            "删除设备": ("删除设备", "删除", "delete"),
-            "软件升级": ("软件升级", "升级", "upgrade"),
-            "状态查询": ("状态查询", "查询", "query"),
-        }
-        for row in range(row_count):
-            action_widget = table.cellWidget(row, 9)  # 修正为操作列索引 9
-            if not action_widget:
-                continue
-            buttons = {}
-            for child in action_widget.findChildren(QtWidgets.QAbstractButton):
-                keys = {
-                    child.text(),
-                    child.property("full_text"),
-                    child.property("compact_text"),
-                    child.property("action_key"),
-                    child.objectName(),
-                }
-                for key in keys:
-                    if key:
-                        buttons[str(key)] = child
-
-            def _resolve_button(action_name: str):
-                for alias in action_aliases.get(action_name, (action_name,)):
-                    if alias in buttons:
-                        return buttons[alias]
-                return None
-
-            connect_btn = _resolve_button("连接设备")
-            disconnect_btn = _resolve_button("断开连接")
-            edit_btn = _resolve_button("修改信息")
-            delete_btn = _resolve_button("删除设备")
-            upgrade_btn = _resolve_button("软件升级")
-            query_btn = _resolve_button("状态查询")
-
-            if connect_btn:
-                connect_btn.clicked.connect(lambda _, r=row: self._do_connect(r))
-            if disconnect_btn:
-                disconnect_btn.clicked.connect(lambda _, r=row: self._do_disconnect(r))
-            if edit_btn:
-                edit_btn.clicked.connect(lambda _, r=row: self._do_edit(r))
-            if delete_btn:
-                delete_btn.clicked.connect(lambda _, r=row: self._do_delete(r))
-            if upgrade_btn:
-                upgrade_btn.clicked.connect(lambda _, r=row: self._do_upgrade(r))
-            if query_btn:
-                query_btn.clicked.connect(lambda _, r=row: self._do_query(r))
-
-    def _do_edit(self, index: int):
-        """设备信息修改：仅当设备当前 SSH 状态为“离线”时允许修改。
-
-        可修改字段：设备名称、IP 地址、SSH 端口、用户名、密码；设备类型只读展示。
-        """
-        if self._guard_connect_sensitive_action("修改信息", index=index):
-            return
-
-        device = self.model.devices[index]
-        ssh_status = str(device.get("ssh_connect_status", OFFLINE))
-        doip_status = str(device.get("doip_connect_status", OFFLINE))
-        someip_status = str(device.get("someip_connect_status", OFFLINE))
-        # 所有协议都必须是离线或已断链才能建立连接
-        # FIX: "连接失败" also should be allowed to edit/delete
-        allowed = (OFFLINE, DISCONNECTED, CONNECT_FAILED, "连接失败") # Added CONNECT_FAILED and "连接失败"
-        if ssh_status not in allowed or doip_status not in allowed or someip_status not in allowed:
-            MessageToast(self.view).show_toast("仅在设备离线状态下允许修改信息", 1)
-            return
-
-        dialog = QtWidgets.QDialog(self.view)
-        dialog.setWindowTitle("修改设备信息")
-        form = QtWidgets.QFormLayout(dialog)
-
-        name_edit = QtWidgets.QLineEdit(device.get("name", ""))
-        ip_edit = QtWidgets.QLineEdit(device.get("ip", ""))
-        port_edit = QtWidgets.QLineEdit(str(device.get("port", 22)))
-        user_edit = QtWidgets.QLineEdit(device.get("user", ""))
-        pwd_edit = QtWidgets.QLineEdit(device.get("password", ""))
-        pwd_edit.setEchoMode(QtWidgets.QLineEdit.Password)
-        type_label = QtWidgets.QLabel(device.get("type", "其他"))
-
-        # 新增/修改字段
-        multicast_ip_edit = QtWidgets.QLineEdit(str(device.get("multicast_ip", "239.71.0.2")))
-        multicast_port_edit = QtWidgets.QLineEdit(str(device.get("multicast_port", "30490")))
-        vlan_id_edit = QtWidgets.QLineEdit(str(device.get("vlan_id", "4")))
-        client_port_edit = QtWidgets.QLineEdit(str(device.get("client_port", "30813")))
-        client_id_edit = QtWidgets.QLineEdit(str(device.get("client_id", "30813")))
-
-        form.addRow("设备名:", name_edit)
-        form.addRow("IP地址:", ip_edit)
-        form.addRow("SSH端口:", port_edit)
-        form.addRow("用户名:", user_edit)
-        form.addRow("密码:", pwd_edit)
-        form.addRow("设备类型(只读):", type_label)
-
-        form.addRow("标准组播 IP:", multicast_ip_edit)
-        form.addRow("标准组播端口:", multicast_port_edit)
-        form.addRow("VLAN ID:", vlan_id_edit)
-        form.addRow("客户端端口:", client_port_edit)
-        form.addRow("客户端 ID:", client_id_edit)
-
-        btn_box = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel)
-        form.addRow(btn_box)
-
-        btn_box.accepted.connect(dialog.accept)
-        btn_box.rejected.connect(dialog.reject)
-
-        if dialog.exec_() != QtWidgets.QDialog.Accepted:
-            return
-
-        name = name_edit.text().strip()
-        ip = ip_edit.text().strip()
-        port_text = port_edit.text().strip() or "22"
-        user = user_edit.text().strip()
-        pwd = pwd_edit.text().strip()
-
-        multicast_ip = multicast_ip_edit.text().strip()
-        multicast_port = multicast_port_edit.text().strip()
-        vlan_id = vlan_id_edit.text().strip()
-        client_port = client_port_edit.text().strip()
-        client_id = client_id_edit.text().strip()
-
-        if not name or not ip:
-            MessageToast(self.view).show_toast("设备名与IP不能为空", 1)
-            return
-        try:
-            port = int(port_text)
-        except ValueError:
-            MessageToast(self.view).show_toast("端口必须为数字", 1)
-            return
-
-        self.model.update_device(
-            index,
-            name=name, ip=ip, port=port, user=user, password=pwd,
-            multicast_ip=multicast_ip, multicast_port=multicast_port,
-            vlan_id=vlan_id, client_port=client_port, client_id=client_id
-        )
-        self._persist_devices()
-        self.on_model_changed()
-        self.view.append_log(f"修改设备信息 -> {self._device_repr(index)}")
-
-    def _device_repr(self, index):
-        d = self.model.devices[index]
-        return f"{d.get('name')} {d.get('ip')}:{d.get('port')}"
-
-    def _open_doip_settings(self):
-        window = self.view.window()
-        if window and hasattr(window, "show_settings_dialog"):
-            window.show_settings_dialog(page_id="doip", focus_target="network_interface")
-            self.view.append_log("已自动打开 软件设置 > DoIP 设置，并定位到网络接口配置")
-            return
-        self.view.append_log("未找到主窗口设置入口，请手动进入 软件设置 > DoIP 设置")
-
-    def _on_log_link_clicked(self, link_target: str):
-        if str(link_target or "").startswith("onebox://settings/doip"):
-            self._open_doip_settings()
-
-    # -------------------------------------连接/断开/删除等操作 -------------------------------------------------------------
-    def _is_connect_worker_running(self) -> bool:
-        return bool(self._active_connect_worker and self._active_connect_worker.isRunning())
-
-    def _guard_connect_sensitive_action(self, action_name: str, *, index: int | None = None) -> bool:
-        if not self._is_connect_worker_running():
-            return False
-
-        if index is not None and self._active_connect_index == index:
-            message = f"设备正在连接中，暂不允许{action_name}，可点击“断开连接”中断当前连接"
+    def _handle_protocol_action(self, index: int, protocol: str, btn_text: str):
+        if "断开" in btn_text:
+            self._do_disconnect_protocol(index, protocol)
         else:
-            target_text = self._device_repr(self._active_connect_index) if self._active_connect_index is not None else "当前设备"
-            message = f"{target_text} 正在连接中，暂不允许{action_name}，请等待完成或先点击“断开连接”"
+            self._do_connect_protocol(index, protocol)
 
-        MessageToast(self.view).show_toast(message, 1)
-        self.view.append_log(message)
-        return True
-
-    def _do_connect(self, index, log_signal=None, startup_auto_reconnect: bool = False, reconnect: bool = False):
-        _log = log_signal.emit if log_signal else self.view.append_log
-        if self._is_connect_worker_running():
-            if self._active_connect_index == index:
-                message = "该设备正在连接中，请勿重复点击连接设备，可点击“断开连接”中断当前连接"
-            else:
-                target_text = self._device_repr(self._active_connect_index) if self._active_connect_index is not None else "其他设备"
-                message = f"{target_text} 正在连接中，请等待完成或先点击“断开连接”"
-            _log(message)
-            if not log_signal:
-                MessageToast(self.view).show_toast(message, 1)
-            return
-
-        prefix = "启动自动重连" if startup_auto_reconnect else ("开始重连" if reconnect else "开始连接")
-        _log(f"{prefix} -> {self._device_repr(index)}")
+    def _do_connect_protocol(self, index: int, protocol: str):
         device = self.model.devices[index]
-        ssh_status = str(device.get("ssh_connect_status", OFFLINE))
-        doip_status = str(device.get("doip_connect_status", OFFLINE))
-        someip_status = str(device.get("someip_connect_status", OFFLINE))
-        allowed = (OFFLINE, DISCONNECTED, CONNECT_FAILED, "连接失败")
-        if (not startup_auto_reconnect) and (not reconnect) and (ssh_status not in allowed or doip_status not in allowed or someip_status not in allowed):
-            _log("仅在所有协议均为离线/已断链状态下可建立连接")
-            if not log_signal:
-                 MessageToast(self.view).show_toast("仅在所有协议均为离线/已断链状态下可建立连接", 1)
-            return
 
-        detail_text = "设备重连中，请稍候..." if reconnect else ("启动自动重连中，请稍候..." if startup_auto_reconnect else "设备连接中，请稍候...")
-        self._mark_device_connecting(index, detail_text)
-        attempt_id = self._next_connect_attempt_id(device)
-        device_copy = device.copy()
-        worker = ConnectWorker(
-            self.device_service,
-            device_copy,
-            log_signal=log_signal,
-            startup_auto_reconnect=startup_auto_reconnect,
-            reconnect=reconnect,
-            attempt_id=attempt_id,
-        )
-        worker.finished.connect(lambda w=worker: self._cleanup_worker(w))
-        self._workers.append(worker)
-        self._active_connect_worker = worker
-        self._active_connect_index = index
-        worker.start()
+        # 检查是否已有其他设备正在连接或已连接该协议
+        for i, d in enumerate(self.model.devices):
+            if i == index:
+                continue
+            status = str(d.get(f"{protocol}_connect_status", OFFLINE))
+            if self._is_connected_like_status(status) or "连接中" in status or status == CONNECTING:
+                protocol_name = protocol.upper()
+                msg = f"{protocol_name} 协议已有设备（{d.get('name', '未知')}）连接或正在连接，每个协议只允许有一个连接！\n如需连接当前设备，请先断开其连接。"
+                self.view.append_log(msg)
+                MessageToast(self.view).show_toast(msg, 2)
+                return
 
-    def _cleanup_worker(self, worker):
-        if getattr(worker, "startup_auto_reconnect", False):
-            self._startup_reconnect_device_key = None
-            self._startup_reconnect_failure_toast_shown = False
-        if worker is self._active_connect_worker:
-            self._active_connect_worker = None
-            self._active_connect_index = None
-        if worker in self._workers:
-            self._workers.remove(worker)
-        worker.deleteLater()
+        if protocol == "ssh":
+            doip_status = str(device.get("doip_connect_status", OFFLINE))
+            if "建链成功" not in doip_status and "在线" not in doip_status:
+                msg = "SSH 依赖 DoIP，请先连接 DoIP 并在其建链成功后再连接 SSH！"
+                self.view.append_log(msg)
+                MessageToast(self.view).show_toast(msg, 1)
+                return
 
-    def _do_disconnect(self, index):
-        if self._is_connect_worker_running():
-            if self._active_connect_index == index:
-                self.view.append_log(f"用户请求中断连接 -> {self._device_repr(index)}")
-                self._active_connect_worker.cancel(self.model.devices[index])
-                MessageToast(self.view).show_toast("正在中断连接，请稍候...", 0)
-            else:
-                MessageToast(self.view).show_toast("当前正在连接其他设备，请等待完成或先取消当前连接", 1)
-            return
+        # We pass connect_protocol as kwarg via device copy, or rely on service checking it.
+        # But actually to make it generic without massive refactor, we can pass kwargs via kwargs in do_connect.
+        self._do_connect(index, log_signal=None, reconnect=False, connect_protocol=protocol)
 
+    def _do_disconnect_protocol(self, index: int, protocol: str):
         device = self.model.devices[index]
-        device_key = self._device_key(device)
-        if device_key in self._disconnecting_device_keys:
-            MessageToast(self.view).show_toast("该设备正在断开中，请稍候...", 0)
-            return
-
-        self._disconnecting_device_keys.add(device_key)
-        self.view.append_log(f"开始断开连接 -> {self._device_repr(index)}")
-        MessageToast(self.view).show_toast("正在断开连接，请稍候...", 0)
+        self.view.append_log(f"断开 {protocol.upper()} -> {self._device_repr(index)}")
+        MessageToast(self.view).show_toast(f"正在断开 {protocol.upper()}，请稍候...", 0)
 
         def task():
-            return self.device_service.disconnect_device(device.copy())
+            return self.device_service.disconnect_device(device.copy(), disconnect_protocol=protocol)
 
         worker = Worker(task)
 
         def on_finished(result):
+            device_key = self._device_key(device)
             self._disconnecting_device_keys.discard(device_key)
             self._flush_pending_persist()
             self._flush_pending_view_refresh()
@@ -689,6 +663,27 @@ class DeviceController(BaseController):
         worker.start()
         self._workers.append(worker)
         worker.finished.connect(lambda: self._workers.remove(worker) if worker in self._workers else None)
+
+    def _is_connect_worker_running(self) -> bool:
+        return bool(self._active_connect_worker and self._active_connect_worker.isRunning())
+
+    def _guard_connect_sensitive_action(self, action_name: str, *, index: int | None = None) -> bool:
+        if not self._is_connect_worker_running():
+            return False
+
+        if index is not None and self._active_connect_index == index:
+            message = f"设备正在连接中，暂不允许{action_name}，可点击“断开连接”中断当前连接"
+        else:
+            target_text = self._device_repr(self._active_connect_index) if self._active_connect_index is not None else "当前设备"
+            message = f"{target_text} 正在连接中，暂不允许{action_name}，请等待完成或先点击“断开连接”"
+
+        MessageToast(self.view).show_toast(message, 1)
+        self.view.append_log(message)
+        return True
+
+    def _device_repr(self, index):
+        d = self.model.devices[index]
+        return f"{d.get('name')} {d.get('doip_ip') or d.get('ip')}:{d.get('doip_port') or d.get('port')}"
 
     def _do_delete(self, index):
         if self._guard_connect_sensitive_action("删除设备", index=index):
@@ -734,6 +729,74 @@ class DeviceController(BaseController):
             payload = {"device": device}
             self.switch_page.emit(payload, PageConfig.PAGE_TOPOLOGY_DISPLAY)
 
+    def _do_connect(self, index: int, log_signal=None, startup_auto_reconnect=False, reconnect=False, connect_protocol: str | None = None):
+        if self._guard_connect_sensitive_action("连接设备", index=index):
+            return
+
+        device = self.model.devices[index]
+        self._active_connect_index = index
+
+        detail_text = "启动阶段自动重连中，正在建立连接" if startup_auto_reconnect else ("自动重连..." if reconnect else "连接中...")
+        device_key = self._device_key(device)
+        self._disconnecting_device_keys.discard(device_key)
+
+        if connect_protocol:
+            device[f"{connect_protocol}_connect_status"] = CONNECTING
+            device[f"{connect_protocol}_connect_info"] = detail_text
+            self._persist_devices()
+            self.on_model_changed()
+        else:
+            self._mark_device_connecting(index, detail_text)
+
+        attempt_id = self._next_connect_attempt_id(device)
+
+        if not startup_auto_reconnect and not reconnect:
+            prefix = "单协议连接:" + connect_protocol.upper() if connect_protocol else "连接"
+            self.view.append_log(f"{prefix} -> {self._device_repr(index)}")
+            MessageToast(self.view).show_toast(f"正在{prefix}... 请稍候", 0)
+
+        device_copy = device.copy()
+        if connect_protocol:
+            device_copy["_connect_protocol"] = connect_protocol
+
+        worker = ConnectWorker(
+            self.device_service,
+            device_copy,
+            log_signal=log_signal,
+            startup_auto_reconnect=startup_auto_reconnect,
+            reconnect=reconnect,
+            attempt_id=attempt_id
+        )
+
+        def on_finished():
+            if self._active_connect_worker is worker:
+                self._active_connect_worker = None
+                self._active_connect_index = None
+
+        worker.finished.connect(on_finished)
+        self._active_connect_worker = worker
+        self._workers.append(worker)
+        worker.finished.connect(lambda: self._workers.remove(worker) if worker in self._workers else None)
+        worker.start()
+
+    def _do_edit(self, index: int):
+        if self._guard_connect_sensitive_action("编辑设备", index=index):
+            return
+        device = self.model.devices[index]
+
+        dialog = DeviceEditDialog(device, self.view)
+        if dialog.exec_() == QtWidgets.QDialog.Accepted:
+            new_data = dialog.get_data()
+            self.model.update_device(index, **new_data)
+            # In case model.update_device doesn't persist properly or blocks 'type', update explicitly if needed
+            self._persist_devices()
+            self.view.append_log(f"修改设备信息 -> {new_data.get('name')}")
+            MessageToast(self.view).show_toast("设备信息修改成功", 1)
+
+    def _on_log_link_clicked(self, url: str):
+        if url.startswith("onebox://settings/doip"):
+            from app.common.ui.constants import PageConfig
+            self.switch_page.emit({}, PageConfig.PAGE_COMMON_CONFIG_DISPLAY)
 
     def on_close(self):
         """在应用关闭或模块卸载时调用，断开所有设备连接并重置状态/详情。
