@@ -2,6 +2,7 @@ from PyQt5 import QtWidgets, QtCore, QtGui
 from PyQt5.QtCore import Qt
 
 from app.modules.app_config.controller.app_config_controller import AppConfigController
+from app.common.utils.resource_path import image_path
 from app.presentation.views.welcome_view import WelcomeWidget
 from app.common.ui.guide_overlay import GuideOverlay
 from app.presentation.views.common_service_convert_dialog import CommonServiceConvertDialog
@@ -138,7 +139,7 @@ class MainView(QtWidgets.QMainWindow):
 
         # Desay Logo & IC_STH Text (最左边)
         logo_label = QtWidgets.QLabel()
-        logo_path = "app/resources/images/desay_logo.jpg"
+        logo_path = image_path("desay_logo.jpg")
         logo_pixmap = QtGui.QPixmap(logo_path)
         if not logo_pixmap.isNull():
             logo_label.setPixmap(logo_pixmap.scaledToHeight(16, Qt.SmoothTransformation))

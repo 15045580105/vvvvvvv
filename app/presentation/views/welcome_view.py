@@ -1,6 +1,7 @@
 from PyQt5 import QtWidgets, QtGui
 from PyQt5.QtCore import Qt, pyqtSignal
 from app.common.ui.constants import PageConfig
+from app.common.utils.resource_path import image_path
 
 class WelcomeWidget(QtWidgets.QWidget):
 
@@ -66,7 +67,7 @@ class WelcomeWidget(QtWidgets.QWidget):
         subtitle_layout.setAlignment(Qt.AlignCenter)
 
         logo_label_wc = QtWidgets.QLabel()
-        logo_path_wc = "app/resources/images/desay_logo.jpg"
+        logo_path_wc = image_path("desay_logo.jpg")
         logo_pixmap_wc = QtGui.QPixmap(logo_path_wc)
         if not logo_pixmap_wc.isNull():
             logo_label_wc.setPixmap(logo_pixmap_wc.scaledToHeight(28, Qt.SmoothTransformation))

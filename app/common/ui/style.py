@@ -5,6 +5,13 @@
 @Time：2025/11/26 10:26
 @Department：PTV_AT
 """
+from app.common.utils.resource_path import image_path, qss_url
+
+
+ARROW_DOWN_URL = qss_url(image_path("arrow_down.svg"))
+ARROW_UP_URL = qss_url(image_path("arrow_up.svg"))
+
+
 APP_STYLE = """
 QMainWindow {
     background-color: #F9FAFB;
@@ -242,7 +249,7 @@ QComboBox::drop-down:hover, QDateTimeEdit::drop-down:hover, QDateEdit::drop-down
 }
 
 QComboBox::down-arrow {
-    image: url(app/resources/images/arrow_down.svg);
+    image: url(__ARROW_DOWN_URL__);
     width: 12px;
     height: 12px;
 }
@@ -270,13 +277,13 @@ QSpinBox::down-button, QDoubleSpinBox::down-button, QDateTimeEdit::down-button, 
 }
 
 QSpinBox::up-arrow, QDoubleSpinBox::up-arrow, QDateTimeEdit::up-arrow, QDateEdit::up-arrow, QTimeEdit::up-arrow {
-    image: url(app/resources/images/arrow_up.svg);
+    image: url(__ARROW_UP_URL__);
     width: 10px;
     height: 10px;
 }
 
 QSpinBox::down-arrow, QDoubleSpinBox::down-arrow, QDateTimeEdit::down-arrow, QDateEdit::down-arrow, QTimeEdit::down-arrow {
-    image: url(app/resources/images/arrow_down.svg);
+    image: url(__ARROW_DOWN_URL__);
     width: 10px;
     height: 10px;
 }
@@ -531,4 +538,4 @@ QTableCornerButton::section {
     border: 1px solid #E5E7EB;
     border-radius: 0px;
 }
-"""
+""".replace("__ARROW_DOWN_URL__", ARROW_DOWN_URL).replace("__ARROW_UP_URL__", ARROW_UP_URL)

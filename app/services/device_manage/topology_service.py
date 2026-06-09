@@ -8,6 +8,7 @@ import re
 import logging
 from PyQt5.QtCore import QObject, pyqtSignal, QMutex
 from app.modules.device_topology.controller.service_status_parser import SomeIpParser
+from app.core.dependency_injection import di_container
 from app.services.device_manage.device_service import DeviceService
 from app.services.diagnostic.dpt_service import DPTService
 from app.common.utils.worker import Worker
