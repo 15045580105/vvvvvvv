@@ -1,6 +1,7 @@
 import logging
 import os
 import paramiko
+import socket
 import threading
 import traceback
 from typing import Optional, Dict, Any
@@ -34,6 +35,8 @@ class SSHClient:
         self._port = 22
         self._username = None
         self._password = None
+        self.last_connect_error: Optional[str] = None
+        self.last_connect_exception: Optional[Exception] = None
         self._initialized = True
 
     def _build_disconnect_log(self, *, source: str, reason: str, include_stack: bool = False) -> str:
@@ -156,8 +159,66 @@ class SSHClient:
                 self._connected = True
             return True
 
+        except paramiko.AuthenticationException as e:
+            self.last_connect_error = f"认证失败(用户名/密码错误): {e}"
+            self.last_connect_exception = e
+            logger.warning(f"SSH连接失败: {self.last_connect_error}")
+            if client:
+                try:
+                    client.close()
+                except Exception:
+                    pass
+            with self._lock:
+                self._client = None
+                self._connected = False
+            return False
+
+        except paramiko.SSHException as e:
+            self.last_connect_error = f"SSH协议错误: {e}"
+            self.last_connect_exception = e
+            logger.warning(f"SSH连接失败: {self.last_connect_error}")
+            if client:
+                try:
+                    client.close()
+                except Exception:
+                    pass
+            with self._lock:
+                self._client = None
+                self._connected = False
+            return False
+
+        except socket.timeout as e:
+            self.last_connect_error = f"连接超时: {e}"
+            self.last_connect_exception = e
+            logger.warning(f"SSH连接失败: {self.last_connect_error}")
+            if client:
+                try:
+                    client.close()
+                except Exception:
+                    pass
+            with self._lock:
+                self._client = None
+                self._connected = False
+            return False
+
+        except ConnectionRefusedError as e:
+            self.last_connect_error = f"连接被拒绝(目标主机拒绝连接): {e}"
+            self.last_connect_exception = e
+            logger.warning(f"SSH连接失败: {self.last_connect_error}")
+            if client:
+                try:
+                    client.close()
+                except Exception:
+                    pass
+            with self._lock:
+                self._client = None
+                self._connected = False
+            return False
+
         except Exception as e:
-            print(f"SSH连接失败: {e}")
+            self.last_connect_error = f"{type(e).__name__}: {e}"
+            self.last_connect_exception = e
+            logger.warning(f"SSH连接失败: {self.last_connect_error}")
             if client:
                 try:
                     client.close()

@@ -343,23 +343,36 @@ class DeviceService(QObject):
         host: str,
         port: int,
         cancel_event: Optional[threading.Event] = None,
-        max_wait: float = 8.0,
-        probe_timeout: float = 0.8,
-        interval: float = 0.35,
+        max_wait: float = 15.0,
+        probe_timeout: float = 1.0,
+        interval: float = 0.5,
+        log_func=None,
     ) -> bool:
         """在短时间内轮询 SSH 端口是否就绪，避免 Paramiko 长时间阻塞。"""
-        deadline = time.monotonic() + max(0.5, max_wait)
+        _log = log_func or self._get_log_emit()
+        deadline = time.monotonic() + max(1.0, max_wait)
+        attempt = 0
+        last_error = None
+        _log(f"开始探测 SSH 端口 {host}:{port}（超时 {max_wait}s，探测间隔 {interval}s）")
         while time.monotonic() < deadline:
             if self._is_cancelled(cancel_event):
+                _log("SSH 端口探测已取消")
                 return False
+            attempt += 1
             try:
                 with socket.create_connection((host, port), timeout=probe_timeout):
+                    _log(f"SSH 端口 {host}:{port} 已就绪（第 {attempt} 次探测）")
                     return True
-            except OSError:
+            except OSError as e:
+                last_error = e
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     break
+                if attempt % 4 == 0 or remaining < 3.0:
+                    _log(f"SSH 端口 {host}:{port} 第 {attempt} 次探测未就绪: {e}，剩余 {remaining:.1f}s")
                 time.sleep(min(interval, remaining))
+        error_detail = f"，最后一次错误: {last_error}" if last_error else ""
+        _log(f"SSH 端口 {host}:{port} 探测超时（共 {attempt} 次尝试，等待 {max_wait}s{error_detail}）")
         return False
 
     def _is_doip_client_ready(self, client: Optional[DoIPClientHandler] = None) -> bool:
@@ -929,27 +942,41 @@ class DeviceService(QObject):
         if self._is_cancelled(cancel_event):
             return None
 
+        # 独立 SSH 按钮场景：必须先通过 DoIP 发送激活 SSH 报文后再建立 SSH 连接
+        _log("SSH 连接前置：通过 DoIP 发送激活 SSH 报文序列 (10 03 → 27 21 → 27 22 → 31 01 BE E9)")
         activation_result = self.active_ssh_command(log_signal=log_signal, cancel_event=cancel_event)
         if not activation_result:
-            _log("激活 SSH 指令未确认成功，将继续探测 SSH 端口")
+            msg = "激活 SSH 指令失败，DoIP 激活报文未收到正响应，无法继续连接 SSH。请检查 DoIP 连接是否正常。"
+            _log(msg)
+            device["ssh_connect_status"] = "连接失败"
+            device["ssh_connect_info"] = msg
+            return "", msg, 255
+        _log("激活 SSH 报文发送成功，开始探测 SSH 端口")
 
+        if self._is_cancelled(cancel_event):
+            return None
+
+        # SSH 服务启动通常需要一定时间，给予足够的探测等待时间
+        ssh_wait_timeout = max(float(timeout) * 2, 15.0)
         ssh_ready = self._wait_for_ssh_port(
             host,
             port,
             cancel_event,
-            float(timeout),
-            0.8,
-            0.35,
+            ssh_wait_timeout,
+            1.0,
+            0.5,
+            log_func=_log,
         )
         if self._is_cancelled(cancel_event):
             return None
         if not ssh_ready:
-            msg = f"SSH 端口 {port} 未就绪或连接超时"
+            msg = f"SSH 端口 {host}:{port} 在 {ssh_wait_timeout}s 内未就绪，请确认 SSH 服务是否已启动"
             _log(msg)
             device["ssh_connect_status"] = "连接失败"
             device["ssh_connect_info"] = msg
             return "", msg, 255
 
+        _log(f"SSH 端口已就绪，正在建立 SSH 连接 {host}:{port} (用户={username})")
         try:
             self._ssh_client = SSHClient()
             connect_kwargs = {
@@ -964,7 +991,7 @@ class DeviceService(QObject):
                 port,
                 username,
                 password,
-                min(float(timeout), 3.0),
+                min(float(timeout), 5.0),
                 **connect_kwargs,
             )
             if self._is_cancelled(cancel_event):
@@ -972,9 +999,16 @@ class DeviceService(QObject):
                 self._ssh_client = None
                 return None
             if not connect_result:
+                # 从 SSHClient 获取具体失败原因
+                last_err = getattr(self._ssh_client, 'last_connect_error', None) if self._ssh_client else None
+                if last_err:
+                    msg = f"SSH 连接失败: {last_err} ({host}:{port}, 用户={username})"
+                else:
+                    msg = f"SSH 建链失败或认证失败 ({host}:{port}, 用户={username})"
+                _log(msg)
                 device["ssh_connect_status"] = "连接失败"
-                device["ssh_connect_info"] = "SSH 建链失败或认证失败"
-                return "", "SSH 建链失败或认证失败", 255
+                device["ssh_connect_info"] = msg
+                return "", msg, 255
             device["ssh_connect_status"] = "建链成功"
             device["ssh_connect_info"] = f"SSH 已连接到 {host}:{port}"
             _log(f"SSH 已连接到 {host}:{port} | {self._format_connection_context_text()}")

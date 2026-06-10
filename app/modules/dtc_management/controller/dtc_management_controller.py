@@ -287,8 +287,8 @@ class DTCController(BaseController):
              MessageToast(self.view).show_toast("请先连接设备 (DoIP)", 1)
              return
 
-        # Disable UI elements
-        self.view.fault_table.setEnabled(False)
+        # Disable freeze read buttons to prevent repeated clicks
+        self.view.set_freeze_buttons_enabled(False)
         self.view.read_btn.setEnabled(False)
         self.view.clear_btn.setEnabled(False)
         QtWidgets.QApplication.processEvents()
@@ -305,6 +305,8 @@ class DTCController(BaseController):
 
             if resp:
                 self.log_message("RX", resp)
+                # 原始 RX hex 字符串作为冻结帧数据显示
+                raw_hex = " ".join([f"{b:02X}" for b in resp])
                 success, parsed_success, parsed_data = self.parse_freeze_frame_response(resp, dtc_code, dtc_entry[1])
 
                 if success:
@@ -315,16 +317,16 @@ class DTCController(BaseController):
                 else:
                     status_str = "读取失败"
 
-                self.view.update_freeze_read_status(row_index, status_str, parsed_data)
+                self.view.update_freeze_read_status(row_index, status_str, raw_hex)
 
                 # Update model persistence
-                self._update_dtc_freeze_status(dtc_code, status_str, parsed_data)
+                self._update_dtc_freeze_status(dtc_code, status_str, raw_hex)
             else:
                 self.view.append_log("冻结帧无响应")
                 self.view.update_freeze_read_status(row_index, "读取失败", "")
                 self._update_dtc_freeze_status(dtc_code, "读取失败", "")
         finally:
-            self.view.fault_table.setEnabled(True)
+            self.view.set_freeze_buttons_enabled(True)
             self.view.read_btn.setEnabled(True)
             self.view.clear_btn.setEnabled(True)
 
@@ -627,6 +629,8 @@ class DTCController(BaseController):
 
         self.model.dataChanged.emit()
         parsed_data = "; ".join(parsed_data_parts)
-        if not parsed_data_parts and not parsed_success:
+        # 如果没有解析出任何参数，视为解析失败
+        if not parsed_data_parts:
+            parsed_success = False
             parsed_data = "解析失败"
         return success, parsed_success, parsed_data

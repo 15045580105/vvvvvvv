@@ -23,6 +23,87 @@ SCROLLBAR_ALWAYS_OFF = _Qt.ScrollBarAlwaysOff if hasattr(_Qt, "ScrollBarAlwaysOf
 ONLINE_ICON = "🟩"
 OFFLINE_ICON = "🟥"
 
+# ---- 眼睛图标 SVG (feather-icons 风格) ----
+_EYE_OPEN_SVG = (
+    b'<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24"'
+    b' fill="none" stroke="#9CA3AF" stroke-width="2"'
+    b' stroke-linecap="round" stroke-linejoin="round">'
+    b'<path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/>'
+    b'<circle cx="12" cy="12" r="3"/></svg>'
+)
+_EYE_CLOSED_SVG = (
+    b'<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24"'
+    b' fill="none" stroke="#6B7280" stroke-width="2"'
+    b' stroke-linecap="round" stroke-linejoin="round">'
+    b'<path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94"/>'
+    b'<path d="M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19"/>'
+    b'<line x1="1" y1="1" x2="23" y2="23"/>'
+    b'<path d="M14.12 14.12a3 3 0 1 1-4.24-4.24"/></svg>'
+)
+
+
+def _load_eye_icon(svg_data, sz=18):
+    """加载 SVG 眼睛图标，返回 QIcon。如果 SVG 不可用则回退到 QPainter 绘制。"""
+    pm = QtGui.QPixmap(sz, sz)
+    pm.fill(QtGui.QColor("transparent"))
+    try:
+        if not pm.loadFromData(svg_data, "SVG"):
+            raise ValueError("SVG loadFromData failed")
+    except Exception:
+        from PyQt5.QtCore import QPointF
+        p = QtGui.QPainter(pm)
+        p.setRenderHint(QtGui.QPainter.Antialiasing)
+        pen = QtGui.QPen(QtGui.QColor("#9CA3AF"), 1.5)
+        p.setPen(pen)
+        p.setBrush(QtGui.QBrush(QtGui.QColor(0, 0, 0, 0)))
+        eye = QtGui.QPainterPath()
+        eye.moveTo(2, sz / 2)
+        eye.cubicTo(sz * 0.3, sz * 0.12, sz * 0.7, sz * 0.12, sz - 2, sz / 2)
+        eye.cubicTo(sz * 0.7, sz * 0.88, sz * 0.3, sz * 0.88, 2, sz / 2)
+        p.drawPath(eye)
+        p.drawEllipse(QPointF(sz / 2, sz / 2), 2.2, 2.2)
+        if b"line" in svg_data:
+            p.drawLine(3, 3, sz - 3, sz - 3)
+        p.end()
+    return QtGui.QIcon(pm)
+
+
+class PasswordLineEdit(QtWidgets.QLineEdit):
+    """带内嵌眼睛图标的密码输入框，点击眼睛切换明文/密文。"""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.setEchoMode(QtWidgets.QLineEdit.Password)
+        self._pw_visible = False
+        self.setStyleSheet("QLineEdit { padding-right: 30px; }")
+        # 眼睛切换按钮 (内嵌在输入框内部)
+        self._eye_btn = QtWidgets.QPushButton(self)
+        self._eye_btn.setFixedSize(22, 22)
+        self._eye_btn.setCursor(_Qt.PointingHandCursor)
+        self._eye_btn.setToolTip("显示/隐藏密码")
+        self._eye_btn.setFocusPolicy(_Qt.NoFocus)
+        self._eye_btn.setStyleSheet(
+            "QPushButton { background: transparent; border: none; padding: 2px; }"
+            "QPushButton:hover { background: rgba(0,0,0,0.06); border-radius: 3px; }"
+        )
+        self._eye_open = _load_eye_icon(_EYE_OPEN_SVG)
+        self._eye_closed = _load_eye_icon(_EYE_CLOSED_SVG)
+        self._eye_btn.setIcon(self._eye_open)
+        from PyQt5.QtCore import QSize
+        self._eye_btn.setIconSize(QSize(16, 16))
+        self._eye_btn.clicked.connect(self._toggle_visibility)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._eye_btn.move(self.width() - 28, (self.height() - 22) // 2)
+
+    def _toggle_visibility(self):
+        self._pw_visible = not self._pw_visible
+        self.setEchoMode(
+            QtWidgets.QLineEdit.Normal if self._pw_visible else QtWidgets.QLineEdit.Password
+        )
+        self._eye_btn.setIcon(self._eye_closed if self._pw_visible else self._eye_open)
+
 
 class DeviceView(BaseView):
     log_link_clicked = pyqtSignal(str)
@@ -197,8 +278,7 @@ class DeviceView(BaseView):
         self.ssh_ip_input.setPlaceholderText("选填，若为空则同 DoIP IP")
         self.ssh_port_input = QtWidgets.QLineEdit("22")
         self.user_input = QtWidgets.QLineEdit()
-        self.password_input = QtWidgets.QLineEdit()
-        self.password_input.setEchoMode(QtWidgets.QLineEdit.Password)
+        self.password_input = PasswordLineEdit()
         ssh_layout.addRow("SSH IP：", self.ssh_ip_input)
         ssh_layout.addRow("SSH 端口：", self.ssh_port_input)
         ssh_layout.addRow("用户名：", self.user_input)
@@ -342,6 +422,15 @@ class DeviceView(BaseView):
 
     def _on_table_selection(self):
         row = self.table.currentRow()
+        device_count = len(getattr(self, '_current_devices', []))
+
+        # 仅有一台设备时自动关联唯一设备，无需用户手动选中
+        if device_count == 1 and row < 0:
+            row = 0
+            self.table.blockSignals(True)
+            self.table.selectRow(0)
+            self.table.blockSignals(False)
+
         if not hasattr(self, "_current_devices") or row < 0 or row >= len(self._current_devices):
             for btn in self.toolbar_btns:
                 btn.setEnabled(False)
@@ -363,10 +452,17 @@ class DeviceView(BaseView):
         self.toolbar_ssh_btn.setText("断开 SSH" if ssh_connected else "连接 SSH")
         self.toolbar_someip_btn.setText("断开 SomeIP" if someip_connected else "连接 SomeIP")
 
-        # 根据状态更改按钮颜色
+        # 根据状态更改按钮颜色：断开用红色，连接用绿色
+        _COLOR_DISCONNECT = QtGui.QColor("#EF4444")
+        _COLOR_CONNECT = QtGui.QColor("#10B981")
+
         def _set_btn_color(btn, connected):
-            color = "#F59E0B" if connected else "#10B981"
-            # ModernButton 的颜色属性只在创建时生效，如需动态变色，可以重新设置 StyleSheet，但为了简单起见，文本已足够区分
+            btn.color = _COLOR_DISCONNECT if connected else _COLOR_CONNECT
+            btn.update_style()
+
+        _set_btn_color(self.toolbar_doip_btn, doip_connected)
+        _set_btn_color(self.toolbar_ssh_btn, ssh_connected)
+        _set_btn_color(self.toolbar_someip_btn, someip_connected)
 
     def _refresh_table_layout(self, resized_column=None):
         if not hasattr(self, "table") or self._table_layout_updating:

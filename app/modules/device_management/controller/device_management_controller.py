@@ -1,6 +1,6 @@
 import logging
 import threading
-from PyQt5 import QtWidgets
+from PyQt5 import QtWidgets, QtCore
 from PyQt5.QtCore import QThread, pyqtSignal, QTimer
 
 from app.common.ui.modern_widgets import MessageToast, ModernConfirmDialog
@@ -9,7 +9,7 @@ from app.core.base_controller import BaseController
 from app.core.dependency_injection import di_container
 from app.core.event_bus import event_bus
 from app.modules.device_management.models.device_model import DeviceModel, OFFLINE, DISCONNECTED, CONNECT_FAILED, CONNECTING
-from app.modules.device_management.views.device_management_view import DeviceView
+from app.modules.device_management.views.device_management_view import DeviceView, PasswordLineEdit
 from app.services.device_manage.device_service import DeviceService
 from app.services.system.config_service import ConfigService
 
@@ -116,8 +116,7 @@ class DeviceEditDialog(QtWidgets.QDialog):
         self.ssh_ip_input = QtWidgets.QLineEdit(device.get("ssh_ip", ""))
         self.ssh_port_input = QtWidgets.QLineEdit(str(device.get("ssh_port", "22")))
         self.user_input = QtWidgets.QLineEdit(device.get("user", ""))
-        self.password_input = QtWidgets.QLineEdit(device.get("password", ""))
-        self.password_input.setEchoMode(QtWidgets.QLineEdit.Password)
+        self.password_input = PasswordLineEdit(device.get("password", ""))
         ssh_layout.addRow("SSH IP：", self.ssh_ip_input)
         ssh_layout.addRow("SSH 端口：", self.ssh_port_input)
         ssh_layout.addRow("用户名：", self.user_input)
@@ -259,6 +258,9 @@ class DeviceController(BaseController):
 
     def _handle_toolbar_action(self, action: str):
         row = self.view.table.currentRow()
+        # 仅有一台设备时自动关联唯一设备，无需用户手动选中
+        if row < 0 and len(self.model.devices) == 1:
+            row = 0
         if row < 0:
             return
         if action == "doip":

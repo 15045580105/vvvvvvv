@@ -222,6 +222,10 @@ class DTCView(BaseView):
         header.setSectionResizeMode(QtWidgets.QHeaderView.Interactive)
         header.setSectionResizeMode(0, QtWidgets.QHeaderView.ResizeToContents)
         header.setSectionResizeMode(self.fault_table.columnCount() - 1, QtWidgets.QHeaderView.Stretch)
+        # 冻结帧状态列（第6列）和操作列（第7列）设置初始宽度确保文字/按钮显示完整
+        header.setMinimumSectionSize(50)
+        header.resizeSection(6, 150)
+        header.resizeSection(7, 110)
         header.setStretchLastSection(False)
         header.setSectionsClickable(True)
         header.setHighlightSections(True)
@@ -332,9 +336,9 @@ class DTCView(BaseView):
             4: 7,   # 长度
             5: 7,   # Byte
             6: 7,   # Bit
-            7: 18,  # 参数名称
-            8: 12,  # 数值
-            9: 9,   # 单位（最后一列填充）
+            7: 22,  # 参数名称
+            8: 16,  # 数值
+            9: 5,   # 单位（最后一列填充）
         }
         self._freeze_min_widths = {
             0: 110,
@@ -344,9 +348,9 @@ class DTCView(BaseView):
             4: 70,
             5: 70,
             6: 70,
-            7: 160,
-            8: 110,
-            9: 90,
+            7: 200,
+            8: 140,
+            9: 60,
         }
         self._freeze_widths_initialized = False
 
@@ -429,22 +433,11 @@ class DTCView(BaseView):
                 self.fault_table.setItem(r, 4, make_center(status_code))
                 self.fault_table.setItem(r, 5, make_center(fault_state))
 
-                # Freeze Status with Dot
-                status_widget = QtWidgets.QWidget()
-                status_layout = QtWidgets.QHBoxLayout(status_widget)
-                status_layout.setContentsMargins(5, 0, 5, 0)
-                status_layout.setAlignment(Qt.AlignCenter)
-
-                dot = QtWidgets.QLabel()
-                dot.setFixedSize(10, 10)
-                dot.setStyleSheet(f"background-color: {self._get_status_color(freeze_state)}; border-radius: 5px;")
-
-                lbl = QtWidgets.QLabel(freeze_state)
-                lbl.setStyleSheet("margin-left: 5px;")
-
-                status_layout.addWidget(dot)
-                status_layout.addWidget(lbl)
-                self.fault_table.setCellWidget(r, 6, status_widget)
+                # Freeze Status - 使用QTableWidgetItem自动裁剪避免溢出
+                status_item = QtWidgets.QTableWidgetItem(f"● {freeze_state}")
+                status_item.setTextAlignment(Qt.AlignCenter)
+                status_item.setForeground(QtGui.QColor(self._get_status_color(freeze_state)))
+                self.fault_table.setItem(r, 6, status_item)
 
                 # Operation Button
                 op_widget = QtWidgets.QWidget()
@@ -455,6 +448,24 @@ class DTCView(BaseView):
                 btn = QtWidgets.QPushButton("读取冻结帧")
                 btn.setCursor(QtGui.QCursor(Qt.PointingHandCursor))
                 btn.setProperty("row", r)
+                btn.setMinimumWidth(90)
+                btn.setStyleSheet("""
+                    QPushButton {
+                        background-color: #3B82F6;
+                        color: white;
+                        border: none;
+                        border-radius: 4px;
+                        padding: 4px 10px;
+                        font-size: 13px;
+                        font-family: "Microsoft YaHei";
+                    }
+                    QPushButton:hover { background-color: #2563EB; }
+                    QPushButton:pressed { background-color: #1D4ED8; }
+                    QPushButton:disabled {
+                        background-color: #CBD5E1;
+                        color: #94A3B8;
+                    }
+                """)
                 btn.clicked.connect(self.on_click_freeze_btn)
 
                 op_layout.addWidget(btn)
@@ -525,6 +536,9 @@ class DTCView(BaseView):
             self.freeze_table.setUpdatesEnabled(True)
             self.freeze_table.viewport().update()
 
+        # 数据加载后重新应用列宽
+        QtCore.QTimer.singleShot(0, lambda: self._apply_freeze_table_widths(force=True))
+
     def _get_status_color(self, text):
         color_map = {
             "未读取": "#94A3B8",
@@ -564,8 +578,18 @@ class DTCView(BaseView):
         self.search_changed_signal.emit(text)
 
     def on_filter_group_clicked(self, btn):
-        text = btn.text()
-        self.filter_changed_signal.emit(text)
+        # 根据点击的按钮发送对应的筛选标识
+        if btn == self.btn_filter_all:
+            filter_key = "all"
+        elif btn == self.btn_filter_curr:
+            filter_key = "current"
+        elif btn == self.btn_filter_hist:
+            filter_key = "history"
+        elif btn == self.btn_filter_pend:
+            filter_key = "pending"
+        else:
+            filter_key = "all"
+        self.filter_changed_signal.emit(filter_key)
 
     def on_click_freeze_btn(self):
         btn = self.sender()
@@ -573,6 +597,34 @@ class DTCView(BaseView):
             row = btn.property("row")
             if row is not None:
                 self.read_freeze_frame_signal.emit(row)
+
+    def update_freeze_read_status(self, row_index, status_str, freeze_data):
+        """更新指定行的冻结帧状态和数据"""
+        if row_index < 0 or row_index >= self.fault_table.rowCount():
+            return
+
+        # 更新冻结帧状态（第6列）- QTableWidgetItem自动裁剪不会溢出
+        status_item = self.fault_table.item(row_index, 6)
+        if status_item:
+            color = self._get_status_color(status_str)
+            status_item.setText(f"● {status_str}")
+            status_item.setForeground(QtGui.QColor(color))
+
+        # 更新冻结帧数据（第8列）
+        if freeze_data:
+            data_item = QtWidgets.QTableWidgetItem(freeze_data)
+            data_item.setTextAlignment(Qt.AlignCenter)
+            data_item.setToolTip(freeze_data)
+            self.fault_table.setItem(row_index, 8, data_item)
+
+    def set_freeze_buttons_enabled(self, enabled):
+        """启用/禁用所有冻结帧读取按钮"""
+        for row in range(self.fault_table.rowCount()):
+            op_widget = self.fault_table.cellWidget(row, 7)
+            if op_widget:
+                btn = op_widget.findChild(QtWidgets.QPushButton)
+                if btn:
+                    btn.setEnabled(enabled)
 
     def on_device_status_changed(self, is_connected):
         pass
@@ -596,11 +648,18 @@ class DTCView(BaseView):
         except Exception:
             pass
 
-        # 不再重算前面列宽，保持原有列宽/用户拖动结果；最后一列自动填满剩余空间
-        try:
-            header.resizeSection(0, self.fault_table.columnWidth(0))
-        except Exception:
-            pass
+        # 确保冻结帧状态列（第6列）和操作列（第7列）有足够宽度
+        if self.fault_table.columnCount() > 7:
+            if self.fault_table.columnWidth(6) < 150:
+                try:
+                    header.resizeSection(6, 150)
+                except Exception:
+                    pass
+            if self.fault_table.columnWidth(7) < 110:
+                try:
+                    header.resizeSection(7, 110)
+                except Exception:
+                    pass
 
     def _apply_freeze_table_widths(self, force: bool = False):
         if not hasattr(self, 'freeze_table') or not self.freeze_table:
@@ -614,51 +673,49 @@ class DTCView(BaseView):
         if total_width <= 0:
             return
 
-        last_col = column_count - 1
-        try:
-            for col in range(column_count):
-                header.setSectionResizeMode(col, QtWidgets.QHeaderView.Interactive)
-            header.setSectionResizeMode(last_col, QtWidgets.QHeaderView.Stretch)
-        except Exception:
-            pass
-
         if not force and self._freeze_widths_initialized:
             return
 
-        weights = self._freeze_column_weights
+        # 参数名称列(col 7)做Stretch填充剩余空间，单位列(col 9)固定窄宽度
+        stretch_col = 7   # 参数名称
+        unit_col = 9      # 单位
+        unit_width = 60   # 单位列固定宽度
+
         mins = self._freeze_min_widths
-        total_weight = sum(weights.get(col, 1) for col in range(column_count))
-
-        widths = {}
-        used = 0
-        for col in range(column_count - 1):
-            weight = weights.get(col, 1)
-            target = int(total_width * weight / total_weight)
-            width = max(mins.get(col, 70), target)
-            widths[col] = width
-            used += width
-
-        remaining = total_width - used
-        last_min = mins.get(last_col, 80)
-        if remaining < last_min:
-            deficit = last_min - remaining
-            shrink_candidates = [1, 7, 8, 2, 3, 0, 4, 5, 6]
-            for col in shrink_candidates:
-                if deficit <= 0 or col not in widths:
-                    break
-                current = widths[col]
-                min_width = mins.get(col, 70)
-                reducible = max(0, current - min_width)
-                if reducible <= 0:
-                    continue
-                reduce_by = min(deficit, reducible)
-                widths[col] = current - reduce_by
-                used -= reduce_by
-                deficit -= reduce_by
 
         try:
-            for col, width in widths.items():
-                self.freeze_table.setColumnWidth(col, width)
+            # 所有列先设为Interactive
+            for col in range(column_count):
+                header.setSectionResizeMode(col, QtWidgets.QHeaderView.Interactive)
+            # 参数名称列做Stretch
+            header.setSectionResizeMode(stretch_col, QtWidgets.QHeaderView.Stretch)
+        except Exception:
+            pass
+
+        # 计算除 stretch_col 和 unit_col 外的固定列宽
+        # 使用简单的固定最小宽度分配
+        fixed_widths = {
+            0: mins.get(0, 110),   # 故障码
+            1: mins.get(1, 200),   # 故障描述
+            2: mins.get(2, 100),   # 类型
+            3: mins.get(3, 90),    # DID
+            4: mins.get(4, 70),    # 长度
+            5: mins.get(5, 70),    # Byte
+            6: mins.get(6, 70),    # Bit
+            8: mins.get(8, 140),   # 数值
+        }
+
+        try:
+            # 设置固定宽度列
+            for col, width in fixed_widths.items():
+                if col < column_count:
+                    self.freeze_table.setColumnWidth(col, width)
+
+            # 单位列固定窄宽度
+            if unit_col < column_count:
+                self.freeze_table.setColumnWidth(unit_col, unit_width)
+
+            # stretch_col(参数名称)由Qt自动管理Stretch填充剩余空间，无需手动设置
             self._freeze_widths_initialized = True
         except Exception:
             pass
