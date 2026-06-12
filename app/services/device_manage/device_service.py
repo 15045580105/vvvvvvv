@@ -1281,11 +1281,9 @@ class DeviceService(QObject):
         # 3. 例程控制
         log_emit(f"TX: {routine_command.hex(' ').upper()}")
         rx_routine = client.send_doip_message(routine_command)
-
+        log_emit(f"RX: {rx_routine.hex(' ').upper() if rx_routine else '无响应'}")
         # 检查响应是否为肯定响应 (Request Service ID + 0x40)
         expected_response_sid = routine_command[0] + 0x40
         if not rx_routine or rx_routine[0] != expected_response_sid:
-            log_emit(f"例程控制失败: {rx_routine.hex(' ').upper() if rx_routine else '无响应'}")
             return False
-        log_emit(f"RX: {rx_routine.hex(' ').upper()}")
         return rx_routine
