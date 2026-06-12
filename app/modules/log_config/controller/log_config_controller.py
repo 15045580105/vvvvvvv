@@ -55,8 +55,8 @@ class LogConfigController(BaseController):
         self._restore_reconnect_timer.timeout.connect(self._on_restore_reconnect_timeout)
         self._bind_signals()
 
-        # 进入界面后自动触发一次全量刷新，避免下拉框为空
-        QtCore.QTimer.singleShot(100, self._on_app_refresh)
+        # # 进入界面后自动触发一次全量刷新，避免下拉框为空
+        # QtCore.QTimer.singleShot(100, self._on_app_refresh)
 
     def _bind_signals(self):
         # ECU Config
@@ -147,8 +147,8 @@ class LogConfigController(BaseController):
         success_count = result.get("success_count", 0)
         total_count = result.get("total_count", 0)
         lines = [
-            f"目标日志等级: {requested_level} ({requested_level_value if requested_level_value is not None else '--'})",
-            f"执行结果: {success_count}/{total_count} 成功",
+            f"设置目标日志等级: {requested_level} ({requested_level_value if requested_level_value is not None else '--'})",
+            f"执行结果成功率: {success_count}/{total_count}",
             "",
         ]
 
@@ -168,9 +168,8 @@ class LogConfigController(BaseController):
                 )
                 if warning:
                     line += f"\n  提示: {warning}"
-            else:
-                line = f"✗ {ecu} (DID {did}) | {error or '执行失败'}"
-
+            # else:
+            #     line = f"✗ {ecu} (DID {did}) | {error or '执行失败'}"
             lines.append(line)
 
         return "\n".join(lines)
@@ -221,7 +220,7 @@ class LogConfigController(BaseController):
         self.view.ecu_execute_btn.setEnabled(False)
         self.view.show_message(f"开始执行 {len(selected_ecus)} 个 ECU 的日志等级配置", "info")
         self.view.append_log(
-            f"[ECU执行开始] 目标等级={log_level} | 目标ECU={', '.join(selected_ecus)} | 数量={len(selected_ecus)}"
+            f"目标日志等级={log_level} | 目标ECU={'、'.join(selected_ecus)}"
         )
 
         def task():
@@ -241,7 +240,6 @@ class LogConfigController(BaseController):
                 return
 
             summary = self._format_ecu_execute_result_text(result)
-            self.view.append_log("ECU 日志等级配置结果汇总：")
             for line in summary.splitlines():
                 if line.strip():
                     self.view.append_log(line)
@@ -546,7 +544,7 @@ class LogConfigController(BaseController):
                 )
                 return
 
-            self._finish_restore_flow("恢复操作执行完成", "")
+            self._finish_restore_flow("恢复操作执行完成", "info")
 
         worker.result_signal.connect(on_finished)
         worker.start()

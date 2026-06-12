@@ -277,8 +277,22 @@ class CommonConfigView(BaseView):
         # Record to OperationLogManager
         OperationLogManager.instance().append_log("通用配置", message)
         timestamp = QtCore.QDateTime.currentDateTime().toString("yyyy-MM-dd HH:mm:ss")
-        log_msg = f"[{timestamp}] {message}"
-        text_edit.append(log_msg)
+        log_entry = f"[{timestamp}] {message}"
+
+        color = "#374151"
+        if "TX:" in message or "TX " in message:
+            color = "#2563EB"
+        elif "RX:" in message or "RX " in message:
+            color = "#059669"
+        elif "Error" in message or "失败" in message or "错误" in message or "Fail" in message:
+            color = "#DC2626"
+        elif "Warning" in message or "警告" in message:
+            color = "#D97706"
+
+        log_escaped = log_entry.replace("<", "&lt;").replace(">", "&gt;").replace("\n", "<br>")
+        html_msg = f'<span style="color: {color};">{log_escaped}</span>'
+
+        text_edit.append(html_msg)
         cursor = text_edit.textCursor()
         cursor.movePosition(QtGui.QTextCursor.End)
         text_edit.setTextCursor(cursor)

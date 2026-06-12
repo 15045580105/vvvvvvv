@@ -446,14 +446,27 @@ class LogConfigView(BaseView):
     def append_log(self, message: str):
         """向所有日志窗口添加日志"""
         timestamp = QtCore.QDateTime.currentDateTime().toString("yyyy-MM-dd HH:mm:ss")
-        log_msg = f"[{timestamp}] {message}"
+        log_entry = f"[{timestamp}] {message}"
 
         # Record to OperationLogManager
         OperationLogManager.instance().append_log("日志配置", message)
 
+        color = "#374151"
+        if "TX:" in message or "TX " in message:
+            color = "#2563EB"
+        elif "RX:" in message or "RX " in message:
+            color = "#059669"
+        elif "Error" in message or "失败" in message or "错误" in message or "Fail" in message:
+            color = "#DC2626"
+        elif "Warning" in message or "警告" in message:
+            color = "#D97706"
+
+        log_escaped = log_entry.replace("<", "&lt;").replace(">", "&gt;").replace("\n", "<br>")
+        html_msg = f'<span style="color: {color};">{log_escaped}</span>'
+
         # 滚动到底部
         for text_edit in [self.ecu_log_text, self.app_log_text, self.restore_log_text]:
-            text_edit.append(log_msg)
+            text_edit.append(html_msg)
             cursor = text_edit.textCursor()
             cursor.movePosition(QtGui.QTextCursor.End)
             text_edit.setTextCursor(cursor)

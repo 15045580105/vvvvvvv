@@ -431,13 +431,11 @@ class TopologyService(QObject):
         data = self._device_service.execute_secure_routine(payload, sec_level=0x21, log_signal=self.log_signal)
 
         if not isinstance(data, (bytes, bytearray)) or not data:
-            self.log_signal.emit(f"证书信息读取失败，原始返回: {data}")
+            self.log_signal.emit(f"证书信息读取失败: {data}")
             return "读取失败(可能需要解锁)"
 
         data = bytes(data)
-        self.log_signal.emit(f"证书信息原始响应长度: {len(data)} 字���")
-        self.log_signal.emit(f"证书信息原始响应: {data.hex(' ').upper()}")
-
+        self.log_signal.emit(f"证书信息原始响应长度: {len(data)} 字节长度")
         # 使用 DPTService 解析数据
         if self._dpt_service.is_ready():
             parsed_result = self._dpt_service.parse_bytes(data, did="BEE8")
@@ -708,10 +706,10 @@ class TopologyService(QObject):
     # --- DoIP Helpers ---
     def _send_uds_read(self, did_high, did_low) -> Optional[bytes]:
         payload = bytes([0x22, did_high, did_low])
-        self.log_signal.emit(f"发送 UDS 读取: {payload.hex(' ').upper()}")
+        self.log_signal.emit(f"TX: {payload.hex(' ').upper()}")
         rx = self._device_service.send_doip_payload(payload, timeout=1.0)
         if rx and len(rx) >= 3 and rx[0] == 0x62 and rx[1] == did_high and rx[2] == did_low:
-            self.log_signal.emit(f"收到 UDS 响应: {rx.hex(' ').upper()}")
+            self.log_signal.emit(f"RX: {rx.hex(' ').upper()}")
             return rx[3:]
         self.log_signal.emit(f"UDS 读取失败或无响应: {rx.hex(' ').upper() if rx else 'None'}")
         return None
@@ -724,7 +722,7 @@ class TopologyService(QObject):
         self.log_signal.emit("开始执行：读取以太网Link状态")
         result: Dict[str, str] = {}
         payload = bytes([0x22, 0xBE, 0x1A])
-        self.log_signal.emit(f"发送 UDS 读取: {payload.hex(' ').upper()}")
+        self.log_signal.emit(f"TX: {payload.hex(' ').upper()}")
         try:
             rx = self._device_service.send_doip_payload(payload, timeout=1.0)
         except Exception as e:
@@ -738,8 +736,6 @@ class TopologyService(QObject):
             return result
 
         data = rx[3:]
-        self.log_signal.emit(f"Link状态原始数据: {data.hex(' ').upper()}")
-
         # 使用 DPTService 解析数据
         if self._dpt_service.is_ready():
             parsed_result = self._dpt_service.parse_bytes(data, did="BE1A")
@@ -762,7 +758,6 @@ class TopologyService(QObject):
         self.log_signal.emit("-->读取VIN码<--")
         data = self._send_uds_read(0xF1, 0x90)
         if data:
-            self.log_signal.emit(f"VIN原始数据: {data.hex(' ').upper()}")
             try:
                 result = data.decode('ascii').strip()
             except:
@@ -776,7 +771,6 @@ class TopologyService(QObject):
         self.log_signal.emit("-->读取车辆模式<--")
         data = self._send_uds_read(0x50, 0x01)
         if data:
-            self.log_signal.emit(f"车辆模式原始数据: {data.hex(' ').upper()}")
             mode = data[0] & 0x0F
             modes = {
                 0x00: "正常模式", 0x01: "生产模式", 0x02: "运输模式", 0x03: "展厅模式",
@@ -793,7 +787,6 @@ class TopologyService(QObject):
         # 假设工厂模式 DID 为 0xBE01 (示例)
         data = self._send_uds_read(0xBE, 0x01)
         if data:
-            self.log_signal.emit(f"工厂模式原始数据: {data.hex(' ').upper()}")
             # 假设 01 为工厂模式，00 为用户模式
             return "工厂模式" if data[0] == 0x01 else "用户模式"
         return "未知"
@@ -802,7 +795,6 @@ class TopologyService(QObject):
         self.log_signal.emit("-->读取电压<--")
         data = self._send_uds_read(0x10, 0x00)
         if data:
-            self.log_signal.emit(f"电压原始数据: {data.hex(' ').upper()}")
             # 假设是 raw hex 或者某种编码，这里直接转 hex 显示
             result = f"{int.from_bytes(data, 'big')} mV" # 假设单位 mV，具体需确认
             self.log_signal.emit(f"电压解析结果: {result}")
@@ -881,7 +873,7 @@ class TopologyService(QObject):
         TARGET_METHOD_ID = 0x0003
         request_payload = b''
         try:
-            self.log_signal.emit(f"发送 Discovery 请求: Service=0x{TARGET_SERVICE_ID:04X}, Method=0x{TARGET_METHOD_ID:04X}")
+            self.log_signal.emit(f"TX: Service=0x{TARGET_SERVICE_ID:04X}, Method=0x{TARGET_METHOD_ID:04X}")
             response_data = someip_client.request_with_discovery(
                 service_id=TARGET_SERVICE_ID,
                 method_id=TARGET_METHOD_ID,
@@ -895,8 +887,7 @@ class TopologyService(QObject):
 
             # 返回原始数据作为临时方案
             if response_data:
-                self.log_signal.emit(f"收到服务状态响应(Raw): {response_data.hex()}")
-                self.log_signal.emit(f"收到服务状态响应(解析结果): {response_parser}")
+                self.log_signal.emit(f"RX: {response_data.hex()}")
 
                 try:
                     # Format response_parser as indented JSON string
@@ -922,7 +913,7 @@ class TopologyService(QObject):
     # --- SSH Helpers ---
     def _get_storage_info(self) -> str:
         cmd = "df -h"
-        self.log_signal.emit(f"发送 SSH 指令: {cmd}")
+        self.log_signal.emit(f"SSH发送: {cmd}")
 
         try:
             res = self._device_service.get_ssh_client().execute_command(cmd)
@@ -937,10 +928,10 @@ class TopologyService(QObject):
             # 筛选以 /dev 开头的行
             lines = [line for line in out.strip().splitlines() if line.strip().startswith('/dev')]
             result = "\n".join(lines)
-            self.log_signal.emit(f"SSH 指令成功: \n{result}")
+            self.log_signal.emit(f"SSH回复: {result}")
             return result
 
-        self.log_signal.emit(f"SSH 指令失败 or Empty")
+        self.log_signal.emit("SSH 指令失败 or Empty")
         return "Error: Empty response"
 
     def _get_version_info(self) -> str:
@@ -958,13 +949,13 @@ class TopologyService(QObject):
             return "SSH未连接"
 
         cmd = "get_ccu_all_version"
-        self.log_signal.emit(f"发送 SSH 指令: {cmd}")
+        self.log_signal.emit(f"SSH发送: {cmd}")
 
         try:
             out = client.execute_command(cmd)
             if out:
                 result = out.strip()
-                self.log_signal.emit(f"SSH 指令成功: \n{result}")
+                self.log_signal.emit(f"SSH回复: {result}")
                 return result
             else:
                 return "Empty Response"
@@ -1010,11 +1001,11 @@ class TopologyService(QObject):
             return False, "SSH未连接"
 
         cmd = "Use -mib -all"
-        self.log_signal.emit(f"发送 SSH 指令: {cmd}")
+        self.log_signal.emit(f"TX: {cmd}")
         out = ssh_client.execute_command(cmd)
 
         if out:
-            self.log_signal.emit(f"收到 SSH 响应: {out.strip()}")
+            self.log_signal.emit(f"RX: {out.strip()}")
         else:
             self.log_signal.emit("SSH 指令执行无响应或失败")
 
@@ -1184,7 +1175,7 @@ class TopologyService(QObject):
 
         # 1. 故障读取 (DTC 0x19 02 2F)
         req = bytes.fromhex("19 02 2F")
-        self.log_signal.emit(f"发送 DTC 读取指令: {req.hex(' ').upper()}")
+        self.log_signal.emit(f"TX: {req.hex(' ').upper()}")
         try:
             rx = client.send_doip_message(req, timeout=5.0)
         except Exception as e:
@@ -1299,7 +1290,7 @@ class TopologyService(QObject):
             try:
                 # 19 02 08 (读取DTC) 或 19 02 2F (根据具体需求，这里保持原样)
                 req = bytes.fromhex("19 02 2F")
-                self.log_signal.emit(f"发送 DTC 读取指令: {req.hex(' ').upper()}")
+                self.log_signal.emit(f"TX: {req.hex(' ').upper()}")
 
                 # 发送 DoIP 消息
                 rx = client.send_doip_message(req, timeout=2.0)
@@ -1308,7 +1299,7 @@ class TopologyService(QObject):
                     self.log_signal.emit("DTC 读取无响应")
                     return "读取超时"
 
-                self.log_signal.emit(f"收到 DTC 响应: {rx.hex(' ').upper()}")
+                self.log_signal.emit(f"RX: {rx.hex(' ').upper()}")
 
                 # 简单 hex 查找匹配 DTC 码
                 # 响应格式通常为 [59 02 2F] [StatusAvailabilityMask] [DTC1] [Status1] ...
@@ -1327,7 +1318,7 @@ class TopologyService(QObject):
                     return empty_text
 
             except Exception as e:
-                self.log_signal.emit(f"读取 DTC 失败: {e}")
+                self.log_signal.emit(f"DTC 读取失败: {e}")
                 return f"异常: {str(e)}"
 
         # 创建 Worker 执行任务

@@ -1,5 +1,5 @@
 # python
-from PyQt5 import QtWidgets
+from PyQt5 import QtWidgets, QtGui
 
 from app.common.log.operation_log_manager import OperationLogManager
 from app.common.ui.widgets import ModernButton
@@ -111,10 +111,25 @@ class TopologyView(BaseView):
             self.refresh_btn.setText("刷新中..." if loading else "刷新拓扑")
 
     def append_log(self, text: str):
+        OperationLogManager.instance().append_log("拓扑监控", text)
         timestamp = QDateTime.currentDateTime().toString("yyyy-MM-dd HH:mm:ss")
-        log_msg = f"[{timestamp}] {text}"
-        self.log_view.append(log_msg)
-        OperationLogManager.instance().append_log("设备拓扑", text)
+        log_entry = f"[{timestamp}] {text}"
+
+        color = "#374151"
+        if "TX:" in text or "TX " in text:
+            color = "#2563EB"
+        elif "RX:" in text or "RX " in text:
+            color = "#059669"
+        elif "Error" in text or "失败" in text or "错误" in text or "Fail" in text:
+            color = "#DC2626"
+        elif "Warning" in text or "警告" in text:
+            color = "#D97706"
+
+        log_escaped = log_entry.replace("<", "&lt;").replace(">", "&gt;").replace("\n", "<br>")
+        html_msg = f'<span style="color: {color};">{log_escaped}</span>'
+
+        self.log_view.append(html_msg)
+        self.log_view.moveCursor(QtGui.QTextCursor.End)
 
 
 
