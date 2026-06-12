@@ -107,8 +107,8 @@ class FileTransferController(BaseController):
     def refresh_local_directory(self):
         path = self.view.local_path_edit.text()
         if path and os.path.exists(path):
-            # 读取该目录下的所有文件和文件夹
             self.change_local_directory(path)
+            self.view._expand_tree_to_path(self.view.local_tree, path)
         else:
             self.load_local_roots()
 
@@ -137,7 +137,12 @@ class FileTransferController(BaseController):
         self.view.local_path_edit.setText(path)
         # 获取该目录下的所有文件和文件夹
         items = self.get_local_directory_content(path)
-        self.view.update_node_children(path, items, is_remote=False)
+        found = self.view.update_node_children(path, items, is_remote=False)
+        if not found:
+            # 路径不在当前树中，重置树根为该路径
+            self.view.set_local_root(path)
+            self.view.update_node_children(path, items, is_remote=False)
+        self.view._expand_tree_to_path(self.view.local_tree, path)
 
     def handle_local_item_expanded(self, path):
         self.change_local_directory(path)
@@ -190,6 +195,7 @@ class FileTransferController(BaseController):
              path = "/log"
 
         self.change_remote_directory(path)
+        self.view._expand_tree_to_path(self.view.remote_tree, path)
 
     def _on_protocol_status_changed(self, payload: dict):
         """连接状态变化后，及时让文件传输模块丢弃旧的 SCP/SFTP 包装对象。"""
@@ -213,12 +219,12 @@ class FileTransferController(BaseController):
         items = self.model.list_remote_dir(path)
 
         if items is not None:
-             # 如果 update_node_children 返回 False（找不到节点），则说明该路径不在当前树中
-             # 此时我们需要重置树的根为该路径
              found = self.view.update_node_children(path, items, is_remote=True)
              if not found:
+                 # 路径不在当前树中，重置树根为该路径
                  self.view.set_remote_root(path)
                  self.view.update_node_children(path, items, is_remote=True)
+             self.view._expand_tree_to_path(self.view.remote_tree, path)
 
     def handle_remote_item_expanded(self, path):
          self.change_remote_directory(path)

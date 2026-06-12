@@ -72,12 +72,14 @@ class LogConfigService(BaseService):
             return f"{resp.hex(' ').upper()} (NRC=0x{resp[2]:02X})"
         return resp.hex(' ').upper()
 
-    def _read_single_byte_did(self, did: int) -> tuple[Optional[int], Optional[bytes], str]:
+    def _read_single_byte_did(self, did: int, log_emit) -> tuple[Optional[int], Optional[bytes], str]:
         if not self._device_service:
             return None, None, "DeviceService 未注入"
 
         read_cmd = bytes([0x22]) + did.to_bytes(2, 'big')
+        log_emit(f"TX: {read_cmd.hex(' ').upper()}")
         resp = self._device_service.send_doip_payload(read_cmd, target_did=did)
+        log_emit(f"RX: {resp.hex(' ').upper()}")
         if not resp:
             return None, None, "22 服务无响应"
         if resp[0] == 0x7F:
@@ -87,7 +89,7 @@ class LogConfigService(BaseService):
 
         resp_did = int.from_bytes(resp[1:3], 'big')
         if resp_did != did:
-            return None, resp, f"22 服务 DID 不匹配: 期望 0x{did:04X}，实际 0x{resp_did:04X}"
+            return None, resp, f"22 服务 DID 不匹配: 期望 0x{did.to_bytes(2, 'big').hex(' ').upper()}，实际 0x{resp_did.to_bytes(2, 'big').hex(' ').upper()}"
 
         return resp[3], resp, ""
 
@@ -120,13 +122,14 @@ class LogConfigService(BaseService):
             resp = self._device_service.execute_secure_routine(write_cmd, sec_level=0x01, log_signal=self.log_signal)
         else:
             session_cmd = bytes.fromhex("10 03")
-            log_emit(f"发送会话控制: {session_cmd.hex(' ').upper()}")
+            log_emit(f"TX: {session_cmd.hex(' ').upper()}")
             rx_sess = self._device_service.send_doip_payload(session_cmd)
+            log_emit(f"RX: {rx_sess.hex(' ').upper()}")
             if not rx_sess or rx_sess[0] != 0x50:
                 return rx_sess, f"会话控制失败: {self._get_negative_response_text(rx_sess)}"
-            log_emit(f"发送写指令: {write_cmd.hex(' ').upper()}")
+            log_emit(f"TX: {write_cmd.hex(' ').upper()}")
             resp = self._device_service.send_doip_payload(write_cmd)
-
+            log_emit(f"RX: {resp.hex(' ').upper()}")
         if not resp:
             return None, "2E 服务无响应"
         if resp[0] != 0x6E:
@@ -173,7 +176,7 @@ class LogConfigService(BaseService):
             did = self.ECU_DID_MAP.get(ecu)
             ecu_result = {
                 "ecu": ecu,
-                "did": f"{did:04X}" if did is not None else "----",
+                "did": did.to_bytes(2, 'big').hex(' ').upper() if did is not None else "----",
                 "requested_level": normalized_level,
                 "requested_level_value": level_val,
                 "read_value": None,
@@ -191,8 +194,8 @@ class LogConfigService(BaseService):
                 _log(ecu_result["error"])
                 continue
 
-            _log(f"[{ecu}] 第1步：读取当前日志配置 (22 {did:04X})")
-            current_value, read_resp, read_error = self._read_single_byte_did(did)
+            _log(f"第1步：[{ecu}] 读取当前日志等级: 22 {did.to_bytes(2, 'big').hex(' ').upper()}")
+            current_value, read_resp, read_error = self._read_single_byte_did(did, _log)
             if read_error:
                 ecu_result["error"] = read_error
                 _log(f"[{ecu}] 读取失败: {read_error}")
@@ -203,20 +206,17 @@ class LogConfigService(BaseService):
             ecu_result["write_value"] = target_value
 
             _log(
-                f"[{ecu}] 当前值={self._format_hex(read_resp)}，保留高4位 0x{(current_value & 0xF0) >> 4:X}，"
-                f"目标等级 {normalized_level} -> 低4位 0x{level_val:X}，准备写入 2E {did:04X} {target_value:02X}"
+                f"[{ecu}] 读当前值={self._format_hex(read_resp)}，保留高4位 0x{(current_value & 0xF0) >> 4:X}，"
+                f"目标等级 {normalized_level} -> 低4位 0x{level_val:X}，准备写入 2E {did.to_bytes(2, 'big').hex(' ').upper()} {target_value:02X}"
             )
-
+            _log(f"[{ecu}] 第2步：写入 2E {did.to_bytes(2, 'big').hex(' ').upper()} {target_value:02X}")
             write_resp, write_error = self._write_single_byte_did(did, target_value, _log)
             if write_error:
                 ecu_result["error"] = write_error
                 _log(f"[{ecu}] 写入失败: {write_error}")
                 continue
-
-            _log(f"[{ecu}] 写入响应: {self._format_hex(write_resp)}")
-            _log(f"[{ecu}] 第3步：回读验证 (22 {did:04X})")
-
-            verify_value, verify_resp, verify_error = self._read_single_byte_did(did)
+            _log(f"[{ecu}] 第3步：回读验证")
+            verify_value, verify_resp, verify_error = self._read_single_byte_did(did, _log)
             if verify_error:
                 ecu_result["error"] = f"回读失败: {verify_error}"
                 _log(f"[{ecu}] 回读失败: {verify_error}")
@@ -265,9 +265,9 @@ class LogConfigService(BaseService):
         did = 0xBE17
         did_bytes = did.to_bytes(2, 'big')
         # 读取
-        _log(f"读取 DID {did:X} ")
+        _log(f"TX: 22 {did_bytes.hex(' ').upper()}")
         read_resp = client.send_doip_message(bytes([0x22]) + did_bytes)
-        _log(f"返回：{read_resp}")
+        _log(f"RX: {self._format_hex(read_resp)}")
         if not read_resp or read_resp[0] != 0x62 or len(read_resp) < 4:
             _log(f"读取 DID 失败或响应异常")
             return False
@@ -471,12 +471,13 @@ class LogConfigService(BaseService):
         reset_cmd = bytes([0x11, 0x03])
 
         try:
+            _log(f"TX: {reset_cmd.hex(' ').upper()}")
             # 发送后设备通常会立即断开或不回复正响应，视具体实现而定
             resp = self._device_service.send_doip_payload(reset_cmd)
 
             # 1. 检查正响应 51 03
             if resp and len(resp) >= 2 and resp[0] == 0x51:
-                _log(f"收到重启确认响应: {resp.hex(' ').upper()} (成功)")
+                _log(f"RX: {resp.hex(' ').upper()}")
                 # 等待一段时间让 CCU 完成重启，再异步触发重连，避免阻塞界面
                 schedule_delayed_reconnect(60.0)
                 return True
@@ -889,12 +890,13 @@ class LogConfigService(BaseService):
         '''根据 DID 读取单字节 UDS 值'''
         if not self._device_service:
             return None
+        _log = self._get_log_emit()
         # 构造 UDS 22 读 DID 请求
         did_bytes = did_int.to_bytes(2, 'big')
         req = bytes([0x22]) + did_bytes
-        print("发送 UDS 读 DID 请求:", req.hex(' ').upper())
+        _log(f"TX: {req.hex(' ').upper()}")
         resp = self._device_service.send_doip_payload(req, target_did=did_int)
-        print("收到 UDS 响应:", resp.hex(' ').upper() if resp else "无响应")
+        _log(f"RX: {self._format_hex(resp)}")
 
         if resp and len(resp) >= 4 and resp[0] == 0x62:  # 正响应
             return resp[3]  # resp[3]：返回响应的第 4 个字节（即第一个数据字节，索引从 0 开始）
@@ -1187,40 +1189,34 @@ class LogConfigService(BaseService):
             except:
                 pass
 
-        _log(f"设置 DID {did:X} = {val:02X} , 发送UDS指令： {write_cmd.hex(' ').upper()}")
-
         if not is_factory_mode:
+            _log(f"TX: {write_cmd.hex(' ').upper()}")
             resp = self._device_service.execute_secure_routine(write_cmd, sec_level=0x01, log_signal=self.log_signal)
+            rx_data = resp.hex(' ').upper() if isinstance(resp, (bytes, bytearray)) else "无响应"
+            _log(f"RX: {rx_data}")
         else:
             # 10 03
-            self._device_service.send_doip_payload(bytes.fromhex("10 03"))
-            resp = self._device_service.send_doip_payload(write_cmd)
+            session_cmd = bytes.fromhex("10 03")
+            _log(f"TX: {session_cmd.hex(' ').upper()}")
+            res = self._device_service.send_doip_payload(session_cmd)
+            _log(f"RX: {res.hex(' ').upper() if res else '无响应'}")
 
-        if resp and resp[0] == 0x6E:
-             return True
-        else:
-             _log(f"设置失败, 响应: {resp.hex(' ') if resp else 'None'}")
-             return False
+            _log(f"TX: {write_cmd.hex(' ').upper()}")
+            resp = self._device_service.send_doip_payload(write_cmd)
+            rx_data = resp.hex(' ').upper() if isinstance(resp, (bytes, bytearray)) else "无响应"
+            _log(f"RX: {rx_data}")
+        return bool(resp and resp[0] == 0x6E)
 
     def reset_ccu(self):
         """UDS 11 03 (Soft Reset)"""
         _log = self._get_log_emit()
-
         _log("正在执行 CCU 软复位 (11 03)...")
-        # 11 03 usually requires session?
-        # Assuming Default session or Extended is fine. Usually hard reset needs 10 03?
-        # Let's try directly or ensure session 01/03.
-        # Most ECUs accept 11 01/03 in any session or extended.
-
         # Send 11 03
         cmd = bytes.fromhex("11 03")
         doip_client = self._device_service.get_doip_client()
         if doip_client:
-             resp = doip_client.send_doip_message(cmd)
-             if resp and (resp[0] == 0x51):
-                 _log("CCU 复位指令发送成功")
-                 return True
-             else:
-                 _log(f"CCU 复位失败: {resp.hex(' ') if resp else '无响应'}")
-                 return False
+            _log(f"TX: {cmd.hex(' ').upper()}")
+            resp = doip_client.send_doip_message(cmd)
+            _log(f"RX: {resp.hex(' ').upper() if resp else '无响应'}")
+            return bool(resp and resp[0] == 0x51)
         return False

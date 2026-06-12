@@ -47,15 +47,11 @@ class CommonConfigService(QObject):
             if raw_command is None:
                 _log("自定义 2E 请求为空或格式非法，请输入完整十六进制 UDS 报文")
                 return False
-
-            _log(f"发送自定义 2E 指令: {raw_command.hex(' ').upper()}")
             resp = self._device_service.execute_secure_routine(raw_command, sec_level=0x01, log_signal=self.log_signal)
             if resp and resp[0] == 0x6E:
-                _log("执行成功")
                 return True
             _log(f"执行失败: {resp.hex(' ').upper() if resp else '无响应'}")
             return False
-
         service_hex = self._normalize_hex(self._get_service_did(service_info))
         if not service_hex:
             _log("未配置有效的 Service ID / DID")
@@ -76,13 +72,9 @@ class CommonConfigService(QObject):
             _log(f"构造 2E 指令失败: {e}")
             return False
 
-        _log(f"发送指令: {command.hex(' ').upper()}")
         resp = self._device_service.execute_secure_routine(command, sec_level=0x01, log_signal=self.log_signal)
-        if resp and resp[0] == 0x6E:
-            _log("执行成功")
-            return True
-        _log(f"执行失败: {resp.hex(' ').upper() if resp else '无响应'}")
-        return False
+        return bool(resp and resp[0] == 0x6E)
+
 
     def _is_raw_custom_2e_request(self, service_info: Optional[Dict[str, Any]]) -> bool:
         """识别“用户直接输入完整 UDS 报文”的自定义 2E 行。"""
@@ -246,11 +238,11 @@ class CommonConfigService(QObject):
             _log(f"指令构造异常: {e}")
             return False
 
-        _log(f"发送 Routine 指令: {command.hex(' ').upper()}")
+        _log(f"TX: {command.hex(' ').upper()}")
         resp = self._device_service.execute_secure_routine(command, sec_level=0x01, log_signal=self.log_signal)
         expected_resp_sid = sid_bytes[0] + 0x40
         if resp and resp[0] == expected_resp_sid:
-            _log("执行成功")
+            _log(f"RX: {resp.hex(' ').upper()}")
             return True
         _log(f"执行失败: {resp.hex(' ').upper() if resp else '无响应'}")
         return False

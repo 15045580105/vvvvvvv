@@ -1,3 +1,4 @@
+import os
 from PyQt5 import QtWidgets, QtCore
 from PyQt5.QtCore import Qt, pyqtSignal
 from PyQt5.QtWidgets import (
@@ -142,9 +143,9 @@ class FileTransferView(BaseView):
         center_widget = QWidget()
         center_layout = QVBoxLayout(center_widget)
         center_layout.setAlignment(Qt.AlignCenter)
-        upload_btn = QPushButton("↑ 上传")
+        upload_btn = QPushButton(">>")
         upload_btn.setStyleSheet("background-color: #28a745; color: white; border-radius: 4px; padding: 6px;")
-        download_btn = QPushButton("↓ 下载")
+        download_btn = QPushButton("<<")
         download_btn.setStyleSheet("background-color: #ffc107; color: black; border-radius: 4px; padding: 6px;")
         center_layout.addWidget(upload_btn)
         center_layout.addWidget(download_btn)
@@ -292,6 +293,24 @@ class FileTransferView(BaseView):
         # 添加 dummy 以防万一，虽然我们会马上填充
         QTreeWidgetItem(item)
 
+    def set_local_root(self, path):
+        """设置本地文件树的根节点（用于手动输入不在树中的路径时）。"""
+        self.local_tree.clear()
+        display_name = os.path.basename(path) if path else path
+        if not display_name:
+            display_name = path
+
+        item = SortableTreeWidgetItem(self.local_tree)
+        item.setText(0, display_name)
+        item.setText(2, "文件夹")
+        item.setIcon(0, self.folder_icon)
+        item.setData(0, Qt.UserRole, path)
+
+        # 默认展开根节点
+        item.setExpanded(True)
+        # 添加 dummy 以允许展开
+        QTreeWidgetItem(item)
+
     def update_node_children(self, path, items, is_remote=False): # Update
         tree = self.remote_tree if is_remote else self.local_tree
 
@@ -319,8 +338,10 @@ class FileTransferView(BaseView):
             # 没找到节点
             return False
 
-        # 清除现有子节点 (dummy node)
+        # 清除现有子节点 (dummy node)，阻塞信号以防 itemCollapsed 触发重入
+        tree.blockSignals(True)
         target_item.takeChildren()
+        tree.blockSignals(False)
 
         for name, mtime, ftype, size in items:
             child = SortableTreeWidgetItem(target_item)
@@ -354,6 +375,43 @@ class FileTransferView(BaseView):
 
     def select_local_item(self, path):
         pass
+
+    def _find_node_by_path(self, tree, path):
+        """按 UserRole 路径在树中查找节点，支持尾部斜杠容错。"""
+        if not path:
+            return None
+        normalized = path.replace('\\', '/').rstrip('/')
+        iterator = QtWidgets.QTreeWidgetItemIterator(tree)
+        while iterator.value():
+            item = iterator.value()
+            item_path = item.data(0, Qt.UserRole)
+            if item_path:
+                item_normalized = item_path.replace('\\', '/').rstrip('/')
+                if item_normalized == normalized:
+                    return item
+            iterator += 1
+        return None
+
+    def _expand_tree_to_path(self, tree, path):
+        """展开树中指定路径的节点及其所有祖先，并滚动到可见区域。
+        阻塞树信号以防止 setExpanded 触发 itemExpanded 重入。"""
+        node = self._find_node_by_path(tree, path)
+        if not node:
+            return
+        tree.blockSignals(True)
+        try:
+            # 从目标节点向上逐级展开
+            current = node
+            while current:
+                current.setExpanded(True)
+                current = current.parent()
+            # 滚动到目标节点
+            tree.scrollToItem(node)
+        except RuntimeError:
+            # C++ 对象可能已被删除（重入导致树重建），安全忽略
+            pass
+        finally:
+            tree.blockSignals(False)
 
     def append_log(self, message):
         self.transfer_log.append(f"[{QtCore.QTime.currentTime().toString()}] {message}")

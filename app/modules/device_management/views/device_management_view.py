@@ -740,7 +740,16 @@ class DeviceView(BaseView):
         timestamp_format.setFontUnderline(False)
 
         text_format = QtGui.QTextCharFormat()
-        text_format.setForeground(QtGui.QColor("#111827"))
+        text_color = "#111827"
+        if "TX:" in text or "TX " in text:
+            text_color = "#2563EB"
+        elif "RX:" in text or "RX " in text:
+            text_color = "#059669"
+        elif "Error" in text or "失败" in text or "错误" in text or "Fail" in text:
+            text_color = "#DC2626"
+        elif "Warning" in text or "警告" in text:
+            text_color = "#D97706"
+        text_format.setForeground(QtGui.QColor(text_color))
         text_format.setAnchor(False)
         text_format.setFontUnderline(False)
 

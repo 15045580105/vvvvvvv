@@ -653,7 +653,7 @@ class DeviceService(QObject):
             ecu_logical_address = int(doip_settings.get("target_phy_addr", "0x004F"), 16)
 
         # ECU 逻辑地址及本机逻辑地址可按需从 device 中扩展配置，这里使用 DoIPClientHandler 默认值
-        _log(f"正在通过DoIP连接设备 {ip}:{tcp_port}... | generation={self._connection_generation}")
+        _log(f"正在通过DoIP连接设备 {ip}:{tcp_port}...")
         if not ip:
             device["doip_connect_status"] = "连接失败"
             device["doip_connect_info"] = "缺少 ECU IP"
@@ -714,11 +714,11 @@ class DeviceService(QObject):
         if ok:
             device["doip_connect_status"] = "建链成功"
             device["doip_connect_info"] = f"DoIP 已连接到 {ip}:{tcp_port}"
-            _log(f"DoIP 建链成功 | {self._format_connection_context_text()}")
+            _log("DoIP 建链成功")
         else:
             device["doip_connect_status"] = "连接失败"
             device["doip_connect_info"] = f"DoIP 连接 {ip}:{tcp_port} 失败"
-            _log(f"DoIP 建链失败 | generation={self._connection_generation} | target={ip}:{tcp_port}")
+            _log(f"DoIP 建链失败 -> {ip}:{tcp_port}")
 
         self._attach_doip_diagnostic(
             device,
@@ -830,7 +830,7 @@ class DeviceService(QObject):
 
     def _connect_someip(self, device: Dict[str, Any], log_signal: Optional[object] = None) -> None:
         _log = self._get_log_emit(log_signal)
-        _log(f"正在通过SomeIP连接设备... | generation={self._connection_generation}")
+        _log("正在通过SomeIP连接设备...")
         """内部辅助：为当前设备准备 SOME/IP 通信客户端，并更新状态字段。
         注意：SOME/IP 多数场景是无连接 UDP，这里仅表示“本地客户端已就绪”。
         """
@@ -842,7 +842,7 @@ class DeviceService(QObject):
 
         device["someip_connect_status"] = "建链成功"
         device["someip_connect_info"] = f"SomeIP 连接成功>> {client.local_ip}:{client.local_port} (VLAN {client.vlan_id})"
-        _log(f"SomeIP 客户端就绪 | {self._format_connection_context_text()}")
+        _log("SomeIP 客户端就绪")
 
     def _get_interface_details_by_ip(self, interface_ip: Optional[str]) -> Dict[str, str]:
         if not interface_ip:
@@ -1011,7 +1011,7 @@ class DeviceService(QObject):
                 return "", msg, 255
             device["ssh_connect_status"] = "建链成功"
             device["ssh_connect_info"] = f"SSH 已连接到 {host}:{port}"
-            _log(f"SSH 已连接到 {host}:{port} | {self._format_connection_context_text()}")
+            _log(f"SSH 已连接到 {host}:{port}")
         except AuthenticationException as e:
             msg = f"SSH认证失败: {e}"
             _log(msg)
@@ -1103,7 +1103,7 @@ class DeviceService(QObject):
             target_did: int | None = None,
             prefer_last: bool = False,
     ) -> bytes | None:
-        """统一的 DoIP ��送接口，供 Topology/Diagnostic 等业务 Service 重用。"""
+        """统一的 DoIP 送接口，供 Topology/Diagnostic 等业务 Service 重用。"""
         active_service = self._get_active_service()
         if active_service is not self:
             return active_service.send_doip_payload(
@@ -1229,25 +1229,25 @@ class DeviceService(QObject):
 
         # 1. 诊断会话控制 (10 03)
         tx_session = bytes.fromhex("10 03")
-        log_emit(f"发送: {tx_session.hex(' ').upper()}")
+        log_emit(f"TX: {tx_session.hex(' ').upper()}")
         rx_session = client.send_doip_message(tx_session)
         if not rx_session or rx_session[0] != 0x50:
             log_emit(f"会话控制失败: {rx_session.hex(' ').upper() if rx_session else '无响应'}")
             return False
-        log_emit(f"会话控制成功: {rx_session.hex(' ').upper()}")
+        log_emit(f"RX: {rx_session.hex(' ').upper()}")
         if self._is_cancelled(cancel_event):
             log_emit("激活 SSH 流程已取消")
             return False
 
         # 2. 安全访问
         tx_seed = bytes([0x27, sec_level])
-        log_emit(f"请求种子: {tx_seed.hex(' ').upper()}")
+        log_emit(f"TX: {tx_seed.hex(' ').upper()}")
         rx_seed = client.send_doip_message(tx_seed)
 
         if not rx_seed or rx_seed[0] != 0x67:
             log_emit(f"请求种子失败: {rx_seed.hex(' ').upper() if rx_seed else '无响应'}")
             return False
-        log_emit(f"收到种子: {rx_seed.hex(' ').upper()}")
+        log_emit(f"RX: {rx_seed.hex(' ').upper()}")
         if self._is_cancelled(cancel_event):
             log_emit("激活 SSH 流程已取消")
             return False
@@ -1266,21 +1266,20 @@ class DeviceService(QObject):
 
         # 发送密钥
         tx_key = bytes([0x27, sec_level + 1]) + key
-        log_emit(f"发送密钥: {tx_key.hex(' ').upper()}")
+        log_emit(f"TX: {tx_key.hex(' ').upper()}")
         rx_key = client.send_doip_message(tx_key)
+        log_emit(f"RX: {rx_key.hex(' ').upper()}")
 
         if not rx_key or rx_key[0] != 0x67:
-            log_emit(f"安全访问失败: {rx_key.hex(' ').upper() if rx_key else '无响应'}")
+            log_emit("安全访问失败")
             if return_on_auth_fail:
                 return False
-        else:
-            log_emit(f"安全访问成功: {rx_key.hex(' ').upper()}")
         if self._is_cancelled(cancel_event):
             log_emit("激活 SSH 流程已取消")
             return False
 
         # 3. 例程控制
-        log_emit(f"发送例程: {routine_command.hex(' ').upper()}")
+        log_emit(f"TX: {routine_command.hex(' ').upper()}")
         rx_routine = client.send_doip_message(routine_command)
 
         # 检查响应是否为肯定响应 (Request Service ID + 0x40)
@@ -1288,5 +1287,5 @@ class DeviceService(QObject):
         if not rx_routine or rx_routine[0] != expected_response_sid:
             log_emit(f"例程控制失败: {rx_routine.hex(' ').upper() if rx_routine else '无响应'}")
             return False
-        log_emit(f"例程控制成功: {rx_routine.hex(' ').upper()}")
+        log_emit(f"RX: {rx_routine.hex(' ').upper()}")
         return rx_routine
