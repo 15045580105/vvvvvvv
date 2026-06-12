@@ -249,33 +249,38 @@ class CheckBoxHeader(QtWidgets.QHeaderView):
         # 绘制排序指示器 (如果当前列是排序列)
         if logicalIndex == self._sort_logical_index:
             painter.save()
+            painter.setRenderHint(QtGui.QPainter.Antialiasing)
+
+            # 右侧绘制醒目的靖蓝色竖条作为排序标识
+            bar_width = 4
+            bar_margin = 6
+            bar_rect = QtCore.QRect(
+                rect.right() - bar_margin - bar_width,
+                rect.top() + 4,
+                bar_width,
+                rect.height() - 8
+            )
+            painter.setPen(QtCore.Qt.NoPen)
+            painter.setBrush(QtGui.QColor("#4338CA"))
+            painter.drawRoundedRect(bar_rect, 2, 2)
 
             # 箭头配置
-            arrow_size = 4
-            margin_right = 8
-
-            # 如果该列同时有 CheckBox，可能需要避让 (Col 0 and Col 4)
-            # Col 0 is centered checkbox usually, Col 4 is left aligned.
-            # Usually sort indicator is on the right, text on left/center.
+            arrow_size = 5
+            margin_right = bar_margin + bar_width + 6
 
             cx = rect.right() - margin_right - arrow_size
             cy = rect.center().y()
 
-            # 使用醒目的颜色 (例如 #6366F1 / Indigo 或 #3B82F6 / Blue)
-            # 这里使用深灰色以匹配通用风格，或者强调色
-            color = QtGui.QColor("#4F46E5")
-            painter.setBrush(color)
+            arrow_color = QtGui.QColor("#4338CA")
+            painter.setBrush(arrow_color)
             painter.setPen(QtCore.Qt.NoPen)
-            painter.setRenderHint(QtGui.QPainter.Antialiasing)
 
             path = QtGui.QPainterPath()
             if self._sort_order == Qt.AscendingOrder:
-                # 向上箭头
                 path.moveTo(cx, cy - arrow_size)
                 path.lineTo(cx - arrow_size, cy + arrow_size)
                 path.lineTo(cx + arrow_size, cy + arrow_size)
             else:
-                # 向下箭头
                 path.moveTo(cx, cy + arrow_size)
                 path.lineTo(cx - arrow_size, cy - arrow_size)
                 path.lineTo(cx + arrow_size, cy - arrow_size)
@@ -1119,6 +1124,10 @@ class ValueDetailDialog(QtWidgets.QDialog):
         header.setSectionResizeMode(3, QtWidgets.QHeaderView.Stretch)
 
         self.table.setAlternatingRowColors(True)
+        self.table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
+        self.table.setSelectionMode(QtWidgets.QAbstractItemView.ExtendedSelection)
+        self.table.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.table.customContextMenuRequested.connect(self._on_table_context_menu)
 
         # Style vertical header for detail dialog too
         self.table.verticalHeader().setVisible(True)
@@ -1160,6 +1169,33 @@ class ValueDetailDialog(QtWidgets.QDialog):
         btn_box = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.Close)
         btn_box.rejected.connect(self.close)
         layout.addWidget(btn_box)
+
+    def _on_table_context_menu(self, pos):
+        selected_rows = sorted(set(idx.row() for idx in self.table.selectedIndexes()))
+        if not selected_rows:
+            return
+        menu = QtWidgets.QMenu(self.table)
+        copy_action = menu.addAction("复制选中行")
+        copy_action.triggered.connect(lambda: self._copy_selected_rows(selected_rows))
+        menu.exec_(self.table.viewport().mapToGlobal(pos))
+
+    def _copy_selected_rows(self, rows):
+        """Copy selected rows to clipboard, using tooltip (full text) when available."""
+        lines = []
+        col_count = self.table.columnCount()
+        for r in rows:
+            cells = []
+            for c in range(col_count):
+                item = self.table.item(r, c)
+                if item is None:
+                    cells.append("")
+                else:
+                    # Use tooltip (full text) if present, otherwise use display text
+                    tip = item.toolTip()
+                    cells.append(tip if tip else item.text())
+            lines.append("\t".join(cells))
+        text = "\n".join(lines)
+        QtWidgets.QApplication.clipboard().setText(text)
 
     def showEvent(self, event):
         super().showEvent(event)

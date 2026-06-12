@@ -904,6 +904,8 @@ class DeviceService(QObject):
             "someip_connect_status": device.get("someip_connect_status"),
             "someip_connect_info": device.get("someip_connect_info"),
             "_connection_generation": self._connection_generation,
+            "_device_index": device.get("_device_index"),
+            "_device_name": device.get("name"),
         }
         if isinstance(device.get("_doip_diagnostic"), dict):
             payload["_doip_diagnostic"] = dict(device.get("_doip_diagnostic") or {})

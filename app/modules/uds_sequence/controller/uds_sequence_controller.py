@@ -144,7 +144,7 @@ class SequenceWorker(QtCore.QThread):
             payload = bytes.fromhex(req_hex)
 
             # Use DeviceService to send payload (it handles timeout from config)
-            resp = self._device_service.send_doip_payload(payload, timeout=timeout)
+            resp = self.device_service.send_doip_payload(payload, timeout=timeout)
 
 
             if resp is None:

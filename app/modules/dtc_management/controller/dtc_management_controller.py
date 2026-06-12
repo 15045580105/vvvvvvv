@@ -2,6 +2,7 @@ import json
 import os
 from datetime import datetime
 from PyQt5 import QtCore, QtWidgets
+from PyQt5.QtCore import Qt
 from app.core.base_controller import BaseController
 from app.modules.dtc_management.model.dtc_management_model import DTCModel
 from app.modules.dtc_management.view.dtc_management_view import DTCView
@@ -29,6 +30,12 @@ class DTCController(BaseController):
 
         self.current_filter = "all"
         self.current_search = ""
+        self.last_read_time = None  # 记录最后一次读取时间
+
+        # 排序状态
+        self._sort_col = -1
+        self._sort_order = Qt.AscendingOrder
+        self._dtcs_unsorted = []  # 保存未排序的原始顺序
 
         # Connect view signals
         self.view.read_dtc_signal.connect(self.handle_read_dtcs)
@@ -36,6 +43,10 @@ class DTCController(BaseController):
         self.view.filter_changed_signal.connect(self.handle_filter_changed)
         self.view.clear_dtc_signal.connect(self.handle_clear_dtcs)
         self.view.search_changed_signal.connect(self.handle_search_changed)
+
+        # 表头排序
+        header = self.view.fault_table.horizontalHeader()
+        header.sectionClicked.connect(self._on_header_section_clicked)
 
         # Delay heavy initialization
         QtCore.QTimer.singleShot(0, self.delayed_init)
@@ -67,6 +78,15 @@ class DTCController(BaseController):
                  self.model.dtcs = [tuple(x) for x in data.get("dtcs", [])]
                  self.model.freeze_frames = data.get("freeze_frames", [])
 
+                 # 恢复最后读取时间
+                 last_read_str = data.get("last_read_time")
+                 if last_read_str:
+                     try:
+                         self.last_read_time = datetime.fromisoformat(last_read_str)
+                         self.view.set_last_read_time(self.last_read_time)
+                     except (ValueError, TypeError):
+                         pass
+
                  # Recalculate categories
                  parsed_dtcs = self.model.dtcs
                  total = len(parsed_dtcs)
@@ -87,7 +107,8 @@ class DTCController(BaseController):
     def save_dtc_list(self):
         data = {
             "dtcs": self.model.dtcs,
-            "freeze_frames": self.model.freeze_frames
+            "freeze_frames": self.model.freeze_frames,
+            "last_read_time": self.last_read_time.isoformat() if self.last_read_time else None
         }
         try:
             with open(DTC_LIST_FILE, "w", encoding="utf-8") as f:
@@ -121,15 +142,28 @@ class DTCController(BaseController):
     def refresh_view(self):
         # Filter dtcs
         filtered = self._get_filtered_dtcs()
+        # Apply current sort
+        if self._sort_col >= 0:
+            filtered = self._apply_sort(list(filtered))
         self.view.populate(self.model.categories, filtered)
+        # Update sort indicator
+        header = self.view.fault_table.horizontalHeader()
+        if self._sort_col >= 0:
+            if hasattr(header, 'setCustomSort'):
+                header.setCustomSort(self._sort_col, self._sort_order)
+            else:
+                header.setSortIndicatorShown(True)
+                header.setSortIndicator(self._sort_col, self._sort_order)
+        else:
+            if hasattr(header, 'setCustomSort'):
+                header.setCustomSort(-1, Qt.AscendingOrder)
+            else:
+                header.setSortIndicatorShown(False)
 
     def handle_read_dtcs(self):
         if not self._dpt_service.is_ready():
             QtWidgets.QMessageBox.warning(self.view, "提示", "DPT解析未完成，请稍候")
             return
-
-        # Update last read time
-        self.view.set_last_read_time(datetime.now())
 
         device_service = di_container.resolve(DeviceService)
         if not device_service or not device_service.get_doip_client():
@@ -243,6 +277,9 @@ class DTCController(BaseController):
             ]
 
             self.model.dataChanged.emit()
+            # 读取成功后才更新最后读取时间
+            self.last_read_time = datetime.now()
+            self.view.set_last_read_time(self.last_read_time)
             self.view.append_log(f"已解析 {total} 个故障码")
             self.save_dtc_list()
 
@@ -264,18 +301,21 @@ class DTCController(BaseController):
             return "未决故障"
         return "历史故障"
 
-    def handle_read_freeze_frame(self, row_index):
-        # Get filtered list to find correct DTC
-        filtered = self._get_filtered_dtcs()
-        if row_index < 0 or row_index >= len(filtered):
-            self.view.append_log(f"无效的行索引: {row_index}")
-            return
+    def handle_read_freeze_frame(self, dtc_code):
+        # Find DTC entry in model by code
+        dtc_entry = None
+        for dtc in self.model.dtcs:
+            if dtc[0] == dtc_code:
+                dtc_entry = dtc
+                break
 
-        dtc_entry = filtered[row_index]
+        if dtc_entry is None:
+            self.view.append_log(f"未找到故障码: {dtc_code}")
+            return
         dtc_code = dtc_entry[0] # e.g. "P31AE87"
 
         self.view.append_log(f"开始读取冻结帧: {dtc_code}")
-        self.view.update_freeze_read_status(row_index, "读取中...", "")
+        self.view.update_freeze_read_status_by_code(dtc_code, "读取中...", "")
 
         # Clear previous freeze frames to show only latest
         self.model.freeze_frames = []
@@ -317,13 +357,13 @@ class DTCController(BaseController):
                 else:
                     status_str = "读取失败"
 
-                self.view.update_freeze_read_status(row_index, status_str, raw_hex)
+                self.view.update_freeze_read_status_by_code(dtc_code, status_str, raw_hex)
 
                 # Update model persistence
                 self._update_dtc_freeze_status(dtc_code, status_str, raw_hex)
             else:
                 self.view.append_log("冻结帧无响应")
-                self.view.update_freeze_read_status(row_index, "读取失败", "")
+                self.view.update_freeze_read_status_by_code(dtc_code, "读取失败", "")
                 self._update_dtc_freeze_status(dtc_code, "读取失败", "")
         finally:
             self.view.set_freeze_buttons_enabled(True)
@@ -369,8 +409,11 @@ class DTCController(BaseController):
         # Clear model regardless of response (optimistic)
         self.model.dtcs = []
         self.model.freeze_frames = []
+        self.last_read_time = None
         self.model.categories = ["全部故障 (0)", "当前故障 (0)", "历史故障 (0)", "未决故障 (0)"]
         self.model.dataChanged.emit()
+        self.view.last_read_label.setText("最后读取时间：—")
+        self.view.freeze_time_label.setText("最后读取时间：—")
         self.view.append_log("已发送清除故障码请求并清空界面")
         self.save_dtc_list()
 
@@ -389,6 +432,56 @@ class DTCController(BaseController):
             filtered = [d for d in filtered if s in d[0].lower() or s in d[1].lower()]
 
         return filtered
+
+    def _on_header_section_clicked(self, logical_index: int) -> None:
+        """处理表头点击事件，三态排序：升序 → 降序 → 取消排序"""
+        header = self.view.fault_table.horizontalHeader()
+
+        # 跳过不应排序的列：序号(0)、冻结帧操作(7)、冻结帧数据(8)
+        if logical_index in (0, 7, 8):
+            return
+
+        if self._sort_col == logical_index:
+            if self._sort_order == Qt.AscendingOrder:
+                self._sort_order = Qt.DescendingOrder
+            else:
+                # 降序 → 取消排序，恢复原始顺序
+                self._sort_col = -1
+                if hasattr(header, 'setCustomSort'):
+                    header.setCustomSort(-1, Qt.AscendingOrder)
+                else:
+                    header.setSortIndicatorShown(False)
+                self.refresh_view()
+                return
+        else:
+            self._sort_col = logical_index
+            self._sort_order = Qt.AscendingOrder
+
+        # 更新排序指示器
+        if hasattr(header, 'setCustomSort'):
+            header.setCustomSort(self._sort_col, self._sort_order)
+        else:
+            header.setSortIndicatorShown(True)
+            header.setSortIndicator(self._sort_col, self._sort_order)
+
+        self.refresh_view()
+
+    def _apply_sort(self, dtcs):
+        """对 DTC 列表按当前排序列和顺序排序"""
+        col = self._sort_col
+        reverse = (self._sort_order == Qt.DescendingOrder)
+
+        def sort_key(row):
+            if col < len(row):
+                val = row[col]
+                # 尝试数值排序（状态码等）
+                try:
+                    return (0, int(val, 16) if val.startswith("0x") else int(val))
+                except (ValueError, AttributeError):
+                    return (1, str(val).lower())
+            return (1, "")
+
+        return sorted(dtcs, key=sort_key, reverse=reverse)
 
     def _bytes_to_dtc_code(self, b):
         # ISO 15031-6 DTC format

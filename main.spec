@@ -1,4 +1,14 @@
 # -*- mode: python ; coding: utf-8 -*-
+"""
+PyInstaller spec for VCC – 车载测试平台
+=========================================
+安全加固措施:
+  1. optimize=2        – 移除 docstring 与 assert，增大反编译难度
+  2. excludes          – 排除测试/调试/构建相关模块，减小攻击面
+  3. strip             – 去除 ELF/PE 符号信息（UPX 进一步压缩）
+  4. noarchive=False   – 使用 PYZ 归档字节码，不暴露 .pyc 散文件
+配合外部 PyArmor 混淆脚本使用可达到商业级源码保护。
+"""
 
 import os
 from PyInstaller.building.build_main import Analysis, PYZ, EXE, COLLECT
@@ -25,6 +35,26 @@ def _collect_dir_datas(src_root: str, dest_prefix: str):
             collected.append((os.path.join(root, fn), dest_dir))
     return collected
 
+
+# ── 排除不需要打入安装包的模块，减小体积并降低攻击面 ──
+_excludes = [
+    # 测试框架
+    'unittest', 'pytest', 'doctest', 'test', 'tests',
+    # 调试/开发工具
+    'pdb', 'ipdb', 'pudb', 'wdb',
+    'IPython', 'jupyter', 'notebook',
+    # 构建工具（保留 setuptools/pkg_resources/wheel，很多库运行时需要）
+    'pip',
+    # IDE 辅助
+    'pydev', 'pydevd', '_pydevd_bundle',
+    # 不需要的标准库模块
+    'tkinter', 'turtle', 'turtledemo',
+    'lib2to3', 'ensurepip', 'venv',
+    'xmlrpc', 'ftplib', 'telnetlib',
+    'webbrowser', 'antigravity',
+    'idlelib', 'sqlite3',
+]
+
 binaries = []
 datas = []
 
@@ -47,16 +77,98 @@ if not os.path.exists(_icon_path):
     _icon_path = None
 
 
+_hiddenimports = [
+    # ── cryptography / TLS ──
+    'cryptography',
+    'cryptography.hazmat',
+    'cryptography.hazmat.backends',
+    'cryptography.hazmat.backends.openssl',
+    'cryptography.hazmat.primitives',
+    'cryptography.hazmat.primitives.asymmetric',
+    'cryptography.hazmat.primitives.ciphers',
+    'cryptography.hazmat.primitives.hashes',
+    'cryptography.hazmat.primitives.kdf',
+    'cryptography.hazmat.primitives.serialization',
+    'cryptography.x509',
+    'cryptography.fernet',
+    # ── cffi / pycparser ──
+    'cffi',
+    '_cffi_backend',
+    'pycparser',
+    # ── bcrypt / NaCl ──
+    'bcrypt',
+    'nacl',
+    'nacl.bindings',
+    'nacl.public',
+    'nacl.signing',
+    'nacl.encoding',
+    # ── paramiko / SSH ──
+    'paramiko',
+    'paramiko.transport',
+    'paramiko.channel',
+    'paramiko.sftp_client',
+    'paramiko.ssh_exception',
+    # ── scp ──
+    'scp',
+    # ── scapy / 网络 ──
+    'scapy',
+    'scapy.all',
+    'scapy.arch',
+    'scapy.arch.windows',
+    'scapy.config',
+    'scapy.layers',
+    'scapy.layers.l2',
+    'scapy.layers.inet',
+    'scapy.layers.inet6',
+    'scapy.sendrecv',
+    'scapy.utils',
+    'scapy.contrib.automotive',
+    'scapy.contrib.automotive.someip',
+    # ── psutil ──
+    'psutil',
+    '_psutil_windows',
+    # ── doipclient ──
+    'doipclient',
+    # ── invoke ──
+    'invoke',
+    # ── PyQt5 插件 ──
+    'PyQt5',
+    'PyQt5.QtCore',
+    'PyQt5.QtGui',
+    'PyQt5.QtWidgets',
+    'PyQt5.QtChart',
+    'PyQt5.sip',
+    # ── Excel ──
+    'openpyxl',
+    'openpyxl.cell',
+    'openpyxl.styles',
+    'openpyxl.workbook',
+    'openpyxl.worksheet',
+    # ── 其他常用 ──
+    'json',
+    'xml',
+    'xml.etree',
+    'xml.etree.ElementTree',
+    'logging',
+    'multiprocessing',
+    'subprocess',
+    'socket',
+    'struct',
+    'binascii',
+    'hashlib',
+    'hmac',
+]
+
 a = Analysis(
     ['main.py'],
     pathex=[_spec_dir],
     binaries=binaries,
     datas=datas,
-    hiddenimports=[],
+    hiddenimports=_hiddenimports,
     hookspath=[],
     hooksconfig={},
     runtime_hooks=runtime_hooks,
-    excludes=[],
+    excludes=_excludes,
     noarchive=False,
     optimize=2,
 )

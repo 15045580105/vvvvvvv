@@ -53,7 +53,7 @@ class DIDLoaderThread(QtCore.QThread):
                 rows.append(DIDTableRow(
                     description=item.get("description", ""),
                     did=item.get("did", ""),
-                    data_format=item.get("data_format", "STR"),
+                    data_format=item.get("data_format", "HEX"),
                     follow_dpt=item.get("follow_dpt", False),
                     diagnostic_session=item.get("diagnostic_session", "Default"),
                     security_access=item.get("security_access", "Locked"),

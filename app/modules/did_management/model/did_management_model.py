@@ -22,7 +22,7 @@ class DIDBitRow:
 class DIDTableRow:
     description: str
     did: str
-    data_format: str = "STR"
+    data_format: str = "HEX"
     follow_dpt: bool = False
     diagnostic_session: str = "Default"
     security_access: str = "Locked"

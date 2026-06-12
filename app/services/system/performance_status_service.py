@@ -51,7 +51,9 @@ class PerformanceStatusService:
             "ssh": "离线",
             "doip": "离线",
             "someip": "离线",
-            "doip_device": None
+            "doip_device": None,
+            "ssh_device": None,
+            "someip_device": None,
         }
         if not self._device_model:
             return status
@@ -61,13 +63,20 @@ class PerformanceStatusService:
         devices = getattr(self._device_model, "devices", []) or []
 
         for idx, d in enumerate(devices, start=1):
-            if d.get("ssh_connect_status") == ONLINE:
+            device_label = str(idx)
+            ssh_st = str(d.get("ssh_connect_status", ""))
+            doip_st = str(d.get("doip_connect_status", ""))
+            someip_st = str(d.get("someip_connect_status", ""))
+
+            if "建链成功" in ssh_st or "在线" in ssh_st:
                 status["ssh"] = "在线"
-            if d.get("doip_connect_status") == ONLINE:
+                status["ssh_device"] = device_label
+            if "建链成功" in doip_st or "在线" in doip_st:
                 status["doip"] = "在线"
-                status["doip_device"] = str(d.get("id", idx))
-            if d.get("someip_connect_status") == ONLINE:
+                status["doip_device"] = device_label
+            if "建链成功" in someip_st or "在线" in someip_st:
                 status["someip"] = "在线"
+                status["someip_device"] = device_label
 
         return status
 

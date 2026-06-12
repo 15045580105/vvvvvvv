@@ -208,9 +208,15 @@ class MainView(QtWidgets.QMainWindow):
         doip_status = protocol_status.get("doip", "离线")
         someip_status = protocol_status.get("someip", "离线")
         doip_device = protocol_status.get("doip_device")
+        ssh_device = protocol_status.get("ssh_device")
+        someip_device = protocol_status.get("someip_device")
 
-        self.ssh_status_label.setText(f"SSH: {'✅' if ssh_status == '在线' else '⏸️'} {ssh_status}")
-        self.ssh_status_label.setStyleSheet("color: #10B981;" if ssh_status == "在线" else "color: #6B7280;")
+        if ssh_status == "在线" and ssh_device:
+            self.ssh_status_label.setText(f"SSH (设备{ssh_device}): ✅ 在线")
+            self.ssh_status_label.setStyleSheet("color: #10B981;")
+        else:
+            self.ssh_status_label.setText(f"SSH: ⏸️ 离线")
+            self.ssh_status_label.setStyleSheet("color: #6B7280;")
 
         if doip_status == "在线" and doip_device:
             self.doip_status_label.setText(f"DoIP (设备{doip_device}): ✅ 在线")
@@ -219,8 +225,12 @@ class MainView(QtWidgets.QMainWindow):
             self.doip_status_label.setText("DoIP: ⏸️ 离线")
             self.doip_status_label.setStyleSheet("color: #6B7280;")
 
-        self.someip_status_label.setText(f"SOMEIP: {'✅' if someip_status == '在线' else '⏸️'} {someip_status}")
-        self.someip_status_label.setStyleSheet("color: #10B981;" if someip_status == "在线" else "color: #6B7280;")
+        if someip_status == "在线" and someip_device:
+            self.someip_status_label.setText(f"SOMEIP (设备{someip_device}): ✅ 在线")
+            self.someip_status_label.setStyleSheet("color: #10B981;")
+        else:
+            self.someip_status_label.setText(f"SOMEIP: ⏸️ 离线")
+            self.someip_status_label.setStyleSheet("color: #6B7280;")
 
     def show_settings_dialog(self, page_id: str | None = None, focus_target: str | None = None):
         if self.settings_controller is None:

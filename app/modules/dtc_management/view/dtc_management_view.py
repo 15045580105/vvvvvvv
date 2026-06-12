@@ -10,9 +10,71 @@ from app.common.ui.log_panel import LogPanelBuilder
 from app.presentation.views.base_view import BaseView
 
 
+class DTCSortHeader(QtWidgets.QHeaderView):
+    """自定义表头，绘制醒目的排序指示器（带背景圆角矩形 + 大箭头）"""
+
+    def __init__(self, orientation, parent=None):
+        super().__init__(orientation, parent)
+        self._sort_logical_index = -1
+        self._sort_order = Qt.AscendingOrder
+
+    def setCustomSort(self, logical_index: int, order: Qt.SortOrder):
+        """设置自定义排序状态并重绘表头。"""
+        self._sort_logical_index = logical_index
+        self._sort_order = order
+        self.viewport().update()
+
+    def paintSection(self, painter, rect, logicalIndex):
+        painter.save()
+        super().paintSection(painter, rect, logicalIndex)
+        painter.restore()
+
+        if logicalIndex == self._sort_logical_index:
+            painter.save()
+            painter.setRenderHint(QtGui.QPainter.Antialiasing)
+
+            # 右侧绘制醒目的靛蓝色竖条作为排序标识
+            bar_width = 4
+            bar_margin = 6
+            bar_rect = QtCore.QRect(
+                rect.right() - bar_margin - bar_width,
+                rect.top() + 4,
+                bar_width,
+                rect.height() - 8
+            )
+            painter.setPen(QtCore.Qt.NoPen)
+            painter.setBrush(QtGui.QColor("#4338CA"))
+            painter.drawRoundedRect(bar_rect, 2, 2)
+
+            # 箭头配置
+            arrow_size = 5
+            margin_right = bar_margin + bar_width + 6
+
+            cx = rect.right() - margin_right - arrow_size
+            cy = rect.center().y()
+
+            arrow_color = QtGui.QColor("#4338CA")
+            painter.setBrush(arrow_color)
+            painter.setPen(QtCore.Qt.NoPen)
+
+            path = QtGui.QPainterPath()
+            if self._sort_order == Qt.AscendingOrder:
+                path.moveTo(cx, cy - arrow_size)
+                path.lineTo(cx - arrow_size, cy + arrow_size)
+                path.lineTo(cx + arrow_size, cy + arrow_size)
+            else:
+                path.moveTo(cx, cy + arrow_size)
+                path.lineTo(cx - arrow_size, cy - arrow_size)
+                path.lineTo(cx + arrow_size, cy - arrow_size)
+
+            path.closeSubpath()
+            painter.drawPath(path)
+            painter.restore()
+
+
 class DTCView(BaseView):
     read_dtc_signal = QtCore.pyqtSignal()
-    read_freeze_frame_signal = QtCore.pyqtSignal(int)
+    read_freeze_frame_signal = QtCore.pyqtSignal(str)
     filter_changed_signal = QtCore.pyqtSignal(str)
     clear_dtc_signal = QtCore.pyqtSignal()
     search_changed_signal = QtCore.pyqtSignal(str)
@@ -218,7 +280,8 @@ class DTCView(BaseView):
         self.fault_table.verticalHeader().setVisible(False)
         self.fault_table.setAlternatingRowColors(True)
         self.fault_table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
-        header = self.fault_table.horizontalHeader()
+        header = DTCSortHeader(Qt.Horizontal, self.fault_table)
+        self.fault_table.setHorizontalHeader(header)
         header.setSectionResizeMode(QtWidgets.QHeaderView.Interactive)
         header.setSectionResizeMode(0, QtWidgets.QHeaderView.ResizeToContents)
         header.setSectionResizeMode(self.fault_table.columnCount() - 1, QtWidgets.QHeaderView.Stretch)
@@ -447,7 +510,7 @@ class DTCView(BaseView):
 
                 btn = QtWidgets.QPushButton("读取冻结帧")
                 btn.setCursor(QtGui.QCursor(Qt.PointingHandCursor))
-                btn.setProperty("row", r)
+                btn.setProperty("dtc_code", code)
                 btn.setMinimumWidth(90)
                 btn.setStyleSheet("""
                     QPushButton {
@@ -594,9 +657,17 @@ class DTCView(BaseView):
     def on_click_freeze_btn(self):
         btn = self.sender()
         if btn:
-            row = btn.property("row")
-            if row is not None:
-                self.read_freeze_frame_signal.emit(row)
+            dtc_code = btn.property("dtc_code")
+            if dtc_code:
+                self.read_freeze_frame_signal.emit(dtc_code)
+
+    def update_freeze_read_status_by_code(self, dtc_code, status_str, freeze_data):
+        """通过 DTC 码查找可视行并更新冻结帧状态和数据"""
+        for row in range(self.fault_table.rowCount()):
+            item = self.fault_table.item(row, 1)
+            if item and item.text() == dtc_code:
+                self.update_freeze_read_status(row, status_str, freeze_data)
+                return
 
     def update_freeze_read_status(self, row_index, status_str, freeze_data):
         """更新指定行的冻结帧状态和数据"""
