@@ -157,35 +157,59 @@ class LogConfigView(BaseView):
         content_widget = QtWidgets.QWidget()
         layout = QtWidgets.QVBoxLayout(content_widget)
 
-        # 控制区域
-        controls_layout = QtWidgets.QGridLayout()
-        controls_layout.setHorizontalSpacing(12)
-        controls_layout.setVerticalSpacing(12)
+        # === 控制区域：所有控件放在同一行 ===
+        controls_layout = QtWidgets.QHBoxLayout()
+        controls_layout.setSpacing(12)
 
-        # Row 0: ECU select
-        controls_layout.addWidget(QtWidgets.QLabel("请选择ECU:"), 0, 0)
+        controls_layout.addWidget(QtWidgets.QLabel("请选择ECU:"))
         self.ecu_select_combo = MultiSelectComboBox()
-        self.ecu_select_combo.setMinimumWidth(250)
+        self.ecu_select_combo.setMinimumWidth(200)
         self.ecu_select_combo.addItems(["CCUA", "CCU0", "CCU1"])
-        controls_layout.addWidget(self.ecu_select_combo, 0, 1)
+        controls_layout.addWidget(self.ecu_select_combo)
 
-        # Row 1: Log level select
-        controls_layout.addWidget(QtWidgets.QLabel("请选择日志等级:"), 1, 0)
+        controls_layout.addWidget(QtWidgets.QLabel("请选择日志等级:"))
         self.ecu_log_level_combo = QtWidgets.QComboBox()
-        self.ecu_log_level_combo.setMinimumWidth(250)
+        self.ecu_log_level_combo.setMinimumWidth(150)
         self.ecu_log_level_combo.addItems(["OFF", "FATAL", "ERROR", "WARN", "INFO", "DEBUG", "VERBOSE"])
         _setup_searchable_combo(self.ecu_log_level_combo)
-        controls_layout.addWidget(self.ecu_log_level_combo, 1, 1)
+        controls_layout.addWidget(self.ecu_log_level_combo)
 
-        # Row 2: Execute button
         self.ecu_execute_btn = ModernButton("执行配置", "#3B82F6", "✔")
         self.ecu_execute_btn.setFixedWidth(120)
-        controls_layout.addWidget(self.ecu_execute_btn, 2, 1, QtCore.Qt.AlignmentFlag.AlignLeft)
+        controls_layout.addWidget(self.ecu_execute_btn)
 
-        controls_layout.setColumnStretch(2, 1)
+        controls_layout.addStretch()
+
+        self.ecu_status_refresh_btn = ModernButton("刷新", "#0EA5E9", "🔄")
+        self.ecu_status_refresh_btn.setFixedWidth(80)
+        controls_layout.addWidget(self.ecu_status_refresh_btn)
+
         layout.addLayout(controls_layout)
 
-        layout.addStretch()
+        # === ECU 日志等级状态表格（仿照 APP 表格样式） ===
+        self.ecu_status_table = QtWidgets.QTableWidget(3, 3)
+        self.ecu_status_table.setHorizontalHeaderLabels(["序号", "ECU", "日志等级"])
+        self.ecu_status_table.verticalHeader().setVisible(False)
+        self.ecu_status_table.setAlternatingRowColors(True)
+        self.ecu_status_table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
+        self.ecu_status_table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
+        self.ecu_status_table.verticalHeader().setDefaultSectionSize(40)
+
+        ecu_header = self.ecu_status_table.horizontalHeader()
+        for i in range(3):
+            ecu_header.setSectionResizeMode(i, QtWidgets.QHeaderView.Interactive)
+        ecu_header.setStretchLastSection(True)
+        self.ecu_status_table.setColumnWidth(0, 80)   # 序号
+        self.ecu_status_table.setColumnWidth(1, 150)  # ECU
+
+        # 预填充 3 行
+        ecu_names = ["CCUA", "CCU0", "CCU1"]
+        for idx, ecu_name in enumerate(ecu_names):
+            self.ecu_status_table.setItem(idx, 0, self._centered_item(str(idx + 1)))
+            self.ecu_status_table.setItem(idx, 1, self._centered_item(ecu_name))
+            self.ecu_status_table.setItem(idx, 2, self._centered_item("--"))
+
+        layout.addWidget(self.ecu_status_table, stretch=2)
 
         # 操作日志区
         log_group = QtWidgets.QGroupBox("操作日志")
@@ -500,6 +524,22 @@ class LogConfigView(BaseView):
         else:
             self.restore_progress_bar.setRange(0, 1)
             self.restore_progress_bar.setValue(1)
+
+    @staticmethod
+    def _centered_item(text: str) -> QtWidgets.QTableWidgetItem:
+        item = QtWidgets.QTableWidgetItem(text)
+        item.setTextAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+        return item
+
+    def update_ecu_status_table(self, levels: dict):
+        """更新 ECU 状态表格的日志等级列。
+        levels: {"CCUA": "INFO", "CCU0": "WARN", "CCU1": "ERROR"}
+        """
+        ecu_row_map = {"CCUA": 0, "CCU0": 1, "CCU1": 2}
+        for ecu_name, row in ecu_row_map.items():
+            level = levels.get(ecu_name, "--")
+            item = self._centered_item(str(level))
+            self.ecu_status_table.setItem(row, 2, item)
 
     def populate(self, apps, start_index=1):
         """Populate the APP table.

@@ -1094,6 +1094,40 @@ class LogConfigService(BaseService):
 
         return result
 
+    def read_ecu_log_levels(self) -> Dict[str, str]:
+        """回读 CCUA/CCU0/CCU1 三个 ECU 的当前日志等级。
+        返回 {"CCUA": "INFO", "CCU0": "WARN", "CCU1": "ERROR"} 格式。
+        """
+        _log = self._get_log_emit()
+        result: Dict[str, str] = {"CCUA": "--", "CCU0": "--", "CCU1": "--"}
+
+        if not self._device_service:
+            _log("DeviceService 未注入，无法读取 ECU 日志等级")
+            return result
+
+        ecu_dids = {"CCU0": 0xBE02, "CCU1": 0xBE03, "CCUA": 0xBE17}
+
+        for ecu_name, did in ecu_dids.items():
+            try:
+                val = self._read_uds_did_byte(did)
+                if val is not None:
+                    if ecu_name == "CCUA":
+                        is_individual_mode = (val & 0x80) != 0
+                        if not is_individual_mode:
+                            result[ecu_name] = self._map_val_to_level_str(val)
+                        else:
+                            result[ecu_name] = self._map_val_to_level_str(val) + "(个性化)"
+                    else:
+                        result[ecu_name] = self._map_val_to_level_str(val)
+                else:
+                    result[ecu_name] = "读取失败"
+                    _log(f"[{ecu_name}] DID 0x{did:04X} 读取失败")
+            except Exception as e:
+                result[ecu_name] = "异常"
+                _log(f"[{ecu_name}] 读取异常: {e}")
+
+        return result
+
     def export_logs(self, app_ids: List[str], destination: str) -> bool:
         """Export logs for selected apps."""
         print(f"正在将 {app_ids} 的日志导出到 {destination}")

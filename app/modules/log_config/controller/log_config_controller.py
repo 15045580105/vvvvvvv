@@ -83,6 +83,9 @@ class LogConfigController(BaseController):
         # Import Map File
         self.view.import_map_btn.clicked.connect(self._on_import_map)
 
+        # ECU Status Table Refresh
+        self.view.ecu_status_refresh_btn.clicked.connect(self._on_ecu_status_refresh)
+
         self.log_config_service.log_signal.connect(self.update_log)
 
     def update_log(self, message):
@@ -174,6 +177,52 @@ class LogConfigController(BaseController):
 
         return "\n".join(lines)
 
+    def _on_ecu_status_refresh(self):
+        """点击 ECU 状态表格的“刷新”按钮时触发"""
+        if getattr(self, '_is_ecu_status_refreshing', False):
+            self.view.show_message("正在读取 ECU 日志等级，请稍候...", "info")
+            return
+        self._is_ecu_status_refreshing = True
+        self.view.ecu_status_refresh_btn.setEnabled(False)
+        self.view.append_log("开始回读 ECU 日志等级状态...")
+
+        def task():
+            return self.log_config_service.read_ecu_log_levels()
+
+        worker = Worker(task)
+        worker.log_signal.connect(self.view.append_log)
+
+        def on_finished(levels):
+            self._is_ecu_status_refreshing = False
+            self.view.ecu_status_refresh_btn.setEnabled(True)
+            if isinstance(levels, dict):
+                self.view.update_ecu_status_table(levels)
+                self.view.append_log(f"ECU 日志等级回读完成: {levels}")
+            else:
+                self.view.append_log("ECU 日志等级回读失败")
+
+        worker.result_signal.connect(on_finished)
+        worker.start()
+        self._workers.append(worker)
+        worker.finished.connect(lambda: self._workers.remove(worker) if worker in self._workers else None)
+
+    def _refresh_ecu_status_table(self):
+        """内部方法：异步回读 ECU 日志等级并更新表格（执行配置后自动调用）"""
+        def task():
+            return self.log_config_service.read_ecu_log_levels()
+
+        worker = Worker(task)
+        worker.log_signal.connect(self.view.append_log)
+
+        def on_finished(levels):
+            if isinstance(levels, dict):
+                self.view.update_ecu_status_table(levels)
+
+        worker.result_signal.connect(on_finished)
+        worker.start()
+        self._workers.append(worker)
+        worker.finished.connect(lambda: self._workers.remove(worker) if worker in self._workers else None)
+
     def _on_import_map(self):
         from PyQt5 import QtWidgets
         file_path, _ = QtWidgets.QFileDialog.getOpenFileName(
@@ -256,6 +305,9 @@ class LogConfigController(BaseController):
                 )
             else:
                 self.view.show_message("所有 ECU 日志等级配置均失败，请检查日志", "error")
+
+            # 执行完成后自动回读并更新 ECU 状态表格
+            self._refresh_ecu_status_table()
 
         worker.result_signal.connect(on_finished)
         worker.start()
