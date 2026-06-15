@@ -12,12 +12,16 @@ from app.modules.file_transfer.model.file_transfer_model import FileTransferMode
 from app.modules.file_transfer.view.file_transfer_view import FileTransferView
 from app.services.device_manage.device_service import DeviceService
 from app.services.system.config_service import ConfigService
+from app.services.file_manage.progress.progress import ProgressReporter
+import scp
 
 
 class FileTransferController(BaseController):
     # Defining signals for thread-safe UI updates
     refresh_local_signal = QtCore.pyqtSignal()
     refresh_remote_signal = QtCore.pyqtSignal()
+    transfer_progress_signal = QtCore.pyqtSignal(str, str, int, str, str)
+    transfer_progress_done_signal = QtCore.pyqtSignal()
 
     def __init__(self, parent=None):
         self.model = FileTransferModel()
@@ -36,6 +40,8 @@ class FileTransferController(BaseController):
         # Internal signals connection
         self.refresh_local_signal.connect(self.refresh_local_directory)
         self.refresh_remote_signal.connect(self._refresh_remote_current_path)
+        self.transfer_progress_signal.connect(self._on_transfer_progress)
+        self.transfer_progress_done_signal.connect(self._on_transfer_progress_done)
 
         self._init_view_connections()
         self._init_device_list()
@@ -261,16 +267,39 @@ class FileTransferController(BaseController):
         t.start()
 
     def _upload_task(self, local_paths, remote_dir):
-        if not self.model.scp_client: return
+        if not self.model.ssh_client:
+            return
 
-        self.view.append_log(f"开始上传 {len(local_paths)} 个项目到 {remote_dir}")
-        for path in local_paths:
+        transport = self.model.ssh_client.get_transport()
+        if not transport or not transport.is_active():
+            self.view.append_log("上传失败: SSH连接不可用")
+            return
+
+        total_files = len(local_paths)
+        self.view.append_log(f"开始上传 {total_files} 个项目到 {remote_dir}")
+        for idx, path in enumerate(local_paths, 1):
+            filename = os.path.basename(path)
+            reporter = ProgressReporter(interval_seconds=0.3)
+            scp_client = None
             try:
-                self.model.scp_client.put(path, remote_dir, recursive=True)
-                self.view.append_log(f"上传成功: {os.path.basename(path)}")
-            except Exception as e:
-                self.view.append_log(f"上传失败 {os.path.basename(path)}: {e}")
+                def _progress_cb(_filename, size, sent):
+                    percent, speed_str, emit = reporter.update(sent, size)
+                    if emit:
+                        self.transfer_progress_signal.emit("上传", filename, percent, self._format_size(size), speed_str)
 
+                scp_client = scp.SCPClient(transport, progress=_progress_cb)
+                scp_client.put(path, remote_dir, recursive=True)
+                self.view.append_log(f"上传成功: {filename}")
+            except Exception as e:
+                self.view.append_log(f"上传失败 {filename}: {e}")
+            finally:
+                if scp_client:
+                    try:
+                        scp_client.close()
+                    except Exception:
+                        pass
+
+        self.transfer_progress_done_signal.emit()
         self.refresh_remote_signal.emit()
 
     def handle_download_request(self):
@@ -291,17 +320,46 @@ class FileTransferController(BaseController):
         t.start()
 
     def _download_task(self, remote_paths, local_dir):
-        if not self.model.scp_client: return
+        if not self.model.ssh_client:
+            return
 
-        self.view.append_log(f"开始下载 {len(remote_paths)} 个项目到 {local_dir}")
-        for path in remote_paths:
+        transport = self.model.ssh_client.get_transport()
+        if not transport or not transport.is_active():
+            self.view.append_log("下载失败: SSH连接不可用")
+            return
+
+        total_files = len(remote_paths)
+        self.view.append_log(f"开始下载 {total_files} 个项目到 {local_dir}")
+        for idx, path in enumerate(remote_paths, 1):
+            filename = os.path.basename(path)
+            reporter = ProgressReporter(interval_seconds=0.3)
+            scp_client = None
             try:
-                self.model.scp_client.get(path, local_dir, recursive=True)
-                self.view.append_log(f"下载成功: {os.path.basename(path)}")
-            except Exception as e:
-                self.view.append_log(f"下载失败 {os.path.basename(path)}: {e}")
+                def _progress4_cb(_filename, size, sent, _peername):
+                    percent, speed_str, emit = reporter.update(sent, size)
+                    if emit:
+                        self.transfer_progress_signal.emit("下载", filename, percent, self._format_size(size), speed_str)
 
+                scp_client = scp.SCPClient(transport, progress4=_progress4_cb)
+                scp_client.get(path, local_dir, recursive=True)
+                self.view.append_log(f"下载成功: {filename}")
+            except Exception as e:
+                self.view.append_log(f"下载失败 {filename}: {e}")
+            finally:
+                if scp_client:
+                    try:
+                        scp_client.close()
+                    except Exception:
+                        pass
+
+        self.transfer_progress_done_signal.emit()
         self.refresh_local_signal.emit()
+
+    def _on_transfer_progress(self, action, filename, percent, total_size_str, speed_str):
+        self.view.set_transfer_progress(action, filename, percent, total_size_str, speed_str)
+
+    def _on_transfer_progress_done(self):
+        self.view.hide_transfer_progress()
 
     def _refresh_remote_current_path(self):
         """Helper to refresh remote view without full reconnect logic if possible"""

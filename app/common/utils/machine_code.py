@@ -19,7 +19,6 @@ def _run_command(cmd: str) -> str:
 def _extended_hardware_fingerprint() -> str:
     pieces = [
         socket.gethostname(),
-        socket.getfqdn(),
         platform.system(),
         platform.release(),
         platform.version(),

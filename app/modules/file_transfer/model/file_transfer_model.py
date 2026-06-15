@@ -78,7 +78,6 @@ class FileTransferModel(BaseModel):
             try:
                 self.sftp_client = self.ssh_client.open_sftp()
             except Exception as e:
-                print(f"SFTP not available: {e}")
                 self.sftp_client = None
 
             self.connected = True
@@ -107,7 +106,6 @@ class FileTransferModel(BaseModel):
             try:
                 self.sftp_client = self.ssh_client.open_sftp()
             except Exception as e:
-                print(f"SFTP not available: {e}")
                 self.sftp_client = None
 
             self.connected = True

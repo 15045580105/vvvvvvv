@@ -5,7 +5,7 @@ from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QLineEdit, QPushButton, QTreeWidget, QTreeWidgetItem,
     QStyle, QGroupBox, QSplitter,
-    QMessageBox, QComboBox, QTextEdit
+    QMessageBox, QComboBox, QTextEdit, QProgressBar
 )
 from app.common.log.operation_log_manager import OperationLogManager
 from app.presentation.views.base_view import BaseView
@@ -220,6 +220,20 @@ class FileTransferView(BaseView):
         LogPanelBuilder.attach_search(bottom_layout, self.transfer_log)
         bottom_layout.addWidget(self.transfer_log)
 
+        # Progress UI - above log area
+        self.transfer_progress_label = QLabel("")
+        self.transfer_progress_label.setStyleSheet("color: #6B7280;")
+        self.transfer_progress_label.hide()
+        bottom_layout.addWidget(self.transfer_progress_label)
+
+        self.transfer_progress_bar = QProgressBar()
+        self.transfer_progress_bar.setTextVisible(True)
+        self.transfer_progress_bar.setRange(0, 100)
+        self.transfer_progress_bar.setValue(0)
+        self.transfer_progress_bar.setFixedHeight(20)
+        self.transfer_progress_bar.hide()
+        bottom_layout.addWidget(self.transfer_progress_bar)
+
         self.main_splitter = LogAreaSplitter(self, min_log_height=150, max_log_ratio=0.8)
         self.main_splitter.set_panels(top_splitter, bottom_group, initial_log_height=120)
 
@@ -416,6 +430,20 @@ class FileTransferView(BaseView):
     def append_log(self, message):
         self.transfer_log.append(f"[{QtCore.QTime.currentTime().toString()}] {message}")
         OperationLogManager.instance().append_log("文件传输", message)
+
+    def set_transfer_progress(self, action: str, filename: str, percent: int, total_size_str: str, speed_str: str):
+        """更新传输进度显示。"""
+        self.transfer_progress_label.show()
+        self.transfer_progress_bar.show()
+        self.transfer_progress_label.setText(f"{action}: {filename}  {speed_str}")
+        self.transfer_progress_bar.setValue(percent)
+
+    def hide_transfer_progress(self):
+        """隐藏传输进度显示。"""
+        self.transfer_progress_label.hide()
+        self.transfer_progress_bar.hide()
+        self.transfer_progress_bar.setValue(0)
+        self.transfer_progress_label.setText("")
 
     def show_toast(self, message, message_type=1): # Default to Error (1) as requested context implies "Not Connected"
         # But generic usage might be Info.

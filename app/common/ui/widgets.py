@@ -287,7 +287,13 @@ class CheckableComboBox(QtWidgets.QComboBox):
     checkedItemsChanged = QtCore.pyqtSignal(list, str)
 
     def __init__(self, parent=None):
+        # 这三个标记必须在 super().__init__() 之前初始化，
+        # 因为 QComboBox.__init__ 可能间接触发 hidePopup/showPopup。
+        self._is_updating = False
+        self._closed_by_popup_system = False
+        self._toggling = False
         super(CheckableComboBox, self).__init__(parent)
+
         self.setView(QtWidgets.QListView())
         self.view().window().setWindowFlags(QT_WINDOW_POPUP | QT_WINDOW_FRAMELESS | QT_WINDOW_NO_SHADOW)
         self.view().window().setAttribute(QT_ATTR_TRANSLUCENT_BG)
@@ -303,8 +309,7 @@ class CheckableComboBox(QtWidgets.QComboBox):
         self.model.itemChanged.connect(self.onItemChanged)
         self.lineEdit().installEventFilter(self)
         self.view().viewport().installEventFilter(self)
-
-        self._is_updating = False
+        self.installEventFilter(self)  # 拦截 combobox 自身（边框/箭头区域）的点击
 
         # Add Select All item
         self.selectAllItem = QtGui.QStandardItem("(全选)")
@@ -365,7 +370,15 @@ class CheckableComboBox(QtWidgets.QComboBox):
     def showPopup(self):
         if not self.isEnabled():
             return
+        self._closed_by_popup_system = False
         super(CheckableComboBox, self).showPopup()
+
+    def hidePopup(self):
+        toggling = getattr(self, '_toggling', False)
+        self._closed_by_popup_system = not toggling
+        super(CheckableComboBox, self).hidePopup()
+        if self._closed_by_popup_system:
+            QtCore.QTimer.singleShot(0, lambda: setattr(self, '_closed_by_popup_system', False))
 
     def onItemChanged(self, item):
         if self._is_updating:
@@ -443,7 +456,15 @@ class CheckableComboBox(QtWidgets.QComboBox):
             return False
         if widget == self.lineEdit():
             if event.type() == QT_EVENT_MOUSE_BUTTON_PRESS:
-                self.showPopup()
+                self._toggle_popup()
+                return True
+        elif widget == self:
+            # 点击 combobox 边框/箭头区域时也 toggle 弹出层
+            if event.type() == QT_EVENT_MOUSE_BUTTON_PRESS:
+                line_edit = self.lineEdit()
+                if line_edit and line_edit.geometry().contains(event.pos()):
+                    return False  # lineEdit 区域由它自己的 eventFilter 处理
+                self._toggle_popup()
                 return True
         elif widget == self.view().viewport():
             if event.type() == QT_EVENT_MOUSE_BUTTON_RELEASE:
@@ -457,6 +478,29 @@ class CheckableComboBox(QtWidgets.QComboBox):
                         QtCore.QTimer.singleShot(0, self._sync_line_edit_text)
                         return True
         return super(CheckableComboBox, self).eventFilter(widget, event)
+
+    def _toggle_popup(self):
+        """统一切换弹出层：已展开则收起，未展开则弹出。
+
+        当 Qt 弹出层系统因点击外部区域而自动关闭 popup 后，同一帧内的鼠标事件
+        会到达这里。此时 popup 已经不可见，但用户意图是"关闭"而非"重新打开"，
+        因此需要 _closed_by_popup_system 标记来跳过本次 toggle。
+        """
+        if self._closed_by_popup_system:
+            self._closed_by_popup_system = False
+            return
+        self._toggling = True
+        try:
+            if self.view().isVisible():
+                self.hidePopup()
+            else:
+                self.showPopup()
+        finally:
+            self._toggling = False
+
+    def _reset_popup_close_flag(self):
+        """由 QTimer.singleShot(0) 调用，在同一事件循环帧结束后重置标记。"""
+        self._closed_by_popup_system = False
 
 
 class TagWidget(QtWidgets.QFrame):
