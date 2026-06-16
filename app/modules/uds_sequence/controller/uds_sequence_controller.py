@@ -323,25 +323,17 @@ class UDSSequenceController(BaseController):
             self.view.data_table.setStyleSheet(self._normal_stylesheet)
 
     def _on_add_command_requested(self, code: str):
-        # find the command config
-        cmd = self.model.get_command(code)
-        if cmd is not None:
-            # enable editor and set placeholders using human readable name
-            display = f"{code} {cmd.get('name')}" if cmd.get('name') else code
-            self.view.set_editor_enabled(True)
-            self.view.set_placeholders(display)
+        node, _ = self.model.find_node_by_code(code)
+        if node is not None:
+            name = node.get('name', '')
+            cn = NAME_CN.get(name)
+            display_name = f"{code} {name} ({cn})" if cn else f"{code} {name}"
+            request = ' '.join(code.split('.'))
 
-            # Fill the request field automatically: '10' -> '10', '10.01' -> '10 01'
-            request_text = ' '.join(code.split('.'))
-            try:
-                # QTextEdit: setPlainText to place the code into the editor
-                self.view.request_edit.setPlainText(request_text)
-            except Exception:
-                # fallback: if view doesn't expose request_edit, use placeholder only
-                pass
+            # Append to table
+            self.view.append_table_row(display_name, request, "")
+            self.view.log_message(f"添加到末尾: {code} {display_name}")
 
-            # IMPORTANT: do NOT change/clear the right-hand table when clicking the tree.
-            # The table should remain under user control; only update editor placeholders and request text.
         else:
             # Don't clear the table on invalid selection — just disable editor inputs.
             self.view.set_editor_enabled(False)
@@ -357,7 +349,8 @@ class UDSSequenceController(BaseController):
             # Insert at current row or append if no selection
             current_row = self.view.get_current_row()
             if current_row < 0:
-                self._on_add_command_requested(code)
+                self.view.append_table_row(display_name, request, "")
+                self.view.log_message(f"添加到末尾: {code} {display_name}")
                 return
 
             self.view.insert_table_row(current_row, display_name, request, "")

@@ -108,6 +108,68 @@ class CenteredCheckBoxDelegate(QtWidgets.QStyledItemDelegate):
         return super().editorEvent(event, model, option, index)
 
 
+class CheckBoxHeader(QtWidgets.QHeaderView):
+    checkBoxClicked = QtCore.pyqtSignal(int, bool)
+
+    def __init__(self, orientation, parent=None):
+        super().__init__(orientation, parent)
+        self.checkBoxStates = {0: False}
+
+    def paintSection(self, painter, rect, logicalIndex):
+        painter.save()
+        super().paintSection(painter, rect, logicalIndex)
+        painter.restore()
+
+        if logicalIndex in self.checkBoxStates:
+            style = self.style()
+            option = QtWidgets.QStyleOptionViewItem()
+            option.initFrom(self)
+
+            chk_width = style.pixelMetric(QtWidgets.QStyle.PM_IndicatorWidth, option, self)
+            chk_height = style.pixelMetric(QtWidgets.QStyle.PM_IndicatorHeight, option, self)
+
+            x = rect.x() + (rect.width() - chk_width) // 2
+            y = rect.y() + (rect.height() - chk_height) // 2
+
+            option.rect = QtCore.QRect(x, y, chk_width, chk_height)
+            option.state = QtWidgets.QStyle.State_Enabled | QtWidgets.QStyle.State_Active
+            if self.checkBoxStates[logicalIndex]:
+                option.state |= QtWidgets.QStyle.State_On
+                option.checkState = Qt.Checked
+            else:
+                option.state |= QtWidgets.QStyle.State_Off
+                option.checkState = Qt.Unchecked
+            
+            style.drawPrimitive(QtWidgets.QStyle.PE_IndicatorCheckBox, option, painter, self)
+
+    def mousePressEvent(self, event):
+        if event.button() == QtCore.Qt.LeftButton:
+            logicalIndex = self.logicalIndexAt(event.pos())
+            if logicalIndex in self.checkBoxStates:
+                x = self.sectionViewportPosition(logicalIndex)
+                y = 0
+                sec_width = self.sectionSize(logicalIndex)
+                sec_height = self.height()
+
+                style = self.style()
+                option = QtWidgets.QStyleOptionViewItem()
+                option.initFrom(self)
+                chk_width = style.pixelMetric(QtWidgets.QStyle.PM_IndicatorWidth, option, self)
+                chk_height = style.pixelMetric(QtWidgets.QStyle.PM_IndicatorHeight, option, self)
+
+                chk_x = x + (sec_width - chk_width) // 2
+                chk_y = y + (sec_height - chk_height) // 2
+
+                checkRect = QtCore.QRect(chk_x - 4, chk_y - 4, chk_width + 8, chk_height + 8)
+
+                if checkRect.contains(event.pos()):
+                    self.checkBoxStates[logicalIndex] = not self.checkBoxStates[logicalIndex]
+                    self.viewport().update()
+                    self.checkBoxClicked.emit(logicalIndex, self.checkBoxStates[logicalIndex])
+                    return
+        super().mousePressEvent(event)
+
+
 class ExportConfigDialog(QtWidgets.QDialog):
     def __init__(self, config_names, parent=None):
         super().__init__(parent)
@@ -393,6 +455,11 @@ class UDSSequenceView(QtWidgets.QWidget):
 
         menu.exec_(self.data_table.viewport().mapToGlobal(pos))
 
+    def _on_header_checkbox_clicked(self, logicalIndex, state):
+        if logicalIndex == 0:
+            check_state = Qt.Checked if state else Qt.Unchecked
+            self._set_all_check_state(check_state)
+
     def _set_all_check_state(self, state):
         for row in range(self.data_table.rowCount()):
             item = self.data_table.item(row, 0)
@@ -508,6 +575,13 @@ class UDSSequenceView(QtWidgets.QWidget):
         self.toolbar_layout.setSpacing(6)
 
         # --- Config Section ---
+        self.config_group = QtWidgets.QGroupBox("模板操作")
+        self.config_group.setSizePolicy(QtWidgets.QSizePolicy.Fixed, QtWidgets.QSizePolicy.Fixed)
+        self.config_group.setStyleSheet("QGroupBox { font-size: 11px; font-weight: bold; color: #4B5563; border: 1px solid #D1D5DB; border-radius: 4px; margin-top: 1ex; } QGroupBox::title { subcontrol-origin: margin; subcontrol-position: top left; padding: 0 4px; left: 6px; }")
+        self.config_group_layout = QtWidgets.QHBoxLayout(self.config_group)
+        self.config_group_layout.setContentsMargins(6, 12, 6, 6)
+        self.config_group_layout.setSpacing(6)
+
         self.config_combo = QtWidgets.QComboBox()
         self.config_combo.setEditable(False)
         self.config_combo.setMinimumWidth(96)
@@ -517,14 +591,14 @@ class UDSSequenceView(QtWidgets.QWidget):
         self.config_combo.currentTextChanged.connect(lambda text: self.config_load_requested.emit(text) if text else None)
 
         self.save_config_btn = ModernButton("保存", "#3B82F6")
-        self.save_config_btn.setToolTip("保存当前配置序列")
+        self.save_config_btn.setToolTip("保存当前的指令序列为配置模板")
         self.save_config_btn.setMinimumWidth(60)
         self.save_config_btn.setFixedHeight(32)
         self.save_config_btn.setSizePolicy(QtWidgets.QSizePolicy.Fixed, QtWidgets.QSizePolicy.Fixed)
         self.save_config_btn.clicked.connect(self._on_save_config_clicked)
 
         self.del_config_btn = ModernButton("删除", "#EF4444")
-        self.del_config_btn.setToolTip("删除当前配置序列")
+        self.del_config_btn.setToolTip("删除当前选中的配置模板 (不影响下方表格内容)")
         self.del_config_btn.setMinimumWidth(60)
         self.del_config_btn.setFixedHeight(32)
         self.del_config_btn.setSizePolicy(QtWidgets.QSizePolicy.Fixed, QtWidgets.QSizePolicy.Fixed)
@@ -540,20 +614,23 @@ class UDSSequenceView(QtWidgets.QWidget):
         self.export_config_btn = ModernButton("导出", "#8B5CF6")
         self.export_config_btn.setToolTip("导出配置到文件")
         self.export_config_btn.setMinimumWidth(60)
+
         self.export_config_btn.setFixedHeight(32)
         self.export_config_btn.setSizePolicy(QtWidgets.QSizePolicy.Fixed, QtWidgets.QSizePolicy.Fixed)
         self.export_config_btn.clicked.connect(self.config_export_requested.emit)
 
-        self.toolbar_layout.addWidget(self.config_combo, 0)
-        self.toolbar_layout.addWidget(self.save_config_btn, 0)
-        self.toolbar_layout.addWidget(self.del_config_btn, 0)
-        self.toolbar_layout.addWidget(self.import_config_btn, 0)
-        self.toolbar_layout.addWidget(self.export_config_btn, 0)
+        self.config_group_layout.addWidget(self.config_combo, 0)
+        self.config_group_layout.addWidget(self.save_config_btn, 0)
+        self.config_group_layout.addWidget(self.del_config_btn, 0)
+        self.config_group_layout.addWidget(self.import_config_btn, 0)
+        self.config_group_layout.addWidget(self.export_config_btn, 0)
+
+        self.toolbar_layout.addWidget(self.config_group, 0)
         self.toolbar_layout.addSpacing(6)
 
         # --- Operation Buttons ---
         self.icon_btn_add = self.create_icon_button("➕", "添加参数", "#10B981", "添加")
-        self.icon_btn_delete = self.create_icon_button("➖", "删除���中参数", "#EF4444", "删除")
+        self.icon_btn_delete = self.create_icon_button("➖", "删除选中参数", "#EF4444", "删除")
         self.icon_btn_up = self.create_icon_button("↑", "上移", "#0EA5E9", "上移")
         self.icon_btn_down = self.create_icon_button("↓", "下移", "#0EA5E9", "上移")
 
@@ -712,8 +789,12 @@ class UDSSequenceView(QtWidgets.QWidget):
     def setup_table(self):
         # Table layout: checkbox, Name, Request, AddrType (combo), Response
         self.data_table.setColumnCount(5)
+
+        header = CheckBoxHeader(Qt.Horizontal, self.data_table)
+        self.data_table.setHorizontalHeader(header)
+        header.checkBoxClicked.connect(self._on_header_checkbox_clicked)
+
         self.data_table.setHorizontalHeaderLabels(["", "Name", "Request", "AddrType", "Response"])
-        header = self.data_table.horizontalHeader()
 
         # Allow user to resize columns
         header.setSectionResizeMode(QtWidgets.QHeaderView.Interactive)
@@ -1040,7 +1121,8 @@ class UDSSequenceView(QtWidgets.QWidget):
     def _on_del_config_clicked(self):
         current = self.config_combo.currentText()
         if current and current != "默认":
-            reply = QtWidgets.QMessageBox.question(self, "确认删除", f"确定要删除配置 '{current}' 吗?",
+            reply = QtWidgets.QMessageBox.question(self, "确认删除配置模板",
+                                                 f"确定要删除配置模板 '{current}' 吗?\n(注: 此操作不会删除下方列表中当前的指令内容)",
                                                  QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No)
             if reply == QtWidgets.QMessageBox.Yes:
                 self.config_delete_requested.emit(current)
