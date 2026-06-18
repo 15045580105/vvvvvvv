@@ -67,6 +67,8 @@ class MainController(BaseController):
         # 订阅协议状态变更信号
         if self.device_service:
              self.device_service.protocol_status_changed_signal.connect(self._on_protocol_status_changed)
+             # 订阅升级拦截全局信号：升级期间 DoIP 请求被拦截时统一显示 Toast
+             self.device_service.upgrade_blocked_signal.connect(self._on_upgrade_blocked)
 
     # ----------------- UI初始化 -----------------
     def _init_ui(self) -> None:
@@ -530,6 +532,12 @@ class MainController(BaseController):
     def _on_protocol_status_changed(self, device_data: dict):
         # 协议状态变化可能影响"在线设备"计数，因此立即更新性能��要
         self._refresh_performance()
+
+    def _on_upgrade_blocked(self, message: str):
+        """升级拦截全局 Toast：由 DeviceService.upgrade_blocked_signal 触发，
+        避免各控制器分散编写 is_upgrade_active() 检查。"""
+        from app.common.ui.modern_widgets import MessageToast
+        MessageToast(self.view).show_toast(message, 1)
 
     # ----------------- 工具方法 -----------------
     def get_view(self) -> MainView:

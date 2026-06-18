@@ -217,6 +217,7 @@ class DeviceController(BaseController):
         self._startup_reconnect_done = False
         self._startup_reconnect_device_key = None
         self._startup_reconnect_failure_toast_shown = False
+        self._startup_reconnect_protocols = []
         self._connect_attempt_seq = 0
         self._device_attempt_ids = {}
         self._shown_interface_warning_attempts = set()
@@ -242,7 +243,8 @@ class DeviceController(BaseController):
         self._initial_devices()
         # 首次刷新视图
         self.on_model_changed()
-        self._schedule_startup_auto_reconnect()
+        # 已取消自动重连机制，每次启动需用户手动连接
+        # self._schedule_startup_auto_reconnect()
 
     def _connect_static_signals(self):
         self.view.add_btn.clicked.connect(self._on_add_clicked)
@@ -340,7 +342,6 @@ class DeviceController(BaseController):
         port = int(device.get("port", 22))
         device_index = device.get("_device_index")
         target_key = f"{ip}:{port}"
-        is_startup_reconnect_target = (self._startup_reconnect_device_key == target_key)
         payload_attempt_id = device.get("_attempt_id")
         payload_generation = device.get("_connection_generation")
 
@@ -349,8 +350,6 @@ class DeviceController(BaseController):
         if device_index is not None and 0 <= device_index < len(self.model.devices):
             matched_device = self.model.devices[device_index]
             target_key = f"{matched_device.get('ip', ip)}:{matched_device.get('port', port)}"
-            # 重新判断 startup_reconnect
-            is_startup_reconnect_target = (self._startup_reconnect_device_key == self._device_key(matched_device))
 
         current_attempt_id = self._device_attempt_ids.get(target_key)
 
@@ -407,9 +406,6 @@ class DeviceController(BaseController):
                 if key in device:
                     matched_device[key] = device[key]
 
-            if is_startup_reconnect_target:
-                self._append_startup_reconnect_failure_semantics(matched_device)
-                self._notify_startup_reconnect_failure_once(matched_device)
 
         self._schedule_devices_persist()
         self._schedule_view_refresh()
@@ -418,6 +414,14 @@ class DeviceController(BaseController):
         """从配置文件加载设备列表并刷新到视图。"""
         devices = self.config_service.load_devices() or []
         if devices:
+            # 清理旧配置中可能残留的 CONNECTING 状态，避免界面卡死
+            for dev in devices:
+                for proto in ("doip", "ssh", "someip"):
+                    if dev.get(f"{proto}_connect_status") == CONNECTING:
+                        dev[f"{proto}_connect_status"] = DISCONNECTED
+                        dev[f"{proto}_connect_info"] = "已断开"
+                # 清理旧配置中的 _last_connected_protocols 字段
+                dev.pop("_last_connected_protocols", None)
             self.model.load_from_list(devices)
             self.view.append_log(f"已从配置加载 {len(devices)} 台设备")
 
@@ -428,33 +432,73 @@ class DeviceController(BaseController):
         QTimer.singleShot(300, self._auto_reconnect_from_saved_status)
 
     def _auto_reconnect_from_saved_status(self):
-        target_index = None
+        """启动时自动重连：遍历所有设备，仅重连上次关闭时已建链的协议。"""
         for index, device in enumerate(self.model.devices):
-            if self._should_auto_reconnect(device):
-                target_index = index
-                break
+            if not self._should_auto_reconnect(device):
+                continue
 
-        if target_index is None:
-            return
+            # 优先读取关闭时保存的已连接协议列表
+            protocols_to_reconnect = []
+            last_connected = device.get("_last_connected_protocols")
+            if last_connected:
+                protocols_to_reconnect = list(last_connected)
+            else:
+                # 异常退出时状态未被重置，仅重连真正已建链成功的协议
+                for proto in ("doip", "ssh", "someip"):
+                    if self._is_connected_like_status(device.get(f"{proto}_connect_status", OFFLINE)):
+                        protocols_to_reconnect.append(proto)
 
-        self.view.append_log("启动时检测到上一次存在建链成功的设备，开始自动重连")
-        self._startup_reconnect_device_key = self._device_key(self.model.devices[target_index])
-        self._startup_reconnect_failure_toast_shown = False
-        self._mark_startup_auto_reconnecting(target_index)
-        self.view.append_log(f"启动自动重连 -> {self._device_repr(target_index)}")
-        self._do_connect(target_index, startup_auto_reconnect=True)
+            if not protocols_to_reconnect:
+                # 没有协议需要重连，但可能有残留的 CONNECTING 状态需要清理
+                cleaned = False
+                for proto in ("doip", "ssh", "someip"):
+                    if device.get(f"{proto}_connect_status") == CONNECTING:
+                        device[f"{proto}_connect_status"] = DISCONNECTED
+                        device[f"{proto}_connect_info"] = "已断开"
+                        cleaned = True
+                if cleaned:
+                    self._persist_devices()
+                    self.on_model_changed()
+                continue
 
-    def _mark_startup_auto_reconnecting(self, index: int):
+            proto_names = ", ".join(p.upper() for p in protocols_to_reconnect)
+            self.view.append_log(f"启动时检测到上一次已建链的协议: {proto_names}，开始自动重连")
+            self._startup_reconnect_device_key = self._device_key(self.model.devices[index])
+            self._startup_reconnect_failure_toast_shown = False
+            self._startup_reconnect_protocols = protocols_to_reconnect
+
+            # 注意：_last_connected_protocols 不在这里 pop，而是等连接成功后在 _on_protocol_status_changed 中清理
+            # 这样可以避免连接失败后残留 CONNECTING 状态无法被识别为需要重连
+
+            self._mark_startup_auto_reconnecting(index, protocols_to_reconnect)
+            self.view.append_log(f"启动自动重连 -> {self._device_repr(index)} [{proto_names}]")
+            self._do_connect(index, startup_auto_reconnect=True)
+
+
+    def _mark_startup_auto_reconnecting(self, index: int, protocols: list):
+        """仅将需要自动重连的协议标记为 CONNECTING，其余协议强制重置为已断开。
+        这样可以确保：
+        1. 只有上次关闭时真正建链成功的协议才会被重连
+        2. 其他协议（即使配置中有 IP）不会显示“正在建链”
+        3. 避免旧配置文件残留状态导致界面卡死
+        """
         if index < 0 or index >= len(self.model.devices):
             return
         device = self.model.devices[index]
         detail_text = "启动阶段自动重连中，正在建立连接"
-        device["ssh_connect_status"] = CONNECTING
-        device["doip_connect_status"] = CONNECTING
-        device["someip_connect_status"] = CONNECTING
-        device["ssh_connect_info"] = detail_text
-        device["doip_connect_info"] = detail_text
-        device["someip_connect_info"] = detail_text
+        
+        # 1. 标记需要重连的协议为 CONNECTING
+        for proto in protocols:
+            device[f"{proto}_connect_status"] = CONNECTING
+            device[f"{proto}_connect_info"] = detail_text
+        
+        # 2. 强制将所有不在重连列表中的协议重置为 DISCONNECTED
+        # 这样可以确保：只连了 DoIP 的设备，SSH/SomeIP 不会显示“正在建链”
+        for proto in ("doip", "ssh", "someip"):
+            if proto not in protocols:
+                device[f"{proto}_connect_status"] = DISCONNECTED
+                device[f"{proto}_connect_info"] = "已断开"
+        
         self._persist_devices()
         self.on_model_changed()
 
@@ -826,6 +870,8 @@ class DeviceController(BaseController):
         device_copy = device.copy()
         if connect_protocol:
             device_copy["_connect_protocol"] = connect_protocol
+        if startup_auto_reconnect and hasattr(self, '_startup_reconnect_protocols') and self._startup_reconnect_protocols:
+            device_copy["_startup_reconnect_protocols"] = self._startup_reconnect_protocols
         device_copy["_device_index"] = index
 
         worker = ConnectWorker(
@@ -886,7 +932,10 @@ class DeviceController(BaseController):
                 worker.cancel()
                 worker.wait(1500)
 
-        # 重置所有设备的状态和详情字段
+        # 已取消自动重连机制：不再保存 _last_connected_protocols
+        # 每次启动软件都需要用户手动连接
+
+        # 重置所有设备的连接状态为已断开
         for dev in self.model.devices:
             dev["ssh_connect_status"] = DISCONNECTED
             dev["doip_connect_status"] = DISCONNECTED
@@ -938,6 +987,11 @@ class DeviceController(BaseController):
         return text in {OFFLINE, DISCONNECTED, "已断开", "断开", "未连接"}
 
     def _should_auto_reconnect(self, device: dict) -> bool:
+        # 优先使用关闭时保存的已连接协议列表（正常关闭后状态已被重置为断开）
+        last_connected = device.get("_last_connected_protocols")
+        if last_connected:
+            return True
+        # 异常退出时状态未被重置，直接检查当前连接状态
         statuses = [
             device.get("ssh_connect_status", OFFLINE),
             device.get("doip_connect_status", OFFLINE),

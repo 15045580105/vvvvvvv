@@ -251,7 +251,6 @@ class CommonConfigController(BaseController):
 
     def _on_execute_routine(self, service_info, row_index):
         """执行 31&2F 请求"""
-
         self._log_execute_routine_summary(service_info)
 
         self.view.set_button_status(self.view.routine_table, row_index, "executing")

@@ -267,6 +267,8 @@ class UDSSequenceView(QtWidgets.QWidget):
     insert_command_requested = pyqtSignal(str)
     command_selected = pyqtSignal(str)
     table_data_changed = pyqtSignal()
+    tp_toggled = pyqtSignal(bool)           # 3E 心跳启用/禁用
+    tp_mode_changed = pyqtSignal(str)       # 3E 模式切换 ("00" / "80")
 
     def __init__(self, model, parent=None):
         super().__init__(parent)
@@ -673,10 +675,27 @@ class UDSSequenceView(QtWidgets.QWidget):
 
         self.btn_3e = QtWidgets.QPushButton("3E")
         self.btn_3e.setCheckable(True)
-        self.btn_3e.setToolTip("Tester Present: 3E 80 (点击切换 3E 00)")
+        self.btn_3e.setToolTip("TesterPresent 心跳开关 (按 S3/2 间隔自动发送)")
         self.btn_3e.setFixedSize(40, 32)
         self.btn_3e.setSizePolicy(QtWidgets.QSizePolicy.Fixed, QtWidgets.QSizePolicy.Fixed)
         self._apply_toggle_style(self.btn_3e, "#6366F1")
+        self.btn_3e.toggled.connect(self._on_3e_toggled)
+
+        # 3E 模式下拉框：独立选择 3E 80（抑制正响应）或 3E 00（正常响应）
+        self.combo_3e_mode = QtWidgets.QComboBox()
+        self.combo_3e_mode.addItems(["3E 80", "3E 00"])
+        self.combo_3e_mode.setToolTip(
+            "TesterPresent 模式:\n"
+            "• 3E 80 = 抑制正响应 (SuppressPosRspMsg), 适合高频心跳, 无需等待响应\n"
+            "• 3E 00 = 正常请求, ECU 返回 7E 00 正响应"
+        )
+        self.combo_3e_mode.setFixedHeight(32)
+        self.combo_3e_mode.setFixedWidth(80)
+        self.combo_3e_mode.setSizePolicy(QtWidgets.QSizePolicy.Fixed, QtWidgets.QSizePolicy.Fixed)
+        self.combo_3e_mode.setStyleSheet(
+            "QComboBox { border: 1px solid #D1D5DB; border-radius: 4px; padding: 2px 4px; }"
+        )
+        self.combo_3e_mode.currentTextChanged.connect(self._on_3e_mode_changed)
 
         self.btn_stop_fail = QtWidgets.QPushButton("⚠")
         self.btn_stop_fail.setCheckable(True)
@@ -693,6 +712,7 @@ class UDSSequenceView(QtWidgets.QWidget):
         self.toolbar_layout.addWidget(self.icon_btn_down, 0)
         self.toolbar_layout.addSpacing(6)
         self.toolbar_layout.addWidget(self.btn_3e, 0)
+        self.toolbar_layout.addWidget(self.combo_3e_mode, 0)
         self.toolbar_layout.addWidget(self.btn_stop_fail, 0)
         self.toolbar_layout.addSpacing(10)
 
@@ -954,6 +974,7 @@ class UDSSequenceView(QtWidgets.QWidget):
             btn.setFixedSize(icon_size, icon_size)
 
         self.btn_3e.setFixedSize(toggle_width, tool_height)
+        self.combo_3e_mode.setFixedSize(int(72 * ratio), tool_height)
         self.btn_stop_fail.setFixedSize(toggle_width, tool_height)
         self.send_times_label.setStyleSheet(f"color: #374151; font-weight: 600; font-size: {max(10, min(12, int(12 * ratio)))}px;")
         self._scale_widget_width(self.send_times_spin, 68, ratio, 54, 88)
@@ -1199,8 +1220,14 @@ class UDSSequenceView(QtWidgets.QWidget):
             self.config_combo.setCurrentIndex(0)
         self.config_combo.blockSignals(False)
 
-    def _update_3e_text(self, checked):
-        self.btn_3e.setText("3E 00" if checked else "3E 80")
+    def _on_3e_toggled(self, checked):
+        """3E 按钮切换：仅控制心跳启停，模式由独立下拉框选择。"""
+        self.tp_toggled.emit(checked)
+
+    def _on_3e_mode_changed(self, text):
+        """3E 模式下拉框切换：独立切换 3E 80 / 3E 00 模式。"""
+        mode = "00" if "00" in text else "80"
+        self.tp_mode_changed.emit(mode)
 
     def _apply_toggle_style(self, btn, active_color):
         btn.setStyleSheet(f"""

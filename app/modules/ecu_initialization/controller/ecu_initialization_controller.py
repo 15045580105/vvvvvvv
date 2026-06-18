@@ -108,6 +108,11 @@ class ECUInitController(BaseController):
              QtWidgets.QMessageBox.warning(self.view, "错误", "无法获取设备服务")
              return
 
+        # 升级屏障拦截
+        if service.is_upgrade_active():
+            QtWidgets.QMessageBox.warning(self.view, "提示", DeviceService.UPGRADE_BLOCKED_MSG)
+            return
+
 
         # Collect tasks
         tasks = []

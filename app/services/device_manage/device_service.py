@@ -12,6 +12,7 @@ from paramiko.ssh_exception import AuthenticationException, SSHException
 from app.common.communication.clients.Doip_Client import DoIPClientHandler
 from app.common.communication.clients.Someip_Client import SomeIPClient
 from app.common.communication.clients.ssh_client import SSHClient
+from app.common.log.operation_log_manager import OperationLogManager
 from app.common.utils.security_access_helper import SecurityAccessHelper
 from app.core.dependency_injection import di_container
 from app.modules.device_management.models.device_model import CONNECTING, DISCONNECTED, CONNECT_FAILED, OFFLINE
@@ -28,6 +29,8 @@ class DeviceService(QObject):
     protocol_status_changed_signal = pyqtSignal(dict)
     # 新增: 申请重连信号，参数为设备信息, 日志信号
     reconnect_requested_signal = pyqtSignal(dict, object)
+    # 升级拦截全局信号：当 DoIP 请求被升级屏障拦截时发射，供 MainController 统一显示 Toast
+    upgrade_blocked_signal = pyqtSignal(str)
 
     # 设备操作进度信号：payload 为文本描述
     """设备管理领域的 Service 层封装。"""
@@ -50,6 +53,14 @@ class DeviceService(QObject):
         self._cleanup_lock = threading.Lock()
         self._cleanup_thread: Optional[threading.Thread] = None
         self._connection_generation = 0
+        # 全局 DoIP 诊断发送锁：所有模块共享同一个 DoIP socket，必须串行收发，
+        # 防止 UDS 编排页的 3E 心跳与设备升级 Service 36/长例程响应互相抢包。
+        self._doip_send_lock = threading.RLock()
+        # 升级屏障：升级期间仅允许 UpgradeWorker 使用 DoIP 通道，
+        # 其他模块（UDS编排页3E心跳、DTC读取、拓扑查询等）的诊断请求被静默拦截。
+        self._upgrade_active = False
+        # 升级拦截 Toast 节流时间戳（防止批量拦截时重复弹出）
+        self._last_upgrade_blocked_time: float = 0.0
 
     def _get_log_emit(self, log_signal: Optional[object] = None):
         """统一返回日志输出函数，兼容 PyQtBoundSignal / callable。"""
@@ -171,6 +182,8 @@ class DeviceService(QObject):
         此操作为同步阻塞方法，应被放入子线程执行。
         """
         connect_protocol = device.get("_connect_protocol")
+        # 启动自动重连：仅重连上次关闭时已建链的协议
+        startup_reconnect_protocols = device.get("_startup_reconnect_protocols")
         _log = self._get_log_emit(log_signal)
 
         target_ip = device.get("ip") or device.get("doip_ip") or device.get("ssh_ip") or device.get("someip_ip", "")
@@ -186,27 +199,38 @@ class DeviceService(QObject):
                 has_ssh = True
                 has_someip = True
 
+        # ---------- 协议过滤辅助 ----------
+        def _should_connect(proto: str) -> bool:
+            """判断某个协议是否应在本次连接中派发任务。"""
+            if connect_protocol:
+                return connect_protocol == proto
+            if startup_reconnect_protocols is not None:
+                return proto in startup_reconnect_protocols
+            return True  # 默认：连接所有协议
+
         import concurrent.futures
         with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
             future_to_task = {}
             defer_ssh_until_doip_ready = bool(
                 has_ssh and has_doip and not connect_protocol
+                and (startup_reconnect_protocols is None
+                     or ("ssh" in startup_reconnect_protocols and "doip" in startup_reconnect_protocols))
             )
 
-            if has_doip and (not connect_protocol or connect_protocol == "doip"):
+            if has_doip and _should_connect("doip"):
                 future_to_task[executor.submit(self._connect_doip_task, device, log_signal, cancel_event)] = "DoIP"
 
-            if has_someip and (not connect_protocol or connect_protocol == "someip"):
+            if has_someip and _should_connect("someip"):
                 future_to_task[executor.submit(self._connect_someip_task, device, log_signal, cancel_event)] = "SomeIP"
 
-            if has_ssh and (not connect_protocol or connect_protocol == "ssh") and not defer_ssh_until_doip_ready:
+            if has_ssh and _should_connect("ssh") and not defer_ssh_until_doip_ready:
                 future_to_task[executor.submit(self._connect_ssh_task, device, log_signal, cancel_event)] = "SSH"
 
             dispatched = set(future_to_task.values())
             for p, name in [("doip", "DoIP"), ("someip", "SomeIP"), ("ssh", "SSH")]:
                 if p == "ssh" and defer_ssh_until_doip_ready:
                     continue
-                if (not connect_protocol or connect_protocol == p) and name not in dispatched:
+                if _should_connect(p) and name not in dispatched:
                     if device.get(f"{p}_connect_status") == CONNECTING:
                         device[f"{p}_connect_status"] = CONNECT_FAILED
                         device[f"{p}_connect_info"] = "未配置该协议的有效连接参数"
@@ -1096,6 +1120,31 @@ class DeviceService(QObject):
         routine = bytes.fromhex("31 01 BE E9")
         return self.execute_secure_routine(routine, sec_level=0x21, log_signal=log_signal, cancel_event=cancel_event)
 
+    def begin_upgrade_session(self):
+        """激活升级屏障：仅允许 UpgradeWorker 通过专属通道使用 DoIP。
+
+        升级期间，其他模块（UDS编排页3E心跳、DTC读取、拓扑查询等）的
+        send_doip_payload 调用会被静默拦截返回 None，从根源上杜绝
+        外部 3E 或其他诊断报文干扰升级数据传输。
+        """
+        self._upgrade_active = True
+        self._debug_log("[升级屏障] 已激活：仅允许 UpgradeWorker 使用 DoIP 通道")
+
+    def end_upgrade_session(self):
+        """解除升级屏障：恢复所有模块的 DoIP 访问权限。"""
+        self._upgrade_active = False
+        self._debug_log("[升级屏障] 已解除：恢复所有模块的 DoIP 访问")
+
+    def is_upgrade_active(self) -> bool:
+        """检查升级屏障是否处于激活状态（供外部模块在执行 DoIP 操作前检查并提示用户）。"""
+        active_service = self._get_active_service()
+        if active_service is not self:
+            return active_service.is_upgrade_active()
+        return self._upgrade_active
+
+    # 升级期间 DoIP 操作被拦截时的统一提示文本
+    UPGRADE_BLOCKED_MSG = "当前设备正在升级中，无法执行其他 DoIP 诊断操作，请等待升级完成后再试"
+
     def send_doip_payload(
             self,
             payload: bytes,
@@ -1105,7 +1154,12 @@ class DeviceService(QObject):
             target_did: int | None = None,
             prefer_last: bool = False,
     ) -> bytes | None:
-        """统一的 DoIP 送接口，供 Topology/Diagnostic 等业务 Service 重用。"""
+        """统一的 DoIP 发送接口，供 Topology/Diagnostic 等业务 Service 重用。
+
+        升级期间（_upgrade_active=True），非升级模块的所有请求（含3E心跳）
+        被静默拦截，返回 None。UpgradeWorker 使用 _send_doip_payload_for_upgrade
+        绕过屏障。
+        """
         active_service = self._get_active_service()
         if active_service is not self:
             return active_service.send_doip_payload(
@@ -1116,10 +1170,87 @@ class DeviceService(QObject):
                 prefer_last=prefer_last,
             )
 
+        if self._upgrade_active:
+            is_tester_present = bool(payload and payload[0] == 0x3E)
+            if is_tester_present:
+                self._append_tester_present_operation_log("外部3E被升级屏障拦截")
+            else:
+                # 非3E请求被拦截时打印提示，让调用方明确知道是升级屏障导致的无响应
+                self._get_log_emit()(self.UPGRADE_BLOCKED_MSG)
+            # 节流发射拦截信号（3s 内仅触发一次），供全局 Toast 使用
+            now = time.time()
+            if now - self._last_upgrade_blocked_time > 3.0:
+                self._last_upgrade_blocked_time = now
+                self.upgrade_blocked_signal.emit(self.UPGRADE_BLOCKED_MSG)
+            return None
+
+        with self._doip_send_lock:
+            return self._send_doip_payload_locked(
+                payload,
+                timeout=timeout,
+                response_index=response_index,
+                target_did=target_did,
+                prefer_last=prefer_last,
+            )
+
+    def _send_doip_payload_for_upgrade(
+            self,
+            payload: bytes,
+            *,
+            timeout: float | None = None,
+            response_index: int | None = None,
+            target_did: int | None = None,
+            prefer_last: bool = False,
+    ) -> bytes | None:
+        """UpgradeWorker 专属发送通道，绕过升级屏障。
+
+        升级期间只有 UpgradeWorker 调用此方法，它仍使用 _doip_send_lock
+        确保 Worker 内部 UDS 与 3E 心跳的串行化。
+        """
+        active_service = self._get_active_service()
+        if active_service is not self:
+            return active_service._send_doip_payload_for_upgrade(
+                payload,
+                timeout=timeout,
+                response_index=response_index,
+                target_did=target_did,
+                prefer_last=prefer_last,
+            )
+
+        with self._doip_send_lock:
+            return self._send_doip_payload_locked(
+                payload,
+                timeout=timeout,
+                response_index=response_index,
+                target_did=target_did,
+                prefer_last=prefer_last,
+            )
+
+    def _append_tester_present_operation_log(self, message: str) -> None:
+        try:
+            OperationLogManager.instance().append_log("设备升级", f"全局DoIP TesterPresent: {message}")
+        except Exception:
+            pass
+
+    def _send_doip_payload_locked(
+            self,
+            payload: bytes,
+            *,
+            timeout: float | None = None,
+            response_index: int | None = None,
+            target_did: int | None = None,
+            prefer_last: bool = False,
+    ) -> bytes | None:
+        is_tester_present = bool(payload and payload[0] == 0x3E)
+        if is_tester_present:
+            self._append_tester_present_operation_log(f"TX {payload.hex(' ').upper()} timeout={timeout if timeout is not None else 'default'}")
+
         # 1. 获取客户端实例
         client = self.get_doip_client()
         if client is None:
             self._get_log_emit()("错误：DoIP 客户端实例为 None")
+            if is_tester_present:
+                self._append_tester_present_operation_log("发送失败：DoIP客户端实例为None")
             return None
 
         # 计算超时
@@ -1152,6 +1283,8 @@ class DeviceService(QObject):
         # 如果未连接，且有上次连接记录，先尝试重连一次
         if not client.connected:
             if not _try_reconnect_for_payload("发现 DoIP 未连接"):
+                if is_tester_present:
+                    self._append_tester_present_operation_log("发送失败：DoIP未连接且自动重连失败")
                 return None
 
         # 3. 尝试发送
@@ -1183,6 +1316,17 @@ class DeviceService(QObject):
                 # 状态仍为 Connected，说明是单纯的超时，未发生断链
                 # self.log_signal.emit("发送等到超时（未收到响应），连接保持正常")
                 pass
+
+        if isinstance(resp, list):
+            resp = resp[-1] if resp else None
+
+        if is_tester_present:
+            if resp is None:
+                self._append_tester_present_operation_log("RX 无响应")
+            elif isinstance(resp, (bytes, bytearray)):
+                self._append_tester_present_operation_log(f"RX {bytes(resp).hex(' ').upper()}")
+            else:
+                self._append_tester_present_operation_log(f"RX {resp}")
 
         return resp
 
@@ -1225,6 +1369,15 @@ class DeviceService(QObject):
             log_emit("DoIP 未连接，无法发送指令")
             return False
 
+        # 升级屏障拦截：升级期间禁止执行安全例程，防止会话控制/安全访问报文干扰升级数据流
+        if self.is_upgrade_active():
+            log_emit(self.UPGRADE_BLOCKED_MSG)
+            now = time.time()
+            if now - self._last_upgrade_blocked_time > 3.0:
+                self._last_upgrade_blocked_time = now
+                self.upgrade_blocked_signal.emit(self.UPGRADE_BLOCKED_MSG)
+            return False
+
         if self._is_cancelled(cancel_event):
             log_emit("激活 SSH 流程已取消")
             return False
@@ -1232,7 +1385,7 @@ class DeviceService(QObject):
         # 1. 诊断会话控制 (10 03)
         tx_session = bytes.fromhex("10 03")
         log_emit(f"TX: {tx_session.hex(' ').upper()}")
-        rx_session = client.send_doip_message(tx_session)
+        rx_session = self.send_doip_payload(tx_session)
         if not rx_session or rx_session[0] != 0x50:
             log_emit(f"会话控制失败: {rx_session.hex(' ').upper() if rx_session else '无响应'}")
             return False
@@ -1244,7 +1397,7 @@ class DeviceService(QObject):
         # 2. 安全访问
         tx_seed = bytes([0x27, sec_level])
         log_emit(f"TX: {tx_seed.hex(' ').upper()}")
-        rx_seed = client.send_doip_message(tx_seed)
+        rx_seed = self.send_doip_payload(tx_seed)
 
         if not rx_seed or rx_seed[0] != 0x67:
             log_emit(f"请求种子失败: {rx_seed.hex(' ').upper() if rx_seed else '无响应'}")
@@ -1269,7 +1422,7 @@ class DeviceService(QObject):
         # 发送密钥
         tx_key = bytes([0x27, sec_level + 1]) + key
         log_emit(f"TX: {tx_key.hex(' ').upper()}")
-        rx_key = client.send_doip_message(tx_key)
+        rx_key = self.send_doip_payload(tx_key)
         log_emit(f"RX: {rx_key.hex(' ').upper()}")
 
         if not rx_key or rx_key[0] != 0x67:
@@ -1282,7 +1435,7 @@ class DeviceService(QObject):
 
         # 3. 例程控制
         log_emit(f"TX: {routine_command.hex(' ').upper()}")
-        rx_routine = client.send_doip_message(routine_command)
+        rx_routine = self.send_doip_payload(routine_command)
         log_emit(f"RX: {rx_routine.hex(' ').upper() if rx_routine else '无响应'}")
         # 检查响应是否为肯定响应 (Request Service ID + 0x40)
         expected_response_sid = routine_command[0] + 0x40

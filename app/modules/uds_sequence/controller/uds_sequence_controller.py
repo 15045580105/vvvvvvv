@@ -30,6 +30,11 @@ class SequenceWorker(QtCore.QThread):
         self.seed_map = {}
 
     def run(self):
+        # 升级屏障拦截：升级期间禁止执行序列
+        if self.device_service.is_upgrade_active():
+            self.log_signal.emit(DeviceService.UPGRADE_BLOCKED_MSG)
+            self.finished_signal.emit()
+            return
         try:
             for i in range(self.times):
                 if not self.is_running:
@@ -166,6 +171,11 @@ class BatchSendWorker(QtCore.QThread):
         self.is_running = True
 
     def run(self):
+        # 升级屏障拦截：升级期间禁止执行批量发送
+        if self.device_service.is_upgrade_active():
+            self.log_signal.emit(DeviceService.UPGRADE_BLOCKED_MSG)
+            self.finished_signal.emit()
+            return
         try:
             for i in range(self.times):
                 if not self.is_running:
@@ -243,10 +253,20 @@ class UDSSequenceController(BaseController):
         self.view.update_config_list(self.model.get_config_names())
         self._on_config_load_requested("默认")
 
-        # Timer for Tester Present
+        # Timer for Tester Present（基于 S3 定时器动态计算间隔，符合 ISO 14229-1）
         self.tester_present_timer = QtCore.QTimer(self)
         self.tester_present_timer.timeout.connect(self._send_tester_present)
-        self.tester_present_mode = "80" # Default 3E 80
+        self.tester_present_mode = "80"  # Default 3E 80
+        # S3/2 作为 3E 发送间隔（确保在 S3 超时前发送，留 50% 安全余量）
+        try:
+            s3_ms = int(self._config_service.diag_layer_settings.get("s3_client_time", 3000))
+        except (ValueError, TypeError):
+            s3_ms = 3000
+        self.tester_present_interval_ms = max(500, s3_ms // 2)
+
+        # 连接 3E 控件信号
+        self.view.tp_toggled.connect(self._on_tester_present_toggled)
+        self.view.tp_mode_changed.connect(self._on_tester_present_mode_changed)
 
     def _on_table_data_changed(self):
         if self.current_config_name == "默认":
@@ -357,25 +377,74 @@ class UDSSequenceController(BaseController):
             self.view.log_message(f"插入指令: {code} {display_name}")
 
     def _do_send_tester_present(self, cmd, timeout):
+        """发送 TesterPresent 报文并记录 TX/RX 到日志。"""
+        self.view.log_message(f"TX: {cmd}")
         resp = self._send_uds_command(cmd, timeout=timeout)
-        # Log heartbeat response via signal/main thread safe way is needed?
-        # Actually view.log_message uses signal/slots internally if needed, or we should use QMetaObject.invokeMethod.
-        # But UDSSequenceView log_message does not use signals. So we just print or let the SequenceWorker handle it?
-        # A simple solution is to just suppress logs for heartbeat to avoid thread-safety issues with GUI unless error.
-        pass
+        # 3E 80 抑制正响应模式：ECU 不回复，只打印真实响应或异常
+        is_suppress = "80" in cmd
+        if resp and (not is_suppress or (resp != "No Response" and resp.startswith("Error"))):
+            self.view.log_message(f"RX: {resp}")
+
+    def _on_tester_present_mode_changed(self, mode: str):
+        """3E 模式下拉框切换：更新心跳报文模式。
+
+        :param mode: "00" 或 "80"
+        """
+        self.tester_present_mode = mode
+        desc = "抑制正响应 (3E 80)" if mode == "80" else "正常响应 (3E 00)"
+        self.view.log_message(f"TesterPresent 模式已切换: {desc}")
+
+    def _on_tester_present_toggled(self, checked: bool):
+        """3E 心跳按钮切换：启用/停止 TesterPresent 定时器。
+
+        符合 ISO 14229-1：以 S3/2 为间隔发送 TesterPresent，确保在
+        S3 Client Timer 超时前刷新 ECU 会话，防止会话回退到默认会话。
+        """
+        if checked:
+            # 升级屏障拦截：升级期间禁止启动 3E 心跳
+            if self._device_service.is_upgrade_active():
+                from app.common.ui.modern_widgets import MessageToast
+                MessageToast(self.view).show_toast(DeviceService.UPGRADE_BLOCKED_MSG, 1)
+                self.view.log_message(DeviceService.UPGRADE_BLOCKED_MSG)
+                # 恢复按钮状态为未按下，避免 UI 状态不一致
+                self.view.btn_3e.blockSignals(True)
+                self.view.btn_3e.setChecked(False)
+                self.view.btn_3e.blockSignals(False)
+                return
+            # 动态重新读取 S3 值（用户可能在运行期间修改了配置）
+            try:
+                s3_ms = int(self._config_service.diag_layer_settings.get("s3_client_time", 3000))
+            except (ValueError, TypeError):
+                s3_ms = 3000
+            self.tester_present_interval_ms = max(500, s3_ms // 2)
+            self.tester_present_timer.start(self.tester_present_interval_ms)
+            self.view.log_message(
+                f"TesterPresent(3E) 心跳已启动 [间隔={self.tester_present_interval_ms}ms, S3/2]"
+            )
+        else:
+            self.tester_present_timer.stop()
+            self.view.log_message("TesterPresent(3E) 心跳已停止")
 
     def _send_tester_present(self):
-        # Send 3E <mode>
-        # Run in a background thread to prevent UI freezing
+        """发送 TesterPresent (3E) 心跳，保持 ECU 会话不超时。"""
+        # 连接检查：未连接时静默跳过
+        client = self._device_service.get_doip_client()
+        if not client or not client.is_connected():
+            return
+
+        # 升级期间静默跳过心跳，不打印日志避免刷屏
+        if self._device_service.is_upgrade_active():
+            return
+
         cmd = f"3E {self.tester_present_mode}"
 
-        # Use short timeout for 3E 80 (Suppress Positive Response)
-        timeout = None
-        if self.tester_present_mode == "80":
-            timeout = 0.05
+        # 抑制正响应 (3E 80) 时用短超时，普通请求 (3E 00) 用默认超时
+        timeout = 0.05 if self.tester_present_mode == "80" else None
 
         import threading
-        threading.Thread(target=self._do_send_tester_present, args=(cmd, timeout), daemon=True).start()
+        threading.Thread(
+            target=self._do_send_tester_present, args=(cmd, timeout), daemon=True
+        ).start()
 
     def _on_run_sequence_requested(self, times: int):
         """Execute the checked instructions in the table sequentially."""
@@ -390,6 +459,20 @@ class UDSSequenceController(BaseController):
             self.view.log_message("Error: 未连接 DoIP 客户端")
             return
 
+        # 升级屏障拦截
+        if self._device_service.is_upgrade_active():
+            from app.common.ui.modern_widgets import MessageToast
+            MessageToast(self.view).show_toast(DeviceService.UPGRADE_BLOCKED_MSG, 1)
+            self.view.log_message(DeviceService.UPGRADE_BLOCKED_MSG)
+            return
+
+        # 序列开始时：如果 3E 按钮已启用，启动心跳定时器
+        if self.view.btn_3e.isChecked():
+            self.tester_present_timer.start(self.tester_present_interval_ms)
+            self.view.log_message(
+                f"序列执行开始，TesterPresent(3E) 心跳已启动 [间隔={self.tester_present_interval_ms}ms]"
+            )
+
         # Start execution thread
         self.worker = SequenceWorker(self._device_service, data, times, True, self._config_service)
         self.worker.log_signal.connect(self.view.log_message)
@@ -403,7 +486,7 @@ class UDSSequenceController(BaseController):
         self.tester_present_timer.stop()
         self.view.set_editor_enabled(True)
         self.view.run_sequence_btn.setEnabled(True)
-        self.view.log_message("序列执行结束")
+        self.view.log_message("序列执行结束，TesterPresent(3E) 心跳已停止")
         self.worker = None
 
     def _on_send_requested(self, request_data: str):
@@ -411,6 +494,13 @@ class UDSSequenceController(BaseController):
             from app.common.ui.modern_widgets import MessageToast
             MessageToast(self.view).show_toast("请先连接设备 (DoIP)", 1)
             self.view.log_message("Error: 未连接 DoIP 客户端")
+            return
+
+        # 升级屏障拦截
+        if self._device_service.is_upgrade_active():
+            from app.common.ui.modern_widgets import MessageToast
+            MessageToast(self.view).show_toast(DeviceService.UPGRADE_BLOCKED_MSG, 1)
+            self.view.log_message(DeviceService.UPGRADE_BLOCKED_MSG)
             return
 
         if request_data:
@@ -491,6 +581,13 @@ class UDSSequenceController(BaseController):
             from app.common.ui.modern_widgets import MessageToast
             MessageToast(self.view).show_toast("请先连接设备 (DoIP)", 1)
             self.view.log_message("Error: 未连接 DoIP 客户端")
+            return
+
+        # 升级屏障拦截
+        if self._device_service.is_upgrade_active():
+            from app.common.ui.modern_widgets import MessageToast
+            MessageToast(self.view).show_toast(DeviceService.UPGRADE_BLOCKED_MSG, 1)
+            self.view.log_message(DeviceService.UPGRADE_BLOCKED_MSG)
             return
 
         req = self.view.get_request_text()

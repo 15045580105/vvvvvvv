@@ -153,6 +153,12 @@ class LogConfigService(BaseService):
             _log(result["error"])
             return result
 
+        # 升级屏障拦截
+        if self._device_service.is_upgrade_active():
+            _log(DeviceService.UPGRADE_BLOCKED_MSG)
+            result["error"] = DeviceService.UPGRADE_BLOCKED_MSG
+            return result
+
         if not ecus:
             result["error"] = "未选择 ECU"
             _log(result["error"])
@@ -257,6 +263,11 @@ class LogConfigService(BaseService):
             _log("DeviceService 未注入")
             return False
 
+        # 升级屏障拦截
+        if self._device_service.is_upgrade_active():
+            _log(DeviceService.UPGRADE_BLOCKED_MSG)
+            return False
+
         client = self._device_service.get_doip_client()
         if not client:
              _log("DoIP Client 未连接")
@@ -266,7 +277,7 @@ class LogConfigService(BaseService):
         did_bytes = did.to_bytes(2, 'big')
         # 读取
         _log(f"TX: 22 {did_bytes.hex(' ').upper()}")
-        read_resp = client.send_doip_message(bytes([0x22]) + did_bytes)
+        read_resp = self._device_service.send_doip_payload(bytes([0x22]) + did_bytes)
         _log(f"RX: {self._format_hex(read_resp)}")
         if not read_resp or read_resp[0] != 0x62 or len(read_resp) < 4:
             _log(f"读取 DID 失败或响应异常")
@@ -463,6 +474,11 @@ class LogConfigService(BaseService):
 
         if not self._device_service:
             _log("DeviceService 未就绪")
+            return False
+
+        # 升级屏障拦截
+        if self._device_service.is_upgrade_active():
+            _log(DeviceService.UPGRADE_BLOCKED_MSG)
             return False
 
         # 发送软复位指令
@@ -890,6 +906,12 @@ class LogConfigService(BaseService):
         '''根据 DID 读取单字节 UDS 值'''
         if not self._device_service:
             return None
+
+        # 升级屏障拦截
+        if self._device_service.is_upgrade_active():
+            self._get_log_emit()(DeviceService.UPGRADE_BLOCKED_MSG)
+            return None
+
         _log = self._get_log_emit()
         # 构造 UDS 22 读 DID 请求
         did_bytes = did_int.to_bytes(2, 'big')
@@ -1105,6 +1127,11 @@ class LogConfigService(BaseService):
             _log("DeviceService 未注入，无法读取 ECU 日志等级")
             return result
 
+        # 升级屏障拦截
+        if self._device_service.is_upgrade_active():
+            _log(DeviceService.UPGRADE_BLOCKED_MSG)
+            return result
+
         ecu_dids = {"CCU0": 0xBE02, "CCU1": 0xBE03, "CCUA": 0xBE17}
 
         for ecu_name, did in ecu_dids.items():
@@ -1206,6 +1233,11 @@ class LogConfigService(BaseService):
         """Helper to set a single byte DID value via UDS."""
         _log = self._get_log_emit()
 
+        # 升级屏障拦截
+        if self._device_service and self._device_service.is_upgrade_active():
+            _log(DeviceService.UPGRADE_BLOCKED_MSG)
+            return False
+
         doip_client = self._device_service.get_doip_client()
         if not doip_client:
              _log("DoIP 未连接")
@@ -1245,12 +1277,19 @@ class LogConfigService(BaseService):
         """UDS 11 03 (Soft Reset)"""
         _log = self._get_log_emit()
         _log("正在执行 CCU 软复位 (11 03)...")
+
+        if not self._device_service:
+            _log("DeviceService 未就绪")
+            return False
+
+        # 升级屏障拦截
+        if self._device_service.is_upgrade_active():
+            _log(DeviceService.UPGRADE_BLOCKED_MSG)
+            return False
+
         # Send 11 03
         cmd = bytes.fromhex("11 03")
-        doip_client = self._device_service.get_doip_client()
-        if doip_client:
-            _log(f"TX: {cmd.hex(' ').upper()}")
-            resp = doip_client.send_doip_message(cmd)
-            _log(f"RX: {resp.hex(' ').upper() if resp else '无响应'}")
-            return bool(resp and resp[0] == 0x51)
-        return False
+        _log(f"TX: {cmd.hex(' ').upper()}")
+        resp = self._device_service.send_doip_payload(cmd)
+        _log(f"RX: {resp.hex(' ').upper() if resp else '无响应'}")
+        return bool(resp and resp[0] == 0x51)
