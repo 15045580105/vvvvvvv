@@ -1004,6 +1004,8 @@ class UpgradeController(BaseController):
 
         if not file_path or not os.path.exists(file_path):
              self._log(f"未找到升级包: {file_path}", is_info=True)
+             # 解除升级屏障，避免屏障永久锁死导致所有 DoIP 操作被拦截
+             device_service.end_upgrade_session()
              return
 
         # Sync UI
@@ -1247,6 +1249,10 @@ class UpgradeController(BaseController):
         # Start Worker
         if self.thread and self.thread.isRunning():
             self.thread.wait() # Ensure clean
+
+        # 重新激活升级屏障：_on_worker_finished 在每轮结束时已解除，
+        # 下一轮开始前必须重新激活，否则第 2 轮起无屏障保护
+        device_service.begin_upgrade_session()
 
         self.thread = UpgradeWorker(self.upgrade_config, pkg_path, device_service)
         self.thread.log_signal.connect(self._log)
