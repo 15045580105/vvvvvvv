@@ -752,13 +752,18 @@ class UpgradeWorker(QThread):
                         self.log_signal.emit(f"收到负响应 NRC: {nrc:02X}", True)
                         return None
 
-                elif expect_positive:
+                else:
+                    # 始终校验响应SID，防止压测轮次间TCP缓冲区残留报文导致响应错位
                     req_sid = payload[0]
                     resp_sid = resp[0]
-                    if resp_sid != (req_sid + 0x40):
+                    expected_resp_sid = req_sid + 0x40
+                    if resp_sid != expected_resp_sid:
+                        self.log_signal.emit(
+                            f"丢弃报文: 期望响应SID 0x{expected_resp_sid:02X}, "
+                            f"实际收到 0x{resp_sid:02X} ", True)
                         return None
 
-                    if success_msg:
+                    if expect_positive and success_msg:
                         self.log_signal.emit(success_msg, True)
 
                 return resp
