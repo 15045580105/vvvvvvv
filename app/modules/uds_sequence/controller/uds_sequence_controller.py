@@ -205,6 +205,7 @@ class BatchSendWorker(QtCore.QThread):
         self.is_running = False
 
 class UDSSequenceController(BaseController):
+
     def __init__(self, parent=None):
         self.model = UDSSequenceModel(parent)
         self.view = UDSSequenceView(self.model, parent)
@@ -223,6 +224,7 @@ class UDSSequenceController(BaseController):
         self.current_config_name = None
         self.worker = None
         self.batch_worker = None
+        self._single_send_active = False  # 单次发送是否正在执行
         self.is_loading = False
         self._connect_signals()
 
@@ -257,6 +259,7 @@ class UDSSequenceController(BaseController):
         self.tester_present_timer = QtCore.QTimer(self)
         self.tester_present_timer.timeout.connect(self._send_tester_present)
         self.tester_present_mode = "80"  # Default 3E 80
+        self._tp_in_flight = False  # 3E 00 请求是否还在等待响应
         # S3/2 作为 3E 发送间隔（确保在 S3 超时前发送，留 50% 安全余量）
         try:
             s3_ms = int(self._config_service.diag_layer_settings.get("s3_client_time", 3000))
@@ -380,10 +383,21 @@ class UDSSequenceController(BaseController):
         """发送 TesterPresent 报文并记录 TX/RX 到日志。"""
         self.view.log_message(f"TX: {cmd}")
         resp = self._send_uds_command(cmd, timeout=timeout)
-        # 3E 80 抑制正响应模式：ECU 不回复，只打印真实响应或异常
         is_suppress = "80" in cmd
-        if resp and (not is_suppress or (resp != "No Response" and resp.startswith("Error"))):
-            self.view.log_message(f"RX: {resp}")
+
+        if is_suppress:
+            # 3E 80 抑制正响应模式：只打印实际响应或异常，不打印 No Response
+            if resp and resp != "No Response" and resp.startswith("Error"):
+                self.view.log_message(f"RX: {resp}")
+        else:
+            # 3E 00 正常响应模式：仅当收到实际响应（7E 00）时打印，超时不打印
+            if resp and resp != "No Response":
+                self.view.log_message(f"RX: {resp}")
+
+        # 3E 00 模式：响应收到（或超时）后清除 in-flight 标志，
+        # 允许定时器触发下一轮发送，实现"从响应时间算起"的间隔
+        if not is_suppress:
+            self._tp_in_flight = False
 
     def _on_tester_present_mode_changed(self, mode: str):
         """3E 模式下拉框切换：更新心跳报文模式。
@@ -391,6 +405,7 @@ class UDSSequenceController(BaseController):
         :param mode: "00" 或 "80"
         """
         self.tester_present_mode = mode
+        self._tp_in_flight = False  # 切换模式时重置 in-flight 标志
         desc = "抑制正响应 (3E 80)" if mode == "80" else "正常响应 (3E 00)"
         self.view.log_message(f"TesterPresent 模式已切换: {desc}")
 
@@ -417,6 +432,7 @@ class UDSSequenceController(BaseController):
             except (ValueError, TypeError):
                 s3_ms = 3000
             self.tester_present_interval_ms = max(500, s3_ms // 2)
+            self._tp_in_flight = False  # 启动时重置 in-flight 标志
             self.tester_present_timer.start(self.tester_present_interval_ms)
             self.view.log_message(
                 f"TesterPresent(3E) 心跳已启动 [间隔={self.tester_present_interval_ms}ms, S3/2]"
@@ -436,7 +452,19 @@ class UDSSequenceController(BaseController):
         if self._device_service.is_upgrade_active():
             return
 
+        # 序列/批量/单次发送任务执行期间静默跳过，不影响任何正在执行的诊断操作
+        if self.worker is not None or self.batch_worker is not None or self._single_send_active:
+            return
+
+        # 3E 00 模式：上一轮请求还没收到响应，跳过本轮，等响应回来后再发下一轮
+        if self._tp_in_flight:
+            return
+
         cmd = f"3E {self.tester_present_mode}"
+
+        # 3E 00：标记 in-flight，响应回来后清除，定时器下一轮才能发送
+        if self.tester_present_mode == "00":
+            self._tp_in_flight = True
 
         # 抑制正响应 (3E 80) 时用短超时，普通请求 (3E 00) 用默认超时
         timeout = 0.05 if self.tester_present_mode == "80" else None
@@ -466,13 +494,6 @@ class UDSSequenceController(BaseController):
             self.view.log_message(DeviceService.UPGRADE_BLOCKED_MSG)
             return
 
-        # 序列开始时：如果 3E 按钮已启用，启动心跳定时器
-        if self.view.btn_3e.isChecked():
-            self.tester_present_timer.start(self.tester_present_interval_ms)
-            self.view.log_message(
-                f"序列执行开始，TesterPresent(3E) 心跳已启动 [间隔={self.tester_present_interval_ms}ms]"
-            )
-
         # Start execution thread
         self.worker = SequenceWorker(self._device_service, data, times, True, self._config_service)
         self.worker.log_signal.connect(self.view.log_message)
@@ -483,10 +504,9 @@ class UDSSequenceController(BaseController):
         self.worker.start()
 
     def _on_sequence_finished(self):
-        self.tester_present_timer.stop()
         self.view.set_editor_enabled(True)
         self.view.run_sequence_btn.setEnabled(True)
-        self.view.log_message("序列执行结束，TesterPresent(3E) 心跳已停止")
+        self.view.log_message("序列执行结束")
         self.worker = None
 
     def _on_send_requested(self, request_data: str):
@@ -511,6 +531,9 @@ class UDSSequenceController(BaseController):
             self.view.run_sequence_btn.setEnabled(False)
             QtWidgets.QApplication.processEvents()
 
+            # 标记单次发送进行中，屏蔽 3E 心跳
+            self._single_send_active = True
+
             # Execute send in background thread
             import threading
             def bg_send():
@@ -531,6 +554,7 @@ class UDSSequenceController(BaseController):
 
     @QtCore.pyqtSlot(str)
     def _on_single_send_finished(self, resp: str):
+        self._single_send_active = False  # 清除单次发送标志，恢复 3E 心跳
         self.view.log_message(f"RX: {resp}")
         try:
             self.view.response_edit.setPlainText(resp)
