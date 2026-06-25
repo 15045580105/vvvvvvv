@@ -200,6 +200,22 @@ class UpgradeWorker(QThread):
     def stop(self):
         self.running = False
 
+    def _check_doip_session_health(self):
+        """DoIP 协议级会话健康探测（确定性判断）。
+
+        通过 request_entity_status() 探测 DoIP 会话是否仍然有效：
+        - 成功 → 路由激活有效，会话正常
+        - 失败 → 路由激活已失效（如控制器重启），需触发完整重连
+        """
+        try:
+            handler = self.device_service._doip_handler
+            if not handler or not handler.doip_client:
+                return False
+            handler.doip_client.request_entity_status()
+            return True
+        except Exception:
+            return False
+
     def _wait_for_ecu_ready(self):
         self.log_signal.emit("正在轮询请求 ECU 默认会话，以触发网络主动重连与诊断就绪检测...", True)
         wait_start = time.time()
@@ -486,7 +502,7 @@ class UpgradeWorker(QThread):
                     self._send_tester_present_inline("安装轮询会话保持")
                     self._polls_since_last_tp = 0
 
-            resp = self._send_uds("22 21 04", "读取安装进度", PHASE_INSTALL, expect_positive=True, return_data=True)
+            resp = self._send_uds("22 21 04", "读取安装进度", PHASE_INSTALL, expect_positive=True, return_data=True, timeout=5.0)
             if resp and len(resp) >= 5:
                 # 62 21 04 [Status] [Progress] [Time...]
                 # Log: 62 21 04 01 28 ...
@@ -557,6 +573,23 @@ class UpgradeWorker(QThread):
                 if progress >= 100:
                     self.log_signal.emit("安装进度达到100%", True)
                     break
+
+            else:
+                # UDS 无响应，通过 DoIP 协议级探测确定性判断连接状态
+                if self._check_doip_session_health():
+                    self.log_signal.emit("DoIP会话健康探测通过，ECU正忙于安装操作，继续轮询", True)
+                else:
+                    # 确定性判定：DoIP路由激活已失效（如设备重启），触发重连
+                    self.log_signal.emit("DoIP会话健康探测失败，路由激活已失效，主动断开并触发重连", True)
+                    try:
+                        handler = self.device_service._doip_handler
+                        if handler:
+                            handler.disconnect(source="install_polling_session_dead", reason="entity_status_check_failed")
+                            self.device_service._doip_handler = None
+                    except Exception:
+                        pass
+                    # 等待 ECU 就绪（内部自动触发完整重连含路由激活），不断重试直至成功
+                    self._wait_for_ecu_ready()
 
             time.sleep(1)
 
@@ -689,7 +722,7 @@ class UpgradeWorker(QThread):
         except Exception:
             pass
 
-    def _send_uds(self, hex_str, desc, phase, expect_positive=False, return_data=False, success_msg=None):
+    def _send_uds(self, hex_str, desc, phase, expect_positive=False, return_data=False, success_msg=None, timeout=None):
         if not self.running: return None
         try:
             payload = binascii.unhexlify(hex_str.replace(" ", ""))
@@ -698,9 +731,9 @@ class UpgradeWorker(QThread):
                  self.log_signal.emit(f"Error: 尚未计算密钥: {hex_str}", True)
                  return None
              return None
-        return self._send_doip(payload, desc, expect_positive=expect_positive, success_msg=success_msg)
+        return self._send_doip(payload, desc, expect_positive=expect_positive, success_msg=success_msg, timeout=timeout)
 
-    def _send_doip(self, payload, desc, expect_positive=False, success_msg=None):
+    def _send_doip(self, payload, desc, expect_positive=False, success_msg=None, timeout=None):
         # Optimize logging: Only format the part we display to avoid performance hit on large payloads
 
         # Special handling for Service 36 (TransferData)
@@ -725,7 +758,7 @@ class UpgradeWorker(QThread):
             # Send with timeout appropriate for flash operations
             # Use prefer_last=True to handle NRC 78 (Pending) followed by Final Response without manual loop
             # DoIP Client collects responses and prefer_last returns the successful one if Pending preceded it.
-            timeout_val = 15.0 # Increased timeout for slow flash write operations to avoid no-response issues
+            timeout_val = timeout if timeout is not None else 15.0  # 可覆盖；默认15s适用于慢速刷写操作
 
             resp = self.device_service._send_doip_payload_for_upgrade(
                 payload,

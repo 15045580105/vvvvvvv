@@ -1286,6 +1286,11 @@ class DeviceService(QObject):
                 if is_tester_present:
                     self._append_tester_present_operation_log("发送失败：DoIP未连接且自动重连失败")
                 return None
+            # 重连后刷新 client 引用，因为 _connect_doip 可能重建了 _doip_handler
+            client = self.get_doip_client()
+            if client is None:
+                self._get_log_emit()("重连后 DoIP 客户端实例为 None")
+                return None
 
         # 3. 尝试发送
         # 注意：client.send_doip_message 内部可能还有一层重连机制
@@ -1305,6 +1310,11 @@ class DeviceService(QObject):
             if not client.connected:
                 self._get_log_emit()("发送报文时连接断开")
                 if _try_reconnect_for_payload("发送报文时连接断开"):
+                    # 重连后刷新 client 引用
+                    client = self.get_doip_client()
+                    if client is None:
+                        self._get_log_emit()("重连后 DoIP 客户端实例为 None")
+                        return None
                     resp = client.send_doip_message(
                         payload,
                         timeout=timeout,

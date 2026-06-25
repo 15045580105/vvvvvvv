@@ -152,7 +152,7 @@ class DoIPClientHandler:
                 client_ip_address=self.interface_ip,  # 绑定到指定网口
                 activation_type=activation_type,
                 protocol_version=protocol_version,
-                auto_reconnect_tcp=True,
+                auto_reconnect_tcp=False,  # 禁用库层自动重连：由 DeviceService._send_doip_payload_locked 在应用层统一处理重连（含路由激活），避免库层重连阻塞~60s且不重建DoIP会话
                 client_logical_address=client_logical_address,
             )
 
