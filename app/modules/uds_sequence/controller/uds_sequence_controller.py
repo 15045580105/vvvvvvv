@@ -35,11 +35,17 @@ class SequenceWorker(QtCore.QThread):
             self.log_signal.emit(DeviceService.UPGRADE_BLOCKED_MSG)
             self.finished_signal.emit()
             return
+        infinite = self.times < 0  # -1 表示无限循环
+        loop_index = 0
         try:
-            for i in range(self.times):
+            while infinite or loop_index < self.times:
                 if not self.is_running:
                     break
-                self.log_signal.emit(f"--- 第 {i+1}/{self.times} 次循环 ---")
+                loop_index += 1
+                if infinite:
+                    self.log_signal.emit(f"--- 第 {loop_index} 次循环 (无限) ---")
+                else:
+                    self.log_signal.emit(f"--- 第 {loop_index}/{self.times} 次循环 ---")
                 for row_index, item in enumerate(self.data):
                     if not self.is_running:
                         break
@@ -236,6 +242,7 @@ class UDSSequenceController(BaseController):
         self.view.delay_insert_requested.connect(self._on_delay_insert_requested)
         self.view.send_batch_requested.connect(self._on_send_batch_requested)
         self.view.run_sequence_requested.connect(self._on_run_sequence_requested)
+        self.view.stop_sequence_requested.connect(self._on_stop_sequence_requested)
         self.view.config_save_requested.connect(self._on_config_save_requested)
         self.view.config_load_requested.connect(self._on_config_load_requested)
         self.view.config_delete_requested.connect(self._on_config_delete_requested)
@@ -503,9 +510,26 @@ class UDSSequenceController(BaseController):
         self.worker.current_row_signal.connect(self.view.highlight_row)
         self.worker.start()
 
+        # UI state: disable run, enable stop
+        self.view.run_sequence_btn.setEnabled(False)
+        self.view.stop_sequence_btn.setEnabled(True)
+        self.view.infinite_checkbox.setEnabled(False)
+        self.view.send_times_spin.setEnabled(False)
+
+    def _on_stop_sequence_requested(self):
+        """Stop the running sequence worker."""
+        if self.worker is not None:
+            self.worker.stop()
+            self.view.log_message("已请求停止序列...")
+            self.view.stop_sequence_btn.setEnabled(False)
+
     def _on_sequence_finished(self):
         self.view.set_editor_enabled(True)
         self.view.run_sequence_btn.setEnabled(True)
+        self.view.stop_sequence_btn.setEnabled(False)
+        self.view.infinite_checkbox.setEnabled(True)
+        # Restore spin box state based on checkbox
+        self.view.send_times_spin.setEnabled(not self.view.infinite_checkbox.isChecked())
         self.view.log_message("序列执行结束")
         self.worker = None
 

@@ -67,7 +67,18 @@ class DeviceService(QObject):
         if log_signal is not None:
             emit = getattr(log_signal, "emit", None)
             if callable(emit):
-                return emit
+                def emit_log(message: object, *args: object) -> None:
+                    try:
+                        emit(message)
+                    except TypeError as first_error:
+                        # UpgradeWorker.log_signal 是 (str, bool)，而 DeviceService
+                        # 内部日志调用约定只有一个参数；按信号签名自动补充日志标记。
+                        try:
+                            emit(message, True)
+                        except TypeError:
+                            raise first_error
+
+                return emit_log
             if callable(log_signal):
                 return log_signal
         return getattr(self.log_signal, "emit")
@@ -1245,13 +1256,9 @@ class DeviceService(QObject):
         if is_tester_present:
             self._append_tester_present_operation_log(f"TX {payload.hex(' ').upper()} timeout={timeout if timeout is not None else 'default'}")
 
-        # 1. 获取客户端实例
+        # 1. 获取客户端实例。设备重启后旧实例可能已被清理为 None，
+        # 此时必须进入自动重连窗口，不能在这里提前返回。
         client = self.get_doip_client()
-        if client is None:
-            self._get_log_emit()("错误：DoIP 客户端实例为 None")
-            if is_tester_present:
-                self._append_tester_present_operation_log("发送失败：DoIP客户端实例为None")
-            return None
 
         # 计算超时
         if timeout is None:
@@ -1280,11 +1287,13 @@ class DeviceService(QObject):
             return True
 
         # 2. 预检查连接状态
-        # 如果未连接，且有上次连接记录，先尝试重连一次
-        if not client.connected:
+        # 如果实例不存在或未连接，且有上次连接记录，先尝试重连一次。
+        if client is None or not getattr(client, "connected", False):
             if not _try_reconnect_for_payload("发现 DoIP 未连接"):
                 if is_tester_present:
                     self._append_tester_present_operation_log("发送失败：DoIP未连接且自动重连失败")
+                else:
+                    self._get_log_emit()("错误：DoIP 客户端实例为空或未连接，自动重连失败")
                 return None
             # 重连后刷新 client 引用，因为 _connect_doip 可能重建了 _doip_handler
             client = self.get_doip_client()

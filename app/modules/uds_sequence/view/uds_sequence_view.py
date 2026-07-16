@@ -257,7 +257,8 @@ class UDSSequenceView(QtWidgets.QWidget):
     delay_insert_requested = pyqtSignal(str)
     send_batch_requested = pyqtSignal(int)
     send_single_requested = pyqtSignal(str)  # New signal for right-click send
-    run_sequence_requested = pyqtSignal(int)  # New signal for running the sequence
+    run_sequence_requested = pyqtSignal(int)  # New signal for running the sequence (-1 = infinite)
+    stop_sequence_requested = pyqtSignal()      # Signal to stop running sequence
     config_save_requested = pyqtSignal(str)
     config_load_requested = pyqtSignal(str)
     config_delete_requested = pyqtSignal(str)
@@ -721,19 +722,33 @@ class UDSSequenceView(QtWidgets.QWidget):
         self.send_times_label.setSizePolicy(QtWidgets.QSizePolicy.Fixed, QtWidgets.QSizePolicy.Fixed)
 
         self.send_times_spin = QtWidgets.QSpinBox()
-        self.send_times_spin.setRange(1, 9999)
+        self.send_times_spin.setRange(1, 2147483647)
         self.send_times_spin.setValue(1)
         self.send_times_spin.setMinimumWidth(60)
         self.send_times_spin.setMaximumWidth(90)
         self.send_times_spin.setFixedHeight(32)
         self.send_times_spin.setSizePolicy(QtWidgets.QSizePolicy.Fixed, QtWidgets.QSizePolicy.Fixed)
 
+        self.infinite_checkbox = QtWidgets.QCheckBox("无限")
+        self.infinite_checkbox.setToolTip("勾选后循环次数不限，直到手动停止")
+        self.infinite_checkbox.setFixedHeight(32)
+        self.infinite_checkbox.setSizePolicy(QtWidgets.QSizePolicy.Fixed, QtWidgets.QSizePolicy.Fixed)
+        self.infinite_checkbox.stateChanged.connect(self._on_infinite_toggled)
+
         self.run_sequence_btn = ModernButton("执行序列", "#8B5CF6")
         self.run_sequence_btn.setToolTip("按顺序执行下方列表中的所有勾选指令")
         self.run_sequence_btn.setFixedHeight(32)
         self.run_sequence_btn.setMinimumWidth(90)
         self.run_sequence_btn.setSizePolicy(QtWidgets.QSizePolicy.Fixed, QtWidgets.QSizePolicy.Fixed)
-        self.run_sequence_btn.clicked.connect(lambda: self.run_sequence_requested.emit(self.send_times_spin.value()))
+        self.run_sequence_btn.clicked.connect(self._on_run_btn_clicked)
+
+        self.stop_sequence_btn = ModernButton("停止", "#EF4444")
+        self.stop_sequence_btn.setToolTip("停止当前正在执行的序列")
+        self.stop_sequence_btn.setFixedHeight(32)
+        self.stop_sequence_btn.setMinimumWidth(60)
+        self.stop_sequence_btn.setSizePolicy(QtWidgets.QSizePolicy.Fixed, QtWidgets.QSizePolicy.Fixed)
+        self.stop_sequence_btn.setEnabled(False)
+        self.stop_sequence_btn.clicked.connect(lambda: self.stop_sequence_requested.emit())
 
         self.search_input = QtWidgets.QLineEdit()
         self.search_input.setPlaceholderText("搜索...")
@@ -748,7 +763,10 @@ class UDSSequenceView(QtWidgets.QWidget):
 
         self.toolbar_layout.addWidget(self.send_times_label, 0)
         self.toolbar_layout.addWidget(self.send_times_spin, 0)
+        self.toolbar_layout.addWidget(self.infinite_checkbox, 0)
+        self.toolbar_layout.addSpacing(4)
         self.toolbar_layout.addWidget(self.run_sequence_btn, 0)
+        self.toolbar_layout.addWidget(self.stop_sequence_btn, 0)
         self.toolbar_layout.addSpacing(20)
         self.toolbar_layout.addWidget(self.search_input, 0)
         self.toolbar_layout.addWidget(self.search_btn, 0)
@@ -922,6 +940,14 @@ class UDSSequenceView(QtWidgets.QWidget):
         self._apply_responsive_layout(update_splitter=False)
 
     def _apply_responsive_layout(self, update_splitter=True):
+        # Guard: skip if underlying C++ objects have been deleted (e.g. widget closing)
+        try:
+            if not hasattr(self, 'editor_layout') or self.editor_layout is None:
+                return
+            self.editor_layout.spacing()  # probe C++ object validity
+        except RuntimeError:
+            return
+
         if hasattr(self, 'cmd_splitter') and self.cmd_splitter and update_splitter:
             total_width = max(0, self.cmd_splitter.size().width())
             if total_width > 0:
@@ -1000,11 +1026,14 @@ class UDSSequenceView(QtWidgets.QWidget):
         widget.setFixedHeight(height)
 
     def resizeEvent(self, event):
-        super().resizeEvent(event)
-        # Avoid unnecessary relayouts when height changes or typing happens (which might trigger spurious resize events)
-        if event.oldSize().width() == event.size().width():
-            return
-        self._apply_responsive_layout(update_splitter=not self._user_resized_splitter)
+        try:
+            super().resizeEvent(event)
+            # Avoid unnecessary relayouts when height changes or typing happens (which might trigger spurious resize events)
+            if event.oldSize().width() == event.size().width():
+                return
+            self._apply_responsive_layout(update_splitter=not self._user_resized_splitter)
+        except RuntimeError:
+            pass  # C++ object already deleted (widget being destroyed)
 
 
     # --- View API for controller ---
@@ -1228,6 +1257,17 @@ class UDSSequenceView(QtWidgets.QWidget):
         """3E 模式下拉框切换：独立切换 3E 80 / 3E 00 模式。"""
         mode = "00" if "00" in text else "80"
         self.tp_mode_changed.emit(mode)
+
+    def _on_infinite_toggled(self, state):
+        """无限复选框切换：勾选时禁用次数输入框。"""
+        self.send_times_spin.setEnabled(state != QtCore.Qt.Checked)
+
+    def _on_run_btn_clicked(self):
+        """执行序列按钮点击：根据无限复选框状态发送 -1（无限）或具体次数。"""
+        if self.infinite_checkbox.isChecked():
+            self.run_sequence_requested.emit(-1)
+        else:
+            self.run_sequence_requested.emit(self.send_times_spin.value())
 
     def _apply_toggle_style(self, btn, active_color):
         btn.setStyleSheet(f"""

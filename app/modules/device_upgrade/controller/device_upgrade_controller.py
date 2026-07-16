@@ -42,6 +42,7 @@ class UpgradeWorker(QThread):
         self._upgrade_phase = "idle"              # idle / pre-programming / download / install / post-install
         self._block_tester_present = False        # 为 True 时后台 3E 线程跳过发送
         self._polls_since_last_tp = 0             # 安装轮询期间内联 3E 计数器
+        self._protocol_reconnect_thread = None    # DoIP -> SSH -> SomeIP 顺序恢复线程
 
     def _is_tester_present_enabled(self):
         """Whether to send automatic TesterPresent during upgrade.
@@ -216,6 +217,127 @@ class UpgradeWorker(QThread):
         except Exception:
             return False
 
+    def _start_protocol_reconnect(self, device, need_ssh, need_someip):
+        """在独立线程中按 DoIP、SSH、SomeIP 顺序恢复原本在线的协议。
+
+        SSH 的服务激活依赖 DoIP，因此即使当前 ECU 探测已经成功，恢复线程
+        仍然把 DoIP 作为第一阶段；恢复过程不会阻塞升级线程。每个协议只在
+        自身成功后才进入下一阶段，失败则在后台按固定间隔重试。
+        """
+        if not (need_ssh or need_someip) or not self.running:
+            return
+
+        if (self._protocol_reconnect_thread and
+                self._protocol_reconnect_thread.is_alive()):
+            self.log_signal.emit("协议恢复线程已在运行，跳过重复启动", True)
+            return
+
+        def is_connected(status):
+            return "成功" in status or "在线" in status
+
+        def protocol_log(message, *unused_args):
+            """将 DeviceService 的单参数日志适配到 Worker 的双参数信号。"""
+            self.log_signal.emit(str(message), True)
+
+        def ssh_ready(device):
+            if not is_connected(str(device.get("ssh_connect_status", ""))):
+                return False
+            client = self.device_service.get_ssh_client()
+            if client is None:
+                return False
+            is_client_connected = getattr(client, "is_connected", None)
+            return bool(is_client_connected()) if callable(is_client_connected) else False
+
+        def someip_ready(device):
+            if not is_connected(str(device.get("someip_connect_status", ""))):
+                return False
+            client = self.device_service.get_someip_client()
+            return bool(client and getattr(client, "running", False))
+
+        def wait_interruptible(seconds):
+            end_time = time.time() + seconds
+            while self.running and time.time() < end_time:
+                time.sleep(min(0.2, end_time - time.time()))
+            return self.running
+
+        def reconnect_protocols_in_order():
+            try:
+                # 阶段 1：DoIP。已连接时不额外发送报文；断开时通过升级发送入口
+                # 触发 DeviceService 的自动重连和路由激活。
+                doip_ready = False
+                while self.running and not doip_ready:
+                    doip_client = self.device_service.get_doip_client()
+                    if doip_client and getattr(doip_client, "connected", False):
+                        doip_ready = True
+                        break
+
+                    self.log_signal.emit("正在尝试恢复 DoIP 连接...", True)
+                    resp = self._send_doip(
+                        bytes([0x10, 0x01]),
+                        "协议恢复：触发 DoIP 重连",
+                        expect_positive=True,
+                    )
+                    doip_client = self.device_service.get_doip_client()
+                    doip_ready = bool(
+                        resp and doip_client and
+                        getattr(doip_client, "connected", False)
+                    )
+                    if not doip_ready and not wait_interruptible(2):
+                        return
+
+                if not self.running:
+                    return
+                if not doip_ready:
+                    self.log_signal.emit("DoIP 未恢复，暂不尝试依赖 DoIP 的其他协议", True)
+                    return
+
+                # 阶段 2：SSH。只清理 SSH，避免影响尚未恢复的 SomeIP。
+                ssh_done = not need_ssh or ssh_ready(device)
+                if need_ssh and hasattr(self.device_service, "_disconnect_ssh"):
+                    try:
+                        self.device_service._disconnect_ssh(device, force_cleanup=True)
+                    except Exception as exc:
+                        self.log_signal.emit(f"清理 SSH 残留连接失败，将继续重试: {exc}", True)
+
+                while self.running and not ssh_done:
+                    self.log_signal.emit("正在尝试恢复 SSH 连接...", True)
+                    if hasattr(self.device_service, "_connect_ssh"):
+                        self.device_service._connect_ssh(device, log_signal=protocol_log)
+                    ssh_done = ssh_ready(device)
+                    if not ssh_done and not wait_interruptible(2):
+                        return
+
+                if not self.running:
+                    return
+
+                # 阶段 3：SomeIP。SSH 成功（或原本不需要 SSH）后才开始。
+                someip_done = not need_someip or someip_ready(device)
+                if need_someip and hasattr(self.device_service, "_disconnect_someip"):
+                    try:
+                        self.device_service._disconnect_someip(device, force_cleanup=True)
+                    except Exception as exc:
+                        self.log_signal.emit(f"清理 SomeIP 残留连接失败，将继续重试: {exc}", True)
+
+                while self.running and not someip_done:
+                    self.log_signal.emit("正在尝试恢复 SomeIP 连接...", True)
+                    if hasattr(self.device_service, "_connect_someip"):
+                        self.device_service._connect_someip(device, log_signal=protocol_log)
+                    someip_done = someip_ready(device)
+                    if not someip_done and not wait_interruptible(2):
+                        return
+
+                if self.running and (not need_ssh or ssh_ready(device)) and (not need_someip or someip_ready(device)):
+                    self.log_signal.emit("DoIP、SSH、SomeIP 协议顺序恢复操作完成", True)
+            except Exception as exc:
+                self.log_signal.emit(f"协议顺序恢复时发生异常: {exc}", True)
+
+        self._protocol_reconnect_thread = threading.Thread(
+            target=reconnect_protocols_in_order,
+            name="upgrade-protocol-reconnect",
+            daemon=True,
+        )
+        self._protocol_reconnect_thread.start()
+
     def _wait_for_ecu_ready(self):
         self.log_signal.emit("正在轮询请求 ECU 默认会话，以触发网络主动重连与诊断就绪检测...", True)
         wait_start = time.time()
@@ -228,6 +350,21 @@ class UpgradeWorker(QThread):
                 resp = self._send_doip(payload, "试探 ECU 默认会话能否建立(触发重连)")
                 if resp and len(resp) > 0:
                      self.log_signal.emit("ECU 诊断服务已全面就绪", True)
+                     
+                     # 恢复原本已连接的其他协议：独立后台线程按 DoIP -> SSH -> SomeIP 顺序执行
+                     device = getattr(self.device_service, "_last_connected_device", None)
+                     if device:
+                         ssh_status = str(device.get("ssh_connect_status", ""))
+                         someip_status = str(device.get("someip_connect_status", ""))
+                         need_ssh = "成功" in ssh_status or "在线" in ssh_status
+                         need_someip = "成功" in someip_status or "在线" in someip_status
+                         if need_ssh or need_someip:
+                             self.log_signal.emit(
+                                 "准备在后台按 DoIP → SSH → SomeIP 顺序轮询恢复原本在线的协议...",
+                                 True,
+                             )
+                             self._start_protocol_reconnect(device, need_ssh, need_someip)
+
                      return True
             except:
                 pass
