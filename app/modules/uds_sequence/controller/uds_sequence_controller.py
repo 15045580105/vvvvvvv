@@ -30,11 +30,22 @@ class SequenceWorker(QtCore.QThread):
         self.seed_map = {}
 
     def run(self):
+        # 升级屏障拦截：升级期间禁止执行序列
+        if self.device_service.is_upgrade_active():
+            self.log_signal.emit(DeviceService.UPGRADE_BLOCKED_MSG)
+            self.finished_signal.emit()
+            return
+        infinite = self.times < 0  # -1 表示无限循环
+        loop_index = 0
         try:
-            for i in range(self.times):
+            while infinite or loop_index < self.times:
                 if not self.is_running:
                     break
-                self.log_signal.emit(f"--- 第 {i+1}/{self.times} 次循环 ---")
+                loop_index += 1
+                if infinite:
+                    self.log_signal.emit(f"--- 第 {loop_index} 次循环 (无限) ---")
+                else:
+                    self.log_signal.emit(f"--- 第 {loop_index}/{self.times} 次循环 ---")
                 for row_index, item in enumerate(self.data):
                     if not self.is_running:
                         break
@@ -166,6 +177,11 @@ class BatchSendWorker(QtCore.QThread):
         self.is_running = True
 
     def run(self):
+        # 升级屏障拦截：升级期间禁止执行批量发送
+        if self.device_service.is_upgrade_active():
+            self.log_signal.emit(DeviceService.UPGRADE_BLOCKED_MSG)
+            self.finished_signal.emit()
+            return
         try:
             for i in range(self.times):
                 if not self.is_running:
@@ -195,6 +211,7 @@ class BatchSendWorker(QtCore.QThread):
         self.is_running = False
 
 class UDSSequenceController(BaseController):
+
     def __init__(self, parent=None):
         self.model = UDSSequenceModel(parent)
         self.view = UDSSequenceView(self.model, parent)
@@ -213,6 +230,7 @@ class UDSSequenceController(BaseController):
         self.current_config_name = None
         self.worker = None
         self.batch_worker = None
+        self._single_send_active = False  # 单次发送是否正在执行
         self.is_loading = False
         self._connect_signals()
 
@@ -224,6 +242,7 @@ class UDSSequenceController(BaseController):
         self.view.delay_insert_requested.connect(self._on_delay_insert_requested)
         self.view.send_batch_requested.connect(self._on_send_batch_requested)
         self.view.run_sequence_requested.connect(self._on_run_sequence_requested)
+        self.view.stop_sequence_requested.connect(self._on_stop_sequence_requested)
         self.view.config_save_requested.connect(self._on_config_save_requested)
         self.view.config_load_requested.connect(self._on_config_load_requested)
         self.view.config_delete_requested.connect(self._on_config_delete_requested)
@@ -243,10 +262,21 @@ class UDSSequenceController(BaseController):
         self.view.update_config_list(self.model.get_config_names())
         self._on_config_load_requested("默认")
 
-        # Timer for Tester Present
+        # Timer for Tester Present（基于 S3 定时器动态计算间隔，符合 ISO 14229-1）
         self.tester_present_timer = QtCore.QTimer(self)
         self.tester_present_timer.timeout.connect(self._send_tester_present)
-        self.tester_present_mode = "80" # Default 3E 80
+        self.tester_present_mode = "80"  # Default 3E 80
+        self._tp_in_flight = False  # 3E 00 请求是否还在等待响应
+        # S3/2 作为 3E 发送间隔（确保在 S3 超时前发送，留 50% 安全余量）
+        try:
+            s3_ms = int(self._config_service.diag_layer_settings.get("s3_client_time", 3000))
+        except (ValueError, TypeError):
+            s3_ms = 3000
+        self.tester_present_interval_ms = max(500, s3_ms // 2)
+
+        # 连接 3E 控件信号
+        self.view.tp_toggled.connect(self._on_tester_present_toggled)
+        self.view.tp_mode_changed.connect(self._on_tester_present_mode_changed)
 
     def _on_table_data_changed(self):
         if self.current_config_name == "默认":
@@ -323,25 +353,17 @@ class UDSSequenceController(BaseController):
             self.view.data_table.setStyleSheet(self._normal_stylesheet)
 
     def _on_add_command_requested(self, code: str):
-        # find the command config
-        cmd = self.model.get_command(code)
-        if cmd is not None:
-            # enable editor and set placeholders using human readable name
-            display = f"{code} {cmd.get('name')}" if cmd.get('name') else code
-            self.view.set_editor_enabled(True)
-            self.view.set_placeholders(display)
+        node, _ = self.model.find_node_by_code(code)
+        if node is not None:
+            name = node.get('name', '')
+            cn = NAME_CN.get(name)
+            display_name = f"{code} {name} ({cn})" if cn else f"{code} {name}"
+            request = ' '.join(code.split('.'))
 
-            # Fill the request field automatically: '10' -> '10', '10.01' -> '10 01'
-            request_text = ' '.join(code.split('.'))
-            try:
-                # QTextEdit: setPlainText to place the code into the editor
-                self.view.request_edit.setPlainText(request_text)
-            except Exception:
-                # fallback: if view doesn't expose request_edit, use placeholder only
-                pass
+            # Append to table
+            self.view.append_table_row(display_name, request, "")
+            self.view.log_message(f"添加到末尾: {code} {display_name}")
 
-            # IMPORTANT: do NOT change/clear the right-hand table when clicking the tree.
-            # The table should remain under user control; only update editor placeholders and request text.
         else:
             # Don't clear the table on invalid selection — just disable editor inputs.
             self.view.set_editor_enabled(False)
@@ -357,32 +379,107 @@ class UDSSequenceController(BaseController):
             # Insert at current row or append if no selection
             current_row = self.view.get_current_row()
             if current_row < 0:
-                self._on_add_command_requested(code)
+                self.view.append_table_row(display_name, request, "")
+                self.view.log_message(f"添加到末尾: {code} {display_name}")
                 return
 
             self.view.insert_table_row(current_row, display_name, request, "")
             self.view.log_message(f"插入指令: {code} {display_name}")
 
     def _do_send_tester_present(self, cmd, timeout):
+        """发送 TesterPresent 报文并记录 TX/RX 到日志。"""
+        self.view.log_message(f"TX: {cmd}")
         resp = self._send_uds_command(cmd, timeout=timeout)
-        # Log heartbeat response via signal/main thread safe way is needed?
-        # Actually view.log_message uses signal/slots internally if needed, or we should use QMetaObject.invokeMethod.
-        # But UDSSequenceView log_message does not use signals. So we just print or let the SequenceWorker handle it?
-        # A simple solution is to just suppress logs for heartbeat to avoid thread-safety issues with GUI unless error.
-        pass
+        is_suppress = "80" in cmd
+
+        if is_suppress:
+            # 3E 80 抑制正响应模式：只打印实际响应或异常，不打印 No Response
+            if resp and resp != "No Response" and resp.startswith("Error"):
+                self.view.log_message(f"RX: {resp}")
+        else:
+            # 3E 00 正常响应模式：仅当收到实际响应（7E 00）时打印，超时不打印
+            if resp and resp != "No Response":
+                self.view.log_message(f"RX: {resp}")
+
+        # 3E 00 模式：响应收到（或超时）后清除 in-flight 标志，
+        # 允许定时器触发下一轮发送，实现"从响应时间算起"的间隔
+        if not is_suppress:
+            self._tp_in_flight = False
+
+    def _on_tester_present_mode_changed(self, mode: str):
+        """3E 模式下拉框切换：更新心跳报文模式。
+
+        :param mode: "00" 或 "80"
+        """
+        self.tester_present_mode = mode
+        self._tp_in_flight = False  # 切换模式时重置 in-flight 标志
+        desc = "抑制正响应 (3E 80)" if mode == "80" else "正常响应 (3E 00)"
+        self.view.log_message(f"TesterPresent 模式已切换: {desc}")
+
+    def _on_tester_present_toggled(self, checked: bool):
+        """3E 心跳按钮切换：启用/停止 TesterPresent 定时器。
+
+        符合 ISO 14229-1：以 S3/2 为间隔发送 TesterPresent，确保在
+        S3 Client Timer 超时前刷新 ECU 会话，防止会话回退到默认会话。
+        """
+        if checked:
+            # 升级屏障拦截：升级期间禁止启动 3E 心跳
+            if self._device_service.is_upgrade_active():
+                from app.common.ui.modern_widgets import MessageToast
+                MessageToast(self.view).show_toast(DeviceService.UPGRADE_BLOCKED_MSG, 1)
+                self.view.log_message(DeviceService.UPGRADE_BLOCKED_MSG)
+                # 恢复按钮状态为未按下，避免 UI 状态不一致
+                self.view.btn_3e.blockSignals(True)
+                self.view.btn_3e.setChecked(False)
+                self.view.btn_3e.blockSignals(False)
+                return
+            # 动态重新读取 S3 值（用户可能在运行期间修改了配置）
+            try:
+                s3_ms = int(self._config_service.diag_layer_settings.get("s3_client_time", 3000))
+            except (ValueError, TypeError):
+                s3_ms = 3000
+            self.tester_present_interval_ms = max(500, s3_ms // 2)
+            self._tp_in_flight = False  # 启动时重置 in-flight 标志
+            self.tester_present_timer.start(self.tester_present_interval_ms)
+            self.view.log_message(
+                f"TesterPresent(3E) 心跳已启动 [间隔={self.tester_present_interval_ms}ms, S3/2]"
+            )
+        else:
+            self.tester_present_timer.stop()
+            self.view.log_message("TesterPresent(3E) 心跳已停止")
 
     def _send_tester_present(self):
-        # Send 3E <mode>
-        # Run in a background thread to prevent UI freezing
+        """发送 TesterPresent (3E) 心跳，保持 ECU 会话不超时。"""
+        # 连接检查：未连接时静默跳过
+        client = self._device_service.get_doip_client()
+        if not client or not client.is_connected():
+            return
+
+        # 升级期间静默跳过心跳，不打印日志避免刷屏
+        if self._device_service.is_upgrade_active():
+            return
+
+        # 序列/批量/单次发送任务执行期间静默跳过，不影响任何正在执行的诊断操作
+        if self.worker is not None or self.batch_worker is not None or self._single_send_active:
+            return
+
+        # 3E 00 模式：上一轮请求还没收到响应，跳过本轮，等响应回来后再发下一轮
+        if self._tp_in_flight:
+            return
+
         cmd = f"3E {self.tester_present_mode}"
 
-        # Use short timeout for 3E 80 (Suppress Positive Response)
-        timeout = None
-        if self.tester_present_mode == "80":
-            timeout = 0.05
+        # 3E 00：标记 in-flight，响应回来后清除，定时器下一轮才能发送
+        if self.tester_present_mode == "00":
+            self._tp_in_flight = True
+
+        # 抑制正响应 (3E 80) 时用短超时，普通请求 (3E 00) 用默认超时
+        timeout = 0.05 if self.tester_present_mode == "80" else None
 
         import threading
-        threading.Thread(target=self._do_send_tester_present, args=(cmd, timeout), daemon=True).start()
+        threading.Thread(
+            target=self._do_send_tester_present, args=(cmd, timeout), daemon=True
+        ).start()
 
     def _on_run_sequence_requested(self, times: int):
         """Execute the checked instructions in the table sequentially."""
@@ -397,6 +494,13 @@ class UDSSequenceController(BaseController):
             self.view.log_message("Error: 未连接 DoIP 客户端")
             return
 
+        # 升级屏障拦截
+        if self._device_service.is_upgrade_active():
+            from app.common.ui.modern_widgets import MessageToast
+            MessageToast(self.view).show_toast(DeviceService.UPGRADE_BLOCKED_MSG, 1)
+            self.view.log_message(DeviceService.UPGRADE_BLOCKED_MSG)
+            return
+
         # Start execution thread
         self.worker = SequenceWorker(self._device_service, data, times, True, self._config_service)
         self.worker.log_signal.connect(self.view.log_message)
@@ -406,10 +510,26 @@ class UDSSequenceController(BaseController):
         self.worker.current_row_signal.connect(self.view.highlight_row)
         self.worker.start()
 
+        # UI state: disable run, enable stop
+        self.view.run_sequence_btn.setEnabled(False)
+        self.view.stop_sequence_btn.setEnabled(True)
+        self.view.infinite_checkbox.setEnabled(False)
+        self.view.send_times_spin.setEnabled(False)
+
+    def _on_stop_sequence_requested(self):
+        """Stop the running sequence worker."""
+        if self.worker is not None:
+            self.worker.stop()
+            self.view.log_message("已请求停止序列...")
+            self.view.stop_sequence_btn.setEnabled(False)
+
     def _on_sequence_finished(self):
-        self.tester_present_timer.stop()
         self.view.set_editor_enabled(True)
         self.view.run_sequence_btn.setEnabled(True)
+        self.view.stop_sequence_btn.setEnabled(False)
+        self.view.infinite_checkbox.setEnabled(True)
+        # Restore spin box state based on checkbox
+        self.view.send_times_spin.setEnabled(not self.view.infinite_checkbox.isChecked())
         self.view.log_message("序列执行结束")
         self.worker = None
 
@@ -420,6 +540,13 @@ class UDSSequenceController(BaseController):
             self.view.log_message("Error: 未连接 DoIP 客户端")
             return
 
+        # 升级屏障拦截
+        if self._device_service.is_upgrade_active():
+            from app.common.ui.modern_widgets import MessageToast
+            MessageToast(self.view).show_toast(DeviceService.UPGRADE_BLOCKED_MSG, 1)
+            self.view.log_message(DeviceService.UPGRADE_BLOCKED_MSG)
+            return
+
         if request_data:
             self.model.log += f"TX: {request_data}\n"
             self.view.log_message(f"TX: {request_data}")
@@ -427,6 +554,9 @@ class UDSSequenceController(BaseController):
             self.view.set_editor_enabled(False)
             self.view.run_sequence_btn.setEnabled(False)
             QtWidgets.QApplication.processEvents()
+
+            # 标记单次发送进行中，屏蔽 3E 心跳
+            self._single_send_active = True
 
             # Execute send in background thread
             import threading
@@ -448,6 +578,7 @@ class UDSSequenceController(BaseController):
 
     @QtCore.pyqtSlot(str)
     def _on_single_send_finished(self, resp: str):
+        self._single_send_active = False  # 清除单次发送标志，恢复 3E 心跳
         self.view.log_message(f"RX: {resp}")
         try:
             self.view.response_edit.setPlainText(resp)
@@ -498,6 +629,13 @@ class UDSSequenceController(BaseController):
             from app.common.ui.modern_widgets import MessageToast
             MessageToast(self.view).show_toast("请先连接设备 (DoIP)", 1)
             self.view.log_message("Error: 未连接 DoIP 客户端")
+            return
+
+        # 升级屏障拦截
+        if self._device_service.is_upgrade_active():
+            from app.common.ui.modern_widgets import MessageToast
+            MessageToast(self.view).show_toast(DeviceService.UPGRADE_BLOCKED_MSG, 1)
+            self.view.log_message(DeviceService.UPGRADE_BLOCKED_MSG)
             return
 
         req = self.view.get_request_text()

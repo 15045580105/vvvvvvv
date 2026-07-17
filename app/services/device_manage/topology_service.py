@@ -646,6 +646,12 @@ class TopologyService(QObject):
         """通过已建立的 DoIP 连接向 ECU 请求拓扑信息，并转换为 TopologySnapshot。"""
         if self._device_service is None:
             raise TopologyServiceError("未注入 DeviceService，无法通过 DoIP 采集拓扑")
+
+        # 升级屏障拦截
+        if self._device_service.is_upgrade_active():
+            self.log_signal.emit(DeviceService.UPGRADE_BLOCKED_MSG)
+            raise TopologyServiceError(DeviceService.UPGRADE_BLOCKED_MSG)
+
         # 以太网 link 状态（新增）：通过 22 BE1A 获取当前各节点 link up/down 信息
         link_status = self._get_eth_link_status()
         self.log_signal.emit(f"获取到的 Link Status Keys: {list(link_status.keys())}")
@@ -1168,6 +1174,11 @@ class TopologyService(QObject):
             self.log_signal.emit("未连接设备，使用模拟数据")
             return self._build_dummy_can_lin_snapshot()
 
+        # 升级屏障拦截
+        if self._device_service.is_upgrade_active():
+            self.log_signal.emit(DeviceService.UPGRADE_BLOCKED_MSG)
+            return self._build_dummy_can_lin_snapshot()
+
         client = self._device_service.get_doip_client()
         if not client or not client.is_connected:
             self.log_signal.emit("DoIP 未连接，使用模拟数据")
@@ -1177,7 +1188,7 @@ class TopologyService(QObject):
         req = bytes.fromhex("19 02 2F")
         self.log_signal.emit(f"TX: {req.hex(' ').upper()}")
         try:
-            rx = client.send_doip_message(req, timeout=5.0)
+            rx = self._device_service.send_doip_payload(req, timeout=5.0)
         except Exception as e:
             self.log_signal.emit(f"DTC 读取异常: {e}")
             return self._build_dummy_can_lin_snapshot()
@@ -1281,6 +1292,11 @@ class TopologyService(QObject):
             return
 
         def task():
+            # 升级屏障拦截
+            if self._device_service.is_upgrade_active():
+                self.log_signal.emit(DeviceService.UPGRADE_BLOCKED_MSG)
+                return DeviceService.UPGRADE_BLOCKED_MSG
+
             client = self._device_service.get_doip_client()
             if client is None or not client.is_connected:
                 # 尝试重连? 或者直接报错
@@ -1293,7 +1309,7 @@ class TopologyService(QObject):
                 self.log_signal.emit(f"TX: {req.hex(' ').upper()}")
 
                 # 发送 DoIP 消息
-                rx = client.send_doip_message(req, timeout=2.0)
+                rx = self._device_service.send_doip_payload(req, timeout=2.0)
 
                 if not rx:
                     self.log_signal.emit("DTC 读取无响应")

@@ -171,6 +171,12 @@ class DTCController(BaseController):
              MessageToast(self.view).show_toast("请先连接设备 (DoIP)", 1)
              return
 
+        # 升级屏障拦截
+        if device_service.is_upgrade_active():
+             from app.common.ui.modern_widgets import MessageToast
+             MessageToast(self.view).show_toast(DeviceService.UPGRADE_BLOCKED_MSG, 1)
+             return
+
         self.view.read_btn.setEnabled(False)
         self.view.clear_btn.setEnabled(False)
         QtWidgets.QApplication.processEvents()
@@ -327,6 +333,12 @@ class DTCController(BaseController):
              MessageToast(self.view).show_toast("请先连接设备 (DoIP)", 1)
              return
 
+        # 升级屏障拦截
+        if device_service.is_upgrade_active():
+             from app.common.ui.modern_widgets import MessageToast
+             MessageToast(self.view).show_toast(DeviceService.UPGRADE_BLOCKED_MSG, 1)
+             return
+
         # Disable freeze read buttons to prevent repeated clicks
         self.view.set_freeze_buttons_enabled(False)
         self.view.read_btn.setEnabled(False)
@@ -397,12 +409,18 @@ class DTCController(BaseController):
              MessageToast(self.view).show_toast("请先连接设备 (DoIP)", 1)
              return
 
+        # 升级屏障拦截
+        if device_service.is_upgrade_active():
+             from app.common.ui.modern_widgets import MessageToast
+             MessageToast(self.view).show_toast(DeviceService.UPGRADE_BLOCKED_MSG, 1)
+             return
+
         # 14 FF FF FF
         req_data = bytes([0x14, 0xFF, 0xFF, 0xFF])
         self.log_message("TX", req_data)
 
         # Send request (we might not get response if ECU resets or functional addressing used, but here physical)
-        resp = client.send_doip_message(req_data, timeout=2.0)
+        resp = device_service.send_doip_payload(req_data, timeout=2.0)
         if resp:
             self.log_message("RX", resp)
 

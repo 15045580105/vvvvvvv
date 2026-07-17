@@ -682,6 +682,11 @@ class DIDController(BaseController):
             MessageToast(self.view).show_toast("请先连接设备 (DoIP)", 1)
             return
 
+        # 升级屏障拦截
+        if self._device_service.is_upgrade_active():
+            MessageToast(self.view).show_toast(DeviceService.UPGRADE_BLOCKED_MSG, 1)
+            return
+
         self.view.read_btn.setEnabled(False)
         self.view.write_btn.setEnabled(False)
         self.view.clear_btn.setEnabled(False)
@@ -708,6 +713,11 @@ class DIDController(BaseController):
         if not self._device_service.get_doip_client():
              MessageToast(self.view).show_toast("请先连接设备 (DoIP)", 1)
              return
+
+        # 升级屏障拦截
+        if self._device_service.is_upgrade_active():
+            MessageToast(self.view).show_toast(DeviceService.UPGRADE_BLOCKED_MSG, 1)
+            return
 
         self.view.read_btn.setEnabled(False)
         self.view.write_btn.setEnabled(False)

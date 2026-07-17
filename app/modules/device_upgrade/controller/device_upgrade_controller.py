@@ -4,6 +4,7 @@ import json
 import binascii
 import time
 import hashlib
+import threading
 from PyQt5.QtWidgets import QFileDialog, QMessageBox
 from PyQt5.QtCore import QThread, pyqtSignal, QTimer
 
@@ -20,8 +21,8 @@ from app.common.repositories.dpt_repository import DPTRepository
 
 
 class UpgradeWorker(QThread):
-    progress_signal = pyqtSignal(int, str, str) # percent, phase, log_msg
-    log_signal = pyqtSignal(str, bool) # message, is_info
+    log_signal = pyqtSignal(str, bool)      # Message, IsInfo
+    progress_signal = pyqtSignal(int, str, str)  # 0-100%, Phase, LogMsg
     finished_signal = pyqtSignal(bool, str) # success, message
 
     def __init__(self, config, file_path, device_service):
@@ -31,38 +32,349 @@ class UpgradeWorker(QThread):
         self.device_service = device_service
         self.running = True
         self.dpt_manager = None
+        self._tp_thread = None
+        self._last_uds_time = time.time()  # 初始化为当前时间，避免启动后立即发送 3E
+        self._tester_present_enabled = self._is_tester_present_enabled()
+        self._tester_present_payload = self._get_tester_present_payload()
+        # 基于 S3 定时器动态计算 3E 时间参数（符合 ISO 14229-1 标准）
+        self._tester_present_interval, self._tester_present_min_idle = self._init_tester_present_timing()
+        # 升级阶段管理：控制 3E 在不同阶段的行为
+        self._upgrade_phase = "idle"              # idle / pre-programming / download / install / post-install
+        self._block_tester_present = False        # 为 True 时后台 3E 线程跳过发送
+        self._polls_since_last_tp = 0             # 安装轮询期间内联 3E 计数器
+        self._protocol_reconnect_thread = None    # DoIP -> SSH -> SomeIP 顺序恢复线程
+
+    def _is_tester_present_enabled(self):
+        """Whether to send automatic TesterPresent during upgrade.
+
+        Default is deliberately False: the upgrade sequence already sends UDS
+        traffic continuously during download/install. Injecting 3E from a
+        background thread can disturb TransferData / long routine responses.
+        """
+        values = [
+            self.config.get("enable_tester_present"),
+            self.config.get("tester_present_enabled"),
+            self.config.get("auto_tester_present"),
+        ]
+        try:
+            if "package" in self.config and self.config["package"]:
+                pkg = self.config["package"][0]
+                values.extend([
+                    pkg.get("enable_tester_present"),
+                    pkg.get("tester_present_enabled"),
+                    pkg.get("auto_tester_present"),
+                ])
+        except Exception:
+            pass
+
+        for val in values:
+            if isinstance(val, bool):
+                return val
+            if isinstance(val, str):
+                return val.strip().lower() in {"1", "true", "yes", "on", "enable", "enabled"}
+        return False
+
+    def _get_tester_present_payload(self):
+        """Get configured TesterPresent payload; prefer 3E 00 over 3E 80 when enabled.
+
+        3E 00 has a real positive response (7E 00), which is safer for socket
+        draining than 3E 80. 3E 80 remains configurable for ECUs that require it.
+        """
+        payload_hex = self.config.get("tester_present_payload", "")
+        try:
+            if not payload_hex and "package" in self.config and self.config["package"]:
+                payload_hex = self.config["package"][0].get("tester_present_payload", "")
+        except Exception:
+            payload_hex = ""
+
+        payload_hex = (payload_hex or "3E 00").replace(" ", "")
+        try:
+            payload = binascii.unhexlify(payload_hex)
+            if len(payload) >= 2 and payload[0] == 0x3E:
+                return payload
+        except Exception:
+            pass
+        return bytes([0x3E, 0x00])
+
+    def _init_tester_present_timing(self):
+        """基于 S3 定时器动态计算 TesterPresent 时间参数。
+
+        符合 ISO 14229-1 UDS 标准：
+        - S3 Client Timer: ECU 在最后一次收到诊断报文后，等待 S3 时间无新报文则回退到默认会话
+        - TesterPresent (3E) 必须在 S3 超时前送达 ECU
+        - 行业惯例：3E 发送周期 ≤ S3/2
+
+        计算公式：
+        - interval = S3 / 4  （循环检查频率，确保及时捕捉空闲窗口）
+        - min_idle = S3 / 2  （最小空闲阈值，确保在 S3/2 时即可发送 3E）
+        - 最坏情况：上次 UDS 后 interval + min_idle = 3S3/4 < S3 （保证会话不超时）
+        """
+        s3_client_s = 3.0  # 默认 3 秒
+        try:
+            s3_ms = int(self.device_service._config_service.diag_layer_settings.get("s3_client_time", 3000))
+            s3_client_s = s3_ms / 1000.0
+            if s3_client_s <= 0:
+                s3_client_s = 3.0
+        except Exception:
+            pass
+
+        interval = max(0.5, round(s3_client_s / 4.0, 2))    # S3/4：频繁检查
+        min_idle = max(0.5, round(s3_client_s / 2.0, 2))    # S3/2：半周期空闲即发 3E
+
+        self.log_signal.emit(
+            f"[3E时间参数] S3={s3_client_s:.1f}s → "
+            f"interval={interval:.2f}s, min_idle={min_idle:.2f}s "
+            f"(最坏情况 3E 延迟={interval + min_idle:.2f}s < S3={s3_client_s:.1f}s)", True
+        )
+        return interval, min_idle
+
+    def _send_tester_present_if_safe(self, reason="空闲会话保持"):
+        """在UDS空闲窗口发送TesterPresent心跳。
+
+        互斥由 DeviceService._doip_send_lock 统一保证：
+        升级期间外部模块已被屏障拦截，此处只需与 Worker 自身的 UDS 串行。
+        _last_uds_time 防止在连续 UDS 序列中插入 3E。
+        """
+        if not self.running or not self._tester_present_enabled:
+            return False
+
+        # 阶段拦截：下载和长例程期间禁止后台 3E，防止打断连续传输或抢占 Pending 响应
+        if self._block_tester_present:
+            return False
+
+        now = time.time()
+        if now - self._last_uds_time < self._tester_present_min_idle:
+            return False
+
+        doip_client = self.device_service.get_doip_client()
+        if not doip_client or not getattr(doip_client, "connected", False):
+            self.log_signal.emit("跳过TesterPresent(3E)：DoIP未连接", True)
+            return False
+
+        payload = self._tester_present_payload
+        display_hex = " ".join(f"{b:02X}" for b in payload)
+        suppress_positive = len(payload) > 1 and bool(payload[1] & 0x80)
+        timeout_val = 0.5 if suppress_positive else 1.0
+
+        self.log_signal.emit(f"TX   {display_hex:<60}   发送TesterPresent(受控空闲心跳: {reason})", False)
+        self._last_uds_time = time.time()
+        resp = self.device_service._send_doip_payload_for_upgrade(
+            payload,
+            timeout=timeout_val,
+            prefer_last=True
+        )
+
+        if isinstance(resp, list):
+            resp = resp[-1] if resp else None
+
+        if isinstance(resp, (bytes, bytearray)) and resp:
+            resp_hex = " ".join(f"{b:02X}" for b in bytes(resp))
+            self.log_signal.emit(f"RX   {resp_hex:<60}", False)
+        # 3E 80 抑制正响应模式无回复，不打印 No Response
+        # 3E 00 正常模式无回复也不打印（心跳报文，不报错）
+
+        return True
+
+    def _tester_present_loop(self):
+        self.log_signal.emit("TesterPresent(3E)心跳线程已启动：基于升级阶段智能管控，下载/长例程期间自动屏蔽，空闲窗口受控发送", True)
+        while self.running:
+            for _ in range(int(self._tester_present_interval * 10)):
+                if not self.running:
+                    break
+                time.sleep(0.1)
+            self._send_tester_present_if_safe()
 
     def run(self):
+        if self._tester_present_enabled:
+            self._tp_thread = threading.Thread(target=self._tester_present_loop, daemon=True)
+            self._tp_thread.start()
+        else:
+            self.log_signal.emit("设备升级自动TesterPresent(3E)已禁用：升级流程中不插入3E，依赖连续UDS报文保持会话", True)
         try:
             self._execute_upgrade()
         except Exception as e:
             self.log_signal.emit(f"升级流程异常: {str(e)}", True)
             self.finished_signal.emit(False, str(e))
+        finally:
+            self.running = False
 
     def stop(self):
         self.running = False
 
+    def _check_doip_session_health(self):
+        """DoIP 协议级会话健康探测（确定性判断）。
+
+        通过 request_entity_status() 探测 DoIP 会话是否仍然有效：
+        - 成功 → 路由激活有效，会话正常
+        - 失败 → 路由激活已失效（如控制器重启），需触发完整重连
+        """
+        try:
+            handler = self.device_service._doip_handler
+            if not handler or not handler.doip_client:
+                return False
+            handler.doip_client.request_entity_status()
+            return True
+        except Exception:
+            return False
+
+    def _start_protocol_reconnect(self, device, need_ssh, need_someip):
+        """在独立线程中按 DoIP、SSH、SomeIP 顺序恢复原本在线的协议。
+
+        SSH 的服务激活依赖 DoIP，因此即使当前 ECU 探测已经成功，恢复线程
+        仍然把 DoIP 作为第一阶段；恢复过程不会阻塞升级线程。每个协议只在
+        自身成功后才进入下一阶段，失败则在后台按固定间隔重试。
+        """
+        if not (need_ssh or need_someip) or not self.running:
+            return
+
+        if (self._protocol_reconnect_thread and
+                self._protocol_reconnect_thread.is_alive()):
+            self.log_signal.emit("协议恢复线程已在运行，跳过重复启动", True)
+            return
+
+        def is_connected(status):
+            return "成功" in status or "在线" in status
+
+        def protocol_log(message, *unused_args):
+            """将 DeviceService 的单参数日志适配到 Worker 的双参数信号。"""
+            self.log_signal.emit(str(message), True)
+
+        def ssh_ready(device):
+            if not is_connected(str(device.get("ssh_connect_status", ""))):
+                return False
+            client = self.device_service.get_ssh_client()
+            if client is None:
+                return False
+            is_client_connected = getattr(client, "is_connected", None)
+            return bool(is_client_connected()) if callable(is_client_connected) else False
+
+        def someip_ready(device):
+            if not is_connected(str(device.get("someip_connect_status", ""))):
+                return False
+            client = self.device_service.get_someip_client()
+            return bool(client and getattr(client, "running", False))
+
+        def wait_interruptible(seconds):
+            end_time = time.time() + seconds
+            while self.running and time.time() < end_time:
+                time.sleep(min(0.2, end_time - time.time()))
+            return self.running
+
+        def reconnect_protocols_in_order():
+            try:
+                # 阶段 1：DoIP。已连接时不额外发送报文；断开时通过升级发送入口
+                # 触发 DeviceService 的自动重连和路由激活。
+                doip_ready = False
+                while self.running and not doip_ready:
+                    doip_client = self.device_service.get_doip_client()
+                    if doip_client and getattr(doip_client, "connected", False):
+                        doip_ready = True
+                        break
+
+                    self.log_signal.emit("正在尝试恢复 DoIP 连接...", True)
+                    resp = self._send_doip(
+                        bytes([0x10, 0x01]),
+                        "协议恢复：触发 DoIP 重连",
+                        expect_positive=True,
+                    )
+                    doip_client = self.device_service.get_doip_client()
+                    doip_ready = bool(
+                        resp and doip_client and
+                        getattr(doip_client, "connected", False)
+                    )
+                    if not doip_ready and not wait_interruptible(2):
+                        return
+
+                if not self.running:
+                    return
+                if not doip_ready:
+                    self.log_signal.emit("DoIP 未恢复，暂不尝试依赖 DoIP 的其他协议", True)
+                    return
+
+                # 阶段 2：SSH。只清理 SSH，避免影响尚未恢复的 SomeIP。
+                ssh_done = not need_ssh or ssh_ready(device)
+                if need_ssh and hasattr(self.device_service, "_disconnect_ssh"):
+                    try:
+                        self.device_service._disconnect_ssh(device, force_cleanup=True)
+                    except Exception as exc:
+                        self.log_signal.emit(f"清理 SSH 残留连接失败，将继续重试: {exc}", True)
+
+                while self.running and not ssh_done:
+                    self.log_signal.emit("正在尝试恢复 SSH 连接...", True)
+                    if hasattr(self.device_service, "_connect_ssh"):
+                        self.device_service._connect_ssh(device, log_signal=protocol_log)
+                    ssh_done = ssh_ready(device)
+                    if not ssh_done and not wait_interruptible(2):
+                        return
+
+                if not self.running:
+                    return
+
+                # 阶段 3：SomeIP。SSH 成功（或原本不需要 SSH）后才开始。
+                someip_done = not need_someip or someip_ready(device)
+                if need_someip and hasattr(self.device_service, "_disconnect_someip"):
+                    try:
+                        self.device_service._disconnect_someip(device, force_cleanup=True)
+                    except Exception as exc:
+                        self.log_signal.emit(f"清理 SomeIP 残留连接失败，将继续重试: {exc}", True)
+
+                while self.running and not someip_done:
+                    self.log_signal.emit("正在尝试恢复 SomeIP 连接...", True)
+                    if hasattr(self.device_service, "_connect_someip"):
+                        self.device_service._connect_someip(device, log_signal=protocol_log)
+                    someip_done = someip_ready(device)
+                    if not someip_done and not wait_interruptible(2):
+                        return
+
+                if self.running and (not need_ssh or ssh_ready(device)) and (not need_someip or someip_ready(device)):
+                    self.log_signal.emit("DoIP、SSH、SomeIP 协议顺序恢复操作完成", True)
+            except Exception as exc:
+                self.log_signal.emit(f"协议顺序恢复时发生异常: {exc}", True)
+
+        self._protocol_reconnect_thread = threading.Thread(
+            target=reconnect_protocols_in_order,
+            name="upgrade-protocol-reconnect",
+            daemon=True,
+        )
+        self._protocol_reconnect_thread.start()
+
     def _wait_for_ecu_ready(self):
-        self.log_signal.emit("正在轮询检测并等待 ECU 网络重连与诊断服务就绪...", True)
+        self.log_signal.emit("正在轮询请求 ECU 默认会话，以触发网络主动重连与诊断就绪检测...", True)
         wait_start = time.time()
         timeout = 60 # 最大等待60秒
         
         while self.running and (time.time() - wait_start) < timeout:
-            doip_client = self.device_service.get_doip_client()
-            if doip_client and doip_client.connected:
-                try:
-                    # 使用进入默认会话(10 01)试探ECU是否已经能处理诊断请求，并打印收发日志
-                    payload = bytes([0x10, 0x01])
-                    # 直接调用 _send_doip 以输出试探日志。暂存原有expect_positive以防失败强制退出
-                    resp = self._send_doip(payload, "试探 ECU 默认会话是否能建立连接")
-                    if resp and len(resp) > 0:
-                         self.log_signal.emit("ECU 诊断服务已就绪，准备开始升级", True)
-                         return True
-                except:
-                    pass
-            time.sleep(1)
-            
-        self.log_signal.emit("警告: 等待 ECU 就绪超时，尝试强制继续...", True)
+            try:
+                # 无论是否显示 connected 都尝试下发，因为 DeviceService 的 send_doip_payload 会捕获断连并触发自动重连机制
+                payload = bytes([0x10, 0x01])
+                resp = self._send_doip(payload, "试探 ECU 默认会话能否建立(触发重连)")
+                if resp and len(resp) > 0:
+                     self.log_signal.emit("ECU 诊断服务已全面就绪", True)
+                     
+                     # 恢复原本已连接的其他协议：独立后台线程按 DoIP -> SSH -> SomeIP 顺序执行
+                     device = getattr(self.device_service, "_last_connected_device", None)
+                     if device:
+                         ssh_status = str(device.get("ssh_connect_status", ""))
+                         someip_status = str(device.get("someip_connect_status", ""))
+                         need_ssh = "成功" in ssh_status or "在线" in ssh_status
+                         need_someip = "成功" in someip_status or "在线" in someip_status
+                         if need_ssh or need_someip:
+                             self.log_signal.emit(
+                                 "准备在后台按 DoIP → SSH → SomeIP 顺序轮询恢复原本在线的协议...",
+                                 True,
+                             )
+                             self._start_protocol_reconnect(device, need_ssh, need_someip)
+
+                     return True
+            except:
+                pass
+
+            # 等待 2 秒防止发包太快
+            for _ in range(20):
+                if not self.running: break
+                time.sleep(0.1)
+
+        self.log_signal.emit("警告: 自动触发重连与等待就绪超时，尝试强制继续...", True)
         return False
 
     def _execute_upgrade(self):
@@ -133,19 +445,26 @@ class UpgradeWorker(QThread):
 
         if not self.running: return
 
+        # 进入预编程阶段：后台 3E 由 _last_uds_time 机制自然保护（步骤密集，不会误发）
+        self._upgrade_phase = "pre-programming"
+
         # 2. Session Control
-        if not self._send_uds("10 01", "申请进入默认会话", PHASE_PREP, expect_positive=True, success_msg="进入默认会话请求通过"): return
-        if not self._send_uds("10 03", "申请进入扩展会话", PHASE_PREP, expect_positive=True, success_msg="进入扩展会话请求通过"): return
+        if not self._send_uds("10 01", "申请进入默认会话", PHASE_PREP, expect_positive=True, success_msg="进入默认会话请求通过"): raise Exception("申请进入默认会话失败或无响应")
+        if not self._send_uds("10 03", "申请进入扩展会话", PHASE_PREP, expect_positive=True, success_msg="进入扩展会话请求通过"): raise Exception("申请进入扩展会话失败或无响应")
 
         # 3. Security Access (Level 21/22)
         if not self._perform_security_access(0x21, PHASE_PREP):
-             return
+             raise Exception("安全访问不通过或无响应")
 
         # 4. Check Preconditions (Routine 31 01 21 01)
-        resp = self._send_uds("31 01 21 01", "申请检查下载预条件", PHASE_PREP, expect_positive=True, success_msg="检查下载预条件请求通过")
-        if not resp: return
-        if len(resp) >= 5:
-            self.log_signal.emit(f"预条件检查返回状态: 0x{resp[4]:02X}", True)
+        resp = self._perform_routine_control(
+            binascii.unhexlify("31012101"), "申请检查下载预条件")
+        if not resp: raise Exception("检查下载预条件失败或被拒绝")
+
+        # === 进入下载阶段：屏蔽后台 3E，防止打断连续块传输 ===
+        self._upgrade_phase = "download"
+        self._block_tester_present = True
+        self.log_signal.emit("[3E管控] 进入下载阶段，屏蔽后台TesterPresent，避免打断TransferData", True)
 
         # 5. Request File Transfer (Service 38 01 AddFile)
         remote_path = pkg_config.get("filePathAndName", "")
@@ -188,7 +507,8 @@ class UpgradeWorker(QThread):
 
         req_ft = bytes([0x38, 0x01, path_len_high, path_len_low]) + path_bytes + fmt_id + fs_len_byte + fs_uncomp + fs_comp
 
-        self._send_doip(req_ft, f"申请下载请求 ({remote_path})", expect_positive=True, success_msg="下载请求通过")
+        resp = self._send_doip(req_ft, f"申请下载请求 ({remote_path})", expect_positive=True, success_msg="下载请求通过")
+        if not resp: raise Exception("下载请求(Service 38)失败或被拒绝")
 
         # 6. Transfer Data (Service 36, 1MB blocks)
         # Read max block length from config, default to 1MB (0xF4240)
@@ -198,13 +518,18 @@ class UpgradeWorker(QThread):
         except:
             block_size = 1000000
 
-        # Ensure block_size is reasonable (at least 1 byte, max reasonable buffer)
-        if block_size < 1: block_size = 1000000
+        # Ensure block_size is reasonable (at least 3 bytes for SID + SeqCounter + 1 byte data)
+        if block_size < 3: block_size = 1000000
+
+        # UDS Service 36 Request contains:
+        # 0x36 (1 byte) + blockSequenceCounter (1 byte) + data
+        # Therefore, the maximum data chunk size is block_size - 2
+        chunk_size = block_size - 2
 
         with open(self.file_path, 'rb') as f:
             block_idx = 1
             while self.running:
-                chunk = f.read(block_size)
+                chunk = f.read(chunk_size)
                 if not chunk:
                     break
 
@@ -221,7 +546,7 @@ class UpgradeWorker(QThread):
                 resp = self._send_doip(payload, desc)
                 if not resp or resp[0] != 0x76:
                     self.log_signal.emit(f"传输数据失败: Block {block_idx}", True)
-                    return
+                    raise Exception(f"传输数据块 {block_idx} 失败或未收到正响应")
 
                 percent = int((f.tell() / file_size) * 100)
                 self.progress_signal.emit(percent, PHASE_DOWNLOAD, f"传输数据中... {percent}%")
@@ -229,7 +554,12 @@ class UpgradeWorker(QThread):
                 block_idx += 1
 
         # 7. Request Transfer Exit (37)
-        if not self._send_uds("37", "申请传输结束", PHASE_DOWNLOAD, expect_positive=True, success_msg="传输结束请求通过"): return
+        if not self._send_uds("37", "申请传输结束", PHASE_DOWNLOAD, expect_positive=True, success_msg="传输结束请求通过"): raise Exception("申请传输结束(Service 37)失败或被拒绝")
+
+        # === 下载完成，进入安装阶段 ===
+        self._upgrade_phase = "install"
+        self._block_tester_present = False
+        self.log_signal.emit("[3E管控] 下载完成，进入安装阶段，恢复后台TesterPresent能力", True)
 
         self.progress_signal.emit(0, PHASE_INSTALL, "开始校验与安装...")
 
@@ -245,58 +575,71 @@ class UpgradeWorker(QThread):
             else:
                 self.log_signal.emit(f"警告: 本地文件HASH与配置不符! \nConfig: {config_hash}\nFile: {calculated_hash_hex}", True)
 
+        # 屏蔽 3E：校验例程可能耗时较长，ECU 可能返回 NRC 78 (Pending)
+        self._block_tester_present = True
         routine_check = bytes([0x31, 0x01, 0x21, 0x02]) + digest
-        resp = self._send_doip(routine_check, "申请校验文件(SHA256)", expect_positive=True, success_msg="文件校验通过")
-        if not resp: return
-        # Parse potential status byte from routine result if available (71 01 21 02 [Status])
-        if len(resp) >= 5:
-            self.log_signal.emit(f"校验返回状态码: 0x{resp[4]:02X}", True)
+        resp = self._perform_routine_control(
+            routine_check, "申请校验文件(SHA256)")
+        if not resp: raise Exception("文件校验(Routine 2102)请求失败或被拒绝")
+        self._block_tester_present = False
 
 
+        # 屏蔽 3E：擦除/合并例程可能耗时较长
+        self._block_tester_present = True
         # 9. Merge/Erase? (31 01 21 05)
-        resp = self._send_uds("31 01 21 05", "申请擦除/合并Memory", PHASE_INSTALL, expect_positive=True, success_msg="Memory操作请求通过")
-        if not resp: return
-        if len(resp) >= 5:
-             self.log_signal.emit(f"Memory操作返回状态: 0x{resp[4]:02X}", True)
+        resp = self._perform_routine_control(
+            binascii.unhexlify("31012105"), "申请擦除/合并Memory")
+        if not resp: raise Exception("擦除/合并Memory(Routine 2105)失败或被拒绝")
+        self._block_tester_present = False
 
         # 10. Re-Authenticate (Session 03 -> SecAccess 21)
         # It seems the device resets session or requires re-auth after 21 05
-        if not self._send_uds("10 03", "申请进入扩展会话(Re-Auth)", PHASE_INSTALL, expect_positive=True, success_msg="进入扩展会话请求通过"): return
+        if not self._send_uds("10 03", "申请进入扩展会话(Re-Auth)", PHASE_INSTALL, expect_positive=True, success_msg="进入扩展会话请求通过"): raise Exception("重认证: 申请进入扩展会话失败")
         if not self._perform_security_access(0x21, PHASE_INSTALL):
-             return
+             raise Exception("重认证: 安全访问不通过")
 
         # 11. Install (31 01 21 03 + Date)
         # Date format YYYYMMDD e.g. 20260113 -> 0x20 0x26 0x01 0x13
         now = datetime.datetime.now()
-        # Ensure year is 2 bytes context (e.g. 20 26). struct pack >H is big endian short
-        # But log shows 20 26 01 13. Year 2026 split as 20, 26.
-        # It looks like BCD or just high byte/low byte of year? 2026 hex is 07EA.
-        # But log says 20 26. This implies "20" and "26" as decimals representing start of century and year?
-        # Or maybe it's literally string bytes? '2026' -> 32 30 32 36. No.
-        # Log: 20 26 01 13.
-        # 0x20 = 32. 0x26 = 38. This is likely (Century, Year, Month, Day) in BCD-like hex.
-        century = int(now.year / 100)
-        year_part = now.year % 100
-        month = now.month
-        day = now.day
+
+        def to_bcd(val):
+            return (val // 10) * 16 + (val % 10)
+
+        century = to_bcd(now.year // 100)
+        year_part = to_bcd(now.year % 100)
+        month = to_bcd(now.month)
+        day = to_bcd(now.day)
         date_payload = bytes([century, year_part, month, day])
 
+        # 屏蔽 3E：安装例程可能耗时较长
+        self._block_tester_present = True
         routine_install = bytes([0x31, 0x01, 0x21, 0x03]) + date_payload
-        resp = self._send_doip(routine_install, "申请开始安装(2103)", expect_positive=True, success_msg="开始安装请求通过")
-        if not resp: return
-        if len(resp) >= 5:
-            self.log_signal.emit(f"开始安装指令返回状态: 0x{resp[4]:02X}", True)
+        resp = self._perform_routine_control(
+            routine_install, "申请开始安装(2103)")
+        if not resp: raise Exception("开始安装指令(Routine 2103)失败或被拒绝")
+        self._block_tester_present = False
 
         # 12. Poll Install State (22 21 04)
         self.log_signal.emit("等待安装完成...", True)
+        # 安装轮询阶段：允许后台 3E 在轮询间隙保持会话，并启用内联 3E 作为双重保障
+        self._upgrade_phase = "install-polling"
+        self._block_tester_present = False
+        self._polls_since_last_tp = 0
+        self.log_signal.emit("[3E管控] 进入安装轮询阶段，后台3E已恢复，内联3E心跳已激活", True)
 
         initial_status_byte = None
         status_changed_no_did = False
 
         # Installation has no time limit as per user request
         while self.running:
+            # 内联 TesterPresent 心跳：每 5 次轮询在请求前发送一次 3E，防止 ECU 会话超时
+            if self._tester_present_enabled:
+                self._polls_since_last_tp += 1
+                if self._polls_since_last_tp >= 5:
+                    self._send_tester_present_inline("安装轮询会话保持")
+                    self._polls_since_last_tp = 0
 
-            resp = self._send_uds("22 21 04", "读取安装进度", PHASE_INSTALL, expect_positive=True, return_data=True)
+            resp = self._send_uds("22 21 04", "读取安装进度", PHASE_INSTALL, expect_positive=True, return_data=True, timeout=5.0)
             if resp and len(resp) >= 5:
                 # 62 21 04 [Status] [Progress] [Time...]
                 # Log: 62 21 04 01 28 ...
@@ -368,10 +711,36 @@ class UpgradeWorker(QThread):
                     self.log_signal.emit("安装进度达到100%", True)
                     break
 
+            else:
+                # UDS 无响应，通过 DoIP 协议级探测确定性判断连接状态
+                if self._check_doip_session_health():
+                    self.log_signal.emit("DoIP会话健康探测通过，ECU正忙于安装操作，继续轮询", True)
+                else:
+                    # 确定性判定：DoIP路由激活已失效（如设备重启），触发重连
+                    self.log_signal.emit("DoIP会话健康探测失败，路由激活已失效，主动断开并触发重连", True)
+                    try:
+                        handler = self.device_service._doip_handler
+                        if handler:
+                            handler.disconnect(source="install_polling_session_dead", reason="entity_status_check_failed")
+                            self.device_service._doip_handler = None
+                    except Exception:
+                        pass
+                    # 等待 ECU 就绪（内部自动触发完整重连含路由激活），不断重试直至成功
+                    self._wait_for_ecu_ready()
+
             time.sleep(1)
+
+        # === 轮询结束，屏蔽 3E，准备 ECU 复位 ===
+        self._block_tester_present = True
+        self._upgrade_phase = "post-install"
+        self.log_signal.emit("[3E管控] 安装完成，屏蔽TesterPresent，准备ECU复位", True)
 
         # 13. Reset
         self._send_uds("11 01", "申请ECU复位", PHASE_INSTALL, success_msg="ECU复位请求通过")
+
+        # 最终清理
+        self._upgrade_phase = "idle"
+        self._block_tester_present = False
 
         self.finished_signal.emit(True, "升级完成")
 
@@ -418,6 +787,39 @@ class UpgradeWorker(QThread):
 
         return False
 
+    def _perform_routine_control(self, payload, desc, retry_interval=1.0):
+        """带无限重试机制的 RoutineControl (Service 31) 发送。
+
+        与 _perform_security_access (Service 27) 保持一致的重试策略：
+        while self.running 无限循环重试，直到成功或用户主动停止。
+
+        Args:
+            payload: UDS 请求的完整字节数据（包含 SID 31）
+            desc: 请求描述，用于日志
+            retry_interval: 重试间隔秒数，默认 1.0 秒
+
+        Returns:
+            成功返回响应 bytes，用户停止时返回 None
+        """
+        attempt = 0
+        while self.running:
+            attempt += 1
+            resp = self._send_doip(payload, desc, expect_positive=True)
+            if resp:
+                if resp[0] == 0x71:
+                    if len(resp) >= 5:
+                        self.log_signal.emit(f"例程返回状态码: 0x{resp[4]:02X}", True)
+                    return resp
+                return resp
+
+            self.log_signal.emit(
+                f"{desc} 失败或无响应 (第{attempt}次)，"
+                f"等待{retry_interval:.0f}秒后重试...", True
+            )
+            time.sleep(retry_interval)
+
+        return None
+
     def _parse_did_string(self, resp_bytes):
         if not resp_bytes or len(resp_bytes) < 4:
             return ""
@@ -429,7 +831,35 @@ class UpgradeWorker(QThread):
         except:
             return data.hex()
 
-    def _send_uds(self, hex_str, desc, phase, expect_positive=False, return_data=False, success_msg=None):
+    def _send_tester_present_inline(self, reason="内联心跳"):
+        """在升级流程主线程中同步发送 TesterPresent，仅在安全窗口使用。
+
+        用途：安装轮询阶段，在两次进度查询之间插入 3E，防止 ECU 会话定时器超时。
+        与后台线程互斥由 _doip_send_lock 统一保证。
+        """
+        if not self.running or not self._tester_present_enabled:
+            return
+
+        payload = self._tester_present_payload
+        display_hex = " ".join(f"{b:02X}" for b in payload)
+        suppress_positive = len(payload) > 1 and bool(payload[1] & 0x80)
+        timeout_val = 0.5 if suppress_positive else 1.0
+
+        self.log_signal.emit(f"TX   {display_hex:<60}   TesterPresent(内联: {reason})", False)
+        self._last_uds_time = time.time()
+        try:
+            resp = self.device_service._send_doip_payload_for_upgrade(
+                payload, timeout=timeout_val, prefer_last=True
+            )
+            if isinstance(resp, list):
+                resp = resp[-1] if resp else None
+            if isinstance(resp, (bytes, bytearray)) and resp:
+                resp_hex = " ".join(f"{b:02X}" for b in bytes(resp))
+                self.log_signal.emit(f"RX   {resp_hex:<60}", False)
+        except Exception:
+            pass
+
+    def _send_uds(self, hex_str, desc, phase, expect_positive=False, return_data=False, success_msg=None, timeout=None):
         if not self.running: return None
         try:
             payload = binascii.unhexlify(hex_str.replace(" ", ""))
@@ -438,9 +868,9 @@ class UpgradeWorker(QThread):
                  self.log_signal.emit(f"Error: 尚未计算密钥: {hex_str}", True)
                  return None
              return None
-        return self._send_doip(payload, desc, expect_positive=expect_positive, success_msg=success_msg)
+        return self._send_doip(payload, desc, expect_positive=expect_positive, success_msg=success_msg, timeout=timeout)
 
-    def _send_doip(self, payload, desc, expect_positive=False, success_msg=None):
+    def _send_doip(self, payload, desc, expect_positive=False, success_msg=None, timeout=None):
         # Optimize logging: Only format the part we display to avoid performance hit on large payloads
 
         # Special handling for Service 36 (TransferData)
@@ -461,11 +891,13 @@ class UpgradeWorker(QThread):
         self.log_signal.emit(f"TX   {display_hex:<60}   {desc}", False)
 
         try:
+            self._last_uds_time = time.time()
             # Send with timeout appropriate for flash operations
             # Use prefer_last=True to handle NRC 78 (Pending) followed by Final Response without manual loop
             # DoIP Client collects responses and prefer_last returns the successful one if Pending preceded it.
-            timeout_val = 5.0 # Increased timeout for flash operations
-            resp = self.device_service.send_doip_payload(
+            timeout_val = timeout if timeout is not None else 15.0  # 可覆盖；默认15s适用于慢速刷写操作
+
+            resp = self.device_service._send_doip_payload_for_upgrade(
                 payload,
                 timeout=timeout_val,
                 prefer_last=True
@@ -490,13 +922,18 @@ class UpgradeWorker(QThread):
                         self.log_signal.emit(f"收到负响应 NRC: {nrc:02X}", True)
                         return None
 
-                elif expect_positive:
+                else:
+                    # 始终校验响应SID，防止压测轮次间TCP缓冲区残留报文导致响应错位
                     req_sid = payload[0]
                     resp_sid = resp[0]
-                    if resp_sid != (req_sid + 0x40):
+                    expected_resp_sid = req_sid + 0x40
+                    if resp_sid != expected_resp_sid:
+                        self.log_signal.emit(
+                            f"丢弃报文: 期望响应SID 0x{expected_resp_sid:02X}, "
+                            f"实际收到 0x{resp_sid:02X} ", True)
                         return None
 
-                    if success_msg:
+                    if expect_positive and success_msg:
                         self.log_signal.emit(success_msg, True)
 
                 return resp
@@ -730,6 +1167,10 @@ class UpgradeController(BaseController):
             QMessageBox.critical(self.view, "Error", "DoIP未连接，无法升级!")
             return
 
+        # 激活升级屏障：阻止外部3E心跳和其他诊断服务干扰升级
+        device_service.begin_upgrade_session()
+        self._log("升级屏障已激活：外部3E和其他诊断服务已被屏蔽", is_info=True)
+
         # Explicitly use the file from the configuration
         file_path = self._find_upgrade_package()
         if not file_path:
@@ -738,6 +1179,8 @@ class UpgradeController(BaseController):
 
         if not file_path or not os.path.exists(file_path):
              self._log(f"未找到升级包: {file_path}", is_info=True)
+             # 解除升级屏障，避免屏障永久锁死导致所有 DoIP 操作被拦截
+             device_service.end_upgrade_session()
              return
 
         # Sync UI
@@ -836,6 +1279,10 @@ class UpgradeController(BaseController):
     def _on_worker_finished(self, success, msg):
         self._log(f"升级结束: {msg}", is_info=True)
 
+        # 解除升级屏障（压测模式下每轮结束时解除，下一轮开始时重新激活）
+        device_service: DeviceService = di_container.resolve(DeviceService)
+        device_service.end_upgrade_session()
+
         if self.is_stress_mode:
              # Handle Loop
              if success:
@@ -853,6 +1300,10 @@ class UpgradeController(BaseController):
         if self.thread and self.thread.running:
             self.thread.stop()
             self.thread.wait()
+
+        # 解除升级屏障
+        device_service: DeviceService = di_container.resolve(DeviceService)
+        device_service.end_upgrade_session()
 
         self._log("升级已停止 (用户终止)", is_info=True)
         self.view.start_btn.setEnabled(True)
@@ -910,6 +1361,10 @@ class UpgradeController(BaseController):
 
         self._log(f"压测任务: {len(self.stress_task_list)} 个任务组合, {self.stress_target_loop} 轮循环, 总大小: {self.stress_total_bytes/1024/1024:.2f} MB", is_info=True)
 
+        # 激活升级屏障：整个压测期间阻止外部诊断干扰
+        device_service.begin_upgrade_session()
+        self._log("压测升级屏障已激活：外部3E和其他诊断服务已被屏蔽", is_info=True)
+
         self.view.stress_start_btn.setEnabled(False)
         self.view.stress_stop_btn.setEnabled(True)
         self.view.stress_progress.setValue(0)
@@ -930,6 +1385,9 @@ class UpgradeController(BaseController):
         # Check if we finished all loops
         if self.stress_current_loop >= self.stress_target_loop:
              self._log("所有压测循环已完成!", is_info=True)
+             # 解除升级屏障
+             device_service: DeviceService = di_container.resolve(DeviceService)
+             device_service.end_upgrade_session()
              self.view.stress_start_btn.setEnabled(True)
              self.view.stress_stop_btn.setEnabled(False)
              self.is_stress_mode = False
@@ -949,13 +1407,10 @@ class UpgradeController(BaseController):
 
         # Check DoIP again (in case dropped)
         device_service: DeviceService = di_container.resolve(DeviceService)
-        doip_handler = device_service.get_doip_client()
-        if not doip_handler or not doip_handler.connected:
-             # Try reconnect? Rely on Service auto-reconnect or fail?
-             if not doip_handler or not doip_handler.connected:
-                 self._log("错误: DoIP断开，停止压测", is_info=True)
-                 self._stop_stress_upgrade()
-                 return
+        # 注意: 压测时这里的 doip_client 可能是断开的(因为上一轮结尾发送了 11 01 ECU复位)，
+        # 我们不再因为断开而直接停止压测，而是放行。
+        # 后续 UpgradeWorker 启动后的 `_wait_for_ecu_ready` 里面调用 `_send_doip` 时，
+        # 底层 DeviceService 的 `send_doip_payload` 会触发自动重连！
 
         # Load config for this step
         try:
@@ -970,6 +1425,10 @@ class UpgradeController(BaseController):
         if self.thread and self.thread.isRunning():
             self.thread.wait() # Ensure clean
 
+        # 重新激活升级屏障：_on_worker_finished 在每轮结束时已解除，
+        # 下一轮开始前必须重新激活，否则第 2 轮起无屏障保护
+        device_service.begin_upgrade_session()
+
         self.thread = UpgradeWorker(self.upgrade_config, pkg_path, device_service)
         self.thread.log_signal.connect(self._log)
         self.thread.progress_signal.connect(self._on_worker_progress)
@@ -980,6 +1439,10 @@ class UpgradeController(BaseController):
         if self.thread and self.thread.running:
             self.thread.stop()
             self.thread.wait()
+
+        # 解除升级屏障
+        device_service: DeviceService = di_container.resolve(DeviceService)
+        device_service.end_upgrade_session()
 
         self._log("Stress Upgrade Stopped (User Terminated)", is_info=True)
         self.view.stress_start_btn.setEnabled(True)

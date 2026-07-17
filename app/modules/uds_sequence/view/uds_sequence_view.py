@@ -108,6 +108,68 @@ class CenteredCheckBoxDelegate(QtWidgets.QStyledItemDelegate):
         return super().editorEvent(event, model, option, index)
 
 
+class CheckBoxHeader(QtWidgets.QHeaderView):
+    checkBoxClicked = QtCore.pyqtSignal(int, bool)
+
+    def __init__(self, orientation, parent=None):
+        super().__init__(orientation, parent)
+        self.checkBoxStates = {0: False}
+
+    def paintSection(self, painter, rect, logicalIndex):
+        painter.save()
+        super().paintSection(painter, rect, logicalIndex)
+        painter.restore()
+
+        if logicalIndex in self.checkBoxStates:
+            style = self.style()
+            option = QtWidgets.QStyleOptionViewItem()
+            option.initFrom(self)
+
+            chk_width = style.pixelMetric(QtWidgets.QStyle.PM_IndicatorWidth, option, self)
+            chk_height = style.pixelMetric(QtWidgets.QStyle.PM_IndicatorHeight, option, self)
+
+            x = rect.x() + (rect.width() - chk_width) // 2
+            y = rect.y() + (rect.height() - chk_height) // 2
+
+            option.rect = QtCore.QRect(x, y, chk_width, chk_height)
+            option.state = QtWidgets.QStyle.State_Enabled | QtWidgets.QStyle.State_Active
+            if self.checkBoxStates[logicalIndex]:
+                option.state |= QtWidgets.QStyle.State_On
+                option.checkState = Qt.Checked
+            else:
+                option.state |= QtWidgets.QStyle.State_Off
+                option.checkState = Qt.Unchecked
+            
+            style.drawPrimitive(QtWidgets.QStyle.PE_IndicatorCheckBox, option, painter, self)
+
+    def mousePressEvent(self, event):
+        if event.button() == QtCore.Qt.LeftButton:
+            logicalIndex = self.logicalIndexAt(event.pos())
+            if logicalIndex in self.checkBoxStates:
+                x = self.sectionViewportPosition(logicalIndex)
+                y = 0
+                sec_width = self.sectionSize(logicalIndex)
+                sec_height = self.height()
+
+                style = self.style()
+                option = QtWidgets.QStyleOptionViewItem()
+                option.initFrom(self)
+                chk_width = style.pixelMetric(QtWidgets.QStyle.PM_IndicatorWidth, option, self)
+                chk_height = style.pixelMetric(QtWidgets.QStyle.PM_IndicatorHeight, option, self)
+
+                chk_x = x + (sec_width - chk_width) // 2
+                chk_y = y + (sec_height - chk_height) // 2
+
+                checkRect = QtCore.QRect(chk_x - 4, chk_y - 4, chk_width + 8, chk_height + 8)
+
+                if checkRect.contains(event.pos()):
+                    self.checkBoxStates[logicalIndex] = not self.checkBoxStates[logicalIndex]
+                    self.viewport().update()
+                    self.checkBoxClicked.emit(logicalIndex, self.checkBoxStates[logicalIndex])
+                    return
+        super().mousePressEvent(event)
+
+
 class ExportConfigDialog(QtWidgets.QDialog):
     def __init__(self, config_names, parent=None):
         super().__init__(parent)
@@ -195,7 +257,8 @@ class UDSSequenceView(QtWidgets.QWidget):
     delay_insert_requested = pyqtSignal(str)
     send_batch_requested = pyqtSignal(int)
     send_single_requested = pyqtSignal(str)  # New signal for right-click send
-    run_sequence_requested = pyqtSignal(int)  # New signal for running the sequence
+    run_sequence_requested = pyqtSignal(int)  # New signal for running the sequence (-1 = infinite)
+    stop_sequence_requested = pyqtSignal()      # Signal to stop running sequence
     config_save_requested = pyqtSignal(str)
     config_load_requested = pyqtSignal(str)
     config_delete_requested = pyqtSignal(str)
@@ -205,6 +268,8 @@ class UDSSequenceView(QtWidgets.QWidget):
     insert_command_requested = pyqtSignal(str)
     command_selected = pyqtSignal(str)
     table_data_changed = pyqtSignal()
+    tp_toggled = pyqtSignal(bool)           # 3E 心跳启用/禁用
+    tp_mode_changed = pyqtSignal(str)       # 3E 模式切换 ("00" / "80")
 
     def __init__(self, model, parent=None):
         super().__init__(parent)
@@ -393,6 +458,11 @@ class UDSSequenceView(QtWidgets.QWidget):
 
         menu.exec_(self.data_table.viewport().mapToGlobal(pos))
 
+    def _on_header_checkbox_clicked(self, logicalIndex, state):
+        if logicalIndex == 0:
+            check_state = Qt.Checked if state else Qt.Unchecked
+            self._set_all_check_state(check_state)
+
     def _set_all_check_state(self, state):
         for row in range(self.data_table.rowCount()):
             item = self.data_table.item(row, 0)
@@ -500,14 +570,36 @@ class UDSSequenceView(QtWidgets.QWidget):
         self.resp_row_layout.addWidget(self.response_edit, 1)
         self.resp_row_layout.addWidget(self.insert_btn, 0)
 
-        # Toolbar Row (single line, preserve original appearance)
+        # Toolbar Row (two-line layout to avoid squeezing)
         self.toolbar_widget = QtWidgets.QWidget()
         self.toolbar_widget.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
-        self.toolbar_layout = QtWidgets.QHBoxLayout(self.toolbar_widget)
-        self.toolbar_layout.setContentsMargins(0, 6, 0, 6)
+        self.toolbar_widget.setStyleSheet(
+            "QWidget { background-color: #FAFBFC; border: 1px solid #E5E7EB; border-radius: 6px; }"
+        )
+        self.toolbar_layout = QtWidgets.QVBoxLayout(self.toolbar_widget)
+        self.toolbar_layout.setContentsMargins(10, 6, 10, 6)
         self.toolbar_layout.setSpacing(6)
 
-        # --- Config Section ---
+        # --- Row 1: Template Management ---
+        self.toolbar_row1 = QtWidgets.QHBoxLayout()
+        self.toolbar_row1.setSpacing(6)
+
+        # --- Row 2: Single Template Operations ---
+        self.toolbar_row2 = QtWidgets.QHBoxLayout()
+        self.toolbar_row2.setSpacing(4)
+
+        # --- Config Section (no GroupBox, use label to avoid extra padding) ---
+        self.config_group = QtWidgets.QWidget()
+        self.config_group.setSizePolicy(QtWidgets.QSizePolicy.Fixed, QtWidgets.QSizePolicy.Fixed)
+        self.config_group_layout = QtWidgets.QHBoxLayout(self.config_group)
+        self.config_group_layout.setContentsMargins(0, 0, 0, 0)
+        self.config_group_layout.setSpacing(4)
+
+        config_label = QtWidgets.QLabel("模板:")
+        config_label.setStyleSheet("color: #4B5563; font-weight: 600; font-size: 11px;")
+        config_label.setSizePolicy(QtWidgets.QSizePolicy.Fixed, QtWidgets.QSizePolicy.Fixed)
+        self.config_group_layout.addWidget(config_label, 0)
+
         self.config_combo = QtWidgets.QComboBox()
         self.config_combo.setEditable(False)
         self.config_combo.setMinimumWidth(96)
@@ -517,14 +609,14 @@ class UDSSequenceView(QtWidgets.QWidget):
         self.config_combo.currentTextChanged.connect(lambda text: self.config_load_requested.emit(text) if text else None)
 
         self.save_config_btn = ModernButton("保存", "#3B82F6")
-        self.save_config_btn.setToolTip("保存当前配置序列")
+        self.save_config_btn.setToolTip("保存当前的指令序列为配置模板")
         self.save_config_btn.setMinimumWidth(60)
         self.save_config_btn.setFixedHeight(32)
         self.save_config_btn.setSizePolicy(QtWidgets.QSizePolicy.Fixed, QtWidgets.QSizePolicy.Fixed)
         self.save_config_btn.clicked.connect(self._on_save_config_clicked)
 
         self.del_config_btn = ModernButton("删除", "#EF4444")
-        self.del_config_btn.setToolTip("删除当前配置序列")
+        self.del_config_btn.setToolTip("删除当前选中的配置模板 (不影响下方表格内容)")
         self.del_config_btn.setMinimumWidth(60)
         self.del_config_btn.setFixedHeight(32)
         self.del_config_btn.setSizePolicy(QtWidgets.QSizePolicy.Fixed, QtWidgets.QSizePolicy.Fixed)
@@ -540,20 +632,29 @@ class UDSSequenceView(QtWidgets.QWidget):
         self.export_config_btn = ModernButton("导出", "#8B5CF6")
         self.export_config_btn.setToolTip("导出配置到文件")
         self.export_config_btn.setMinimumWidth(60)
+
         self.export_config_btn.setFixedHeight(32)
         self.export_config_btn.setSizePolicy(QtWidgets.QSizePolicy.Fixed, QtWidgets.QSizePolicy.Fixed)
         self.export_config_btn.clicked.connect(self.config_export_requested.emit)
 
-        self.toolbar_layout.addWidget(self.config_combo, 0)
-        self.toolbar_layout.addWidget(self.save_config_btn, 0)
-        self.toolbar_layout.addWidget(self.del_config_btn, 0)
-        self.toolbar_layout.addWidget(self.import_config_btn, 0)
-        self.toolbar_layout.addWidget(self.export_config_btn, 0)
-        self.toolbar_layout.addSpacing(6)
+        self.config_group_layout.addWidget(self.config_combo, 0)
+        self.config_group_layout.addWidget(self.save_config_btn, 0)
+        self.config_group_layout.addWidget(self.del_config_btn, 0)
+        self.config_group_layout.addWidget(self.import_config_btn, 0)
+        self.config_group_layout.addWidget(self.export_config_btn, 0)
+
+        self.toolbar_row1.addWidget(self.config_group, 0)
+        self.toolbar_row1.addStretch(1)
+
+        # Separator line between Row 1 and Row 2
+        h_sep = QtWidgets.QFrame()
+        h_sep.setFrameShape(QtWidgets.QFrame.HLine)
+        h_sep.setStyleSheet("color: #E5E7EB;")
+        h_sep.setFixedHeight(1)
 
         # --- Operation Buttons ---
         self.icon_btn_add = self.create_icon_button("➕", "添加参数", "#10B981", "添加")
-        self.icon_btn_delete = self.create_icon_button("➖", "删除���中参数", "#EF4444", "删除")
+        self.icon_btn_delete = self.create_icon_button("➖", "删除选中参数", "#EF4444", "删除")
         self.icon_btn_up = self.create_icon_button("↑", "上移", "#0EA5E9", "上移")
         self.icon_btn_down = self.create_icon_button("↓", "下移", "#0EA5E9", "上移")
 
@@ -596,10 +697,27 @@ class UDSSequenceView(QtWidgets.QWidget):
 
         self.btn_3e = QtWidgets.QPushButton("3E")
         self.btn_3e.setCheckable(True)
-        self.btn_3e.setToolTip("Tester Present: 3E 80 (点击切换 3E 00)")
+        self.btn_3e.setToolTip("TesterPresent 心跳开关 (按 S3/2 间隔自动发送)")
         self.btn_3e.setFixedSize(40, 32)
         self.btn_3e.setSizePolicy(QtWidgets.QSizePolicy.Fixed, QtWidgets.QSizePolicy.Fixed)
         self._apply_toggle_style(self.btn_3e, "#6366F1")
+        self.btn_3e.toggled.connect(self._on_3e_toggled)
+
+        # 3E 模式下拉框：独立选择 3E 80（抑制正响应）或 3E 00（正常响应）
+        self.combo_3e_mode = QtWidgets.QComboBox()
+        self.combo_3e_mode.addItems(["3E 80", "3E 00"])
+        self.combo_3e_mode.setToolTip(
+            "TesterPresent 模式:\n"
+            "• 3E 80 = 抑制正响应 (SuppressPosRspMsg), 适合高频心跳, 无需等待响应\n"
+            "• 3E 00 = 正常请求, ECU 返回 7E 00 正响应"
+        )
+        self.combo_3e_mode.setFixedHeight(32)
+        self.combo_3e_mode.setFixedWidth(80)
+        self.combo_3e_mode.setSizePolicy(QtWidgets.QSizePolicy.Fixed, QtWidgets.QSizePolicy.Fixed)
+        self.combo_3e_mode.setStyleSheet(
+            "QComboBox { border: 1px solid #D1D5DB; border-radius: 4px; padding: 2px 4px; }"
+        )
+        self.combo_3e_mode.currentTextChanged.connect(self._on_3e_mode_changed)
 
         self.btn_stop_fail = QtWidgets.QPushButton("⚠")
         self.btn_stop_fail.setCheckable(True)
@@ -609,53 +727,104 @@ class UDSSequenceView(QtWidgets.QWidget):
         self.btn_stop_fail.setSizePolicy(QtWidgets.QSizePolicy.Fixed, QtWidgets.QSizePolicy.Fixed)
         self._apply_toggle_style(self.btn_stop_fail, "#EF4444")
 
-        self.toolbar_layout.addWidget(self.icon_btn_add, 0)
-        self.toolbar_layout.addWidget(self.icon_btn_delete, 0)
-        self.toolbar_layout.addWidget(self.delay_icon_btn, 0)
-        self.toolbar_layout.addWidget(self.icon_btn_up, 0)
-        self.toolbar_layout.addWidget(self.icon_btn_down, 0)
-        self.toolbar_layout.addSpacing(6)
-        self.toolbar_layout.addWidget(self.btn_3e, 0)
-        self.toolbar_layout.addWidget(self.btn_stop_fail, 0)
-        self.toolbar_layout.addSpacing(10)
-
+        # --- Execution Controls ---
         self.send_times_label = QtWidgets.QLabel("次数:")
-        self.send_times_label.setStyleSheet("color: #374151; font-weight: 600;")
+        self.send_times_label.setStyleSheet("color: #374151; font-weight: 600; font-size: 12px;")
+        self.send_times_label.setFixedHeight(32)
         self.send_times_label.setSizePolicy(QtWidgets.QSizePolicy.Fixed, QtWidgets.QSizePolicy.Fixed)
 
         self.send_times_spin = QtWidgets.QSpinBox()
-        self.send_times_spin.setRange(1, 9999)
+        self.send_times_spin.setRange(1, 2147483647)
         self.send_times_spin.setValue(1)
-        self.send_times_spin.setMinimumWidth(60)
-        self.send_times_spin.setMaximumWidth(90)
+        self.send_times_spin.setToolTip("序列循环执行次数")
         self.send_times_spin.setFixedHeight(32)
+        self.send_times_spin.setMinimumWidth(100)
         self.send_times_spin.setSizePolicy(QtWidgets.QSizePolicy.Fixed, QtWidgets.QSizePolicy.Fixed)
 
-        self.run_sequence_btn = ModernButton("执行序列", "#8B5CF6")
-        self.run_sequence_btn.setToolTip("按顺序执行下方列表中的所有勾选指令")
+        self.infinite_checkbox = QtWidgets.QCheckBox("无限")
+        self.infinite_checkbox.setToolTip("勾选后循环次数不限，直到手动停止")
+        self.infinite_checkbox.setFixedHeight(32)
+        self.infinite_checkbox.setSizePolicy(QtWidgets.QSizePolicy.Fixed, QtWidgets.QSizePolicy.Fixed)
+        self.infinite_checkbox.stateChanged.connect(self._on_infinite_toggled)
+
+        self.run_sequence_btn = ModernButton("执行序列", "#3B82F6")
+        self.run_sequence_btn.setToolTip("按指定次数执行当前指令序列")
         self.run_sequence_btn.setFixedHeight(32)
         self.run_sequence_btn.setMinimumWidth(90)
         self.run_sequence_btn.setSizePolicy(QtWidgets.QSizePolicy.Fixed, QtWidgets.QSizePolicy.Fixed)
-        self.run_sequence_btn.clicked.connect(lambda: self.run_sequence_requested.emit(self.send_times_spin.value()))
+        self.run_sequence_btn.clicked.connect(lambda: self._on_run_btn_clicked())
 
+        self.stop_sequence_btn = ModernButton("停止", "#EF4444")
+        self.stop_sequence_btn.setToolTip("停止当前正在执行的序列")
+        self.stop_sequence_btn.setFixedHeight(32)
+        self.stop_sequence_btn.setMinimumWidth(60)
+        self.stop_sequence_btn.setSizePolicy(QtWidgets.QSizePolicy.Fixed, QtWidgets.QSizePolicy.Fixed)
+        self.stop_sequence_btn.setEnabled(False)
+        self.stop_sequence_btn.clicked.connect(lambda: self.stop_sequence_requested.emit())
+
+        # --- Search ---
         self.search_input = QtWidgets.QLineEdit()
         self.search_input.setPlaceholderText("搜索...")
-        self.search_input.setFixedWidth(160)
-        self.search_input.setMinimumWidth(120)
+        self.search_input.setFixedHeight(32)
+        self.search_input.setFixedWidth(140)
         self.search_input.setSizePolicy(QtWidgets.QSizePolicy.Fixed, QtWidgets.QSizePolicy.Fixed)
-        self.search_input.setStyleSheet("QLineEdit { border: 1px solid #E5E7EB; border-radius: 4px; padding: 4px; }")
-        
-        self.search_btn = ModernButton("🔍", "#6B7280", "")
-        self.search_btn.setFixedSize(44, 32)
+
+        self.search_btn = QtWidgets.QPushButton("🔍")
+        self.search_btn.setToolTip("搜索表格内容")
+        self.search_btn.setFixedSize(40, 32)
+        self.search_btn.setStyleSheet(
+            "QPushButton { background-color: #F3F4F6; border: 1px solid #D1D5DB; border-radius: 4px;"
+            " font-size: 14px; padding: 0 4px; }"
+            "QPushButton:hover { background-color: #E5E7EB; }"
+        )
         self.search_btn.setSizePolicy(QtWidgets.QSizePolicy.Fixed, QtWidgets.QSizePolicy.Fixed)
 
-        self.toolbar_layout.addWidget(self.send_times_label, 0)
-        self.toolbar_layout.addWidget(self.send_times_spin, 0)
-        self.toolbar_layout.addWidget(self.run_sequence_btn, 0)
-        self.toolbar_layout.addSpacing(20)
-        self.toolbar_layout.addWidget(self.search_input, 0)
-        self.toolbar_layout.addWidget(self.search_btn, 0)
-        self.toolbar_layout.addStretch(1)
+        # Helper: vertical separator
+        def _vsep():
+            sep = QtWidgets.QFrame()
+            sep.setFrameShape(QtWidgets.QFrame.VLine)
+            sep.setStyleSheet("color: #D1D5DB;")
+            sep.setFixedHeight(22)
+            return sep
+
+        # Group 1: Edit operations
+        self.toolbar_row2.addWidget(self.icon_btn_add, 0)
+        self.toolbar_row2.addWidget(self.icon_btn_delete, 0)
+        self.toolbar_row2.addWidget(self.delay_icon_btn, 0)
+        self.toolbar_row2.addWidget(self.icon_btn_up, 0)
+        self.toolbar_row2.addWidget(self.icon_btn_down, 0)
+
+        self.toolbar_row2.addSpacing(8)
+        self.toolbar_row2.addWidget(_vsep(), 0)
+        self.toolbar_row2.addSpacing(8)
+
+        # Group 2: 3E controls
+        self.toolbar_row2.addWidget(self.btn_3e, 0)
+        self.toolbar_row2.addWidget(self.combo_3e_mode, 0)
+        self.toolbar_row2.addWidget(self.btn_stop_fail, 0)
+
+        self.toolbar_row2.addSpacing(8)
+        self.toolbar_row2.addWidget(_vsep(), 0)
+        self.toolbar_row2.addSpacing(8)
+
+        # Group 3: Execution controls
+        self.toolbar_row2.addWidget(self.send_times_label, 0)
+        self.toolbar_row2.addWidget(self.send_times_spin, 0)
+        self.toolbar_row2.addWidget(self.infinite_checkbox, 0)
+        self.toolbar_row2.addSpacing(4)
+        self.toolbar_row2.addWidget(self.run_sequence_btn, 0)
+        self.toolbar_row2.addWidget(self.stop_sequence_btn, 0)
+
+        self.toolbar_row2.addStretch(1)
+
+        # Group 4: Search
+        self.toolbar_row2.addWidget(self.search_input, 0)
+        self.toolbar_row2.addWidget(self.search_btn, 0)
+
+        # Assemble two-row toolbar
+        self.toolbar_layout.addLayout(self.toolbar_row1)
+        self.toolbar_layout.addWidget(h_sep)
+        self.toolbar_layout.addLayout(self.toolbar_row2)
 
         self.data_table = QtWidgets.QTableWidget()
         self.data_table.setMinimumWidth(0)
@@ -712,8 +881,12 @@ class UDSSequenceView(QtWidgets.QWidget):
     def setup_table(self):
         # Table layout: checkbox, Name, Request, AddrType (combo), Response
         self.data_table.setColumnCount(5)
+
+        header = CheckBoxHeader(Qt.Horizontal, self.data_table)
+        self.data_table.setHorizontalHeader(header)
+        header.checkBoxClicked.connect(self._on_header_checkbox_clicked)
+
         self.data_table.setHorizontalHeaderLabels(["", "Name", "Request", "AddrType", "Response"])
-        header = self.data_table.horizontalHeader()
 
         # Allow user to resize columns
         header.setSectionResizeMode(QtWidgets.QHeaderView.Interactive)
@@ -821,6 +994,14 @@ class UDSSequenceView(QtWidgets.QWidget):
         self._apply_responsive_layout(update_splitter=False)
 
     def _apply_responsive_layout(self, update_splitter=True):
+        # Guard: skip if underlying C++ objects have been deleted (e.g. widget closing)
+        try:
+            if not hasattr(self, 'editor_layout') or self.editor_layout is None:
+                return
+            self.editor_layout.spacing()  # probe C++ object validity
+        except RuntimeError:
+            return
+
         if hasattr(self, 'cmd_splitter') and self.cmd_splitter and update_splitter:
             total_width = max(0, self.cmd_splitter.size().width())
             if total_width > 0:
@@ -850,8 +1031,10 @@ class UDSSequenceView(QtWidgets.QWidget):
         self.editor_layout.setContentsMargins(side_margin, 0, 0, 0)
         self.req_row_layout.setSpacing(spacing)
         self.resp_row_layout.setSpacing(spacing)
-        self.toolbar_layout.setSpacing(spacing)
-        self.toolbar_layout.setContentsMargins(0, max(4, int(6 * ratio)), 0, max(4, int(6 * ratio)))
+        self.toolbar_layout.setSpacing(6)
+        self.toolbar_layout.setContentsMargins(10, max(4, int(6 * ratio)), 10, max(4, int(6 * ratio)))
+        self.toolbar_row1.setSpacing(spacing)
+        self.toolbar_row2.setSpacing(max(3, min(4, int(4 * ratio))))
 
         self.req_label.setFixedWidth(label_width)
         self.resp_label.setFixedWidth(label_width)
@@ -873,15 +1056,19 @@ class UDSSequenceView(QtWidgets.QWidget):
             btn.setFixedSize(icon_size, icon_size)
 
         self.btn_3e.setFixedSize(toggle_width, tool_height)
+        self.combo_3e_mode.setFixedSize(int(72 * ratio), tool_height)
         self.btn_stop_fail.setFixedSize(toggle_width, tool_height)
         self.send_times_label.setStyleSheet(f"color: #374151; font-weight: 600; font-size: {max(10, min(12, int(12 * ratio)))}px;")
-        self._scale_widget_width(self.send_times_spin, 68, ratio, 54, 88)
+        self._scale_widget_width(self.send_times_spin, 110, ratio, 90, 130)
         self._scale_widget_height(self.send_times_spin, 32, ratio, 28, 32)
         self._scale_widget_width(self.run_sequence_btn, 110, ratio, 88, 120)
         self._scale_widget_height(self.run_sequence_btn, 32, ratio, 28, 32)
+        self._scale_widget_width(self.stop_sequence_btn, 70, ratio, 56, 80)
+        self._scale_widget_height(self.stop_sequence_btn, 32, ratio, 28, 32)
 
-        self.search_btn.setFixedSize(int(44 * ratio), int(32 * ratio))
-        self.search_input.setFixedWidth(120 if self.width() < 1500 else 160)
+        self.search_btn.setMinimumSize(40, 32)
+        self.search_btn.setFixedSize(max(40, int(44 * ratio)), max(32, int(32 * ratio)))
+        self.search_input.setFixedWidth(max(130, int(140 * ratio)) if self.width() < 1500 else max(160, int(180 * ratio)))
 
         self._apply_column_widths(force=True)
 
@@ -898,11 +1085,14 @@ class UDSSequenceView(QtWidgets.QWidget):
         widget.setFixedHeight(height)
 
     def resizeEvent(self, event):
-        super().resizeEvent(event)
-        # Avoid unnecessary relayouts when height changes or typing happens (which might trigger spurious resize events)
-        if event.oldSize().width() == event.size().width():
-            return
-        self._apply_responsive_layout(update_splitter=not self._user_resized_splitter)
+        try:
+            super().resizeEvent(event)
+            # Avoid unnecessary relayouts when height changes or typing happens (which might trigger spurious resize events)
+            if event.oldSize().width() == event.size().width():
+                return
+            self._apply_responsive_layout(update_splitter=not self._user_resized_splitter)
+        except RuntimeError:
+            pass  # C++ object already deleted (widget being destroyed)
 
 
     # --- View API for controller ---
@@ -1040,7 +1230,8 @@ class UDSSequenceView(QtWidgets.QWidget):
     def _on_del_config_clicked(self):
         current = self.config_combo.currentText()
         if current and current != "默认":
-            reply = QtWidgets.QMessageBox.question(self, "确认删除", f"确定要删除配置 '{current}' 吗?",
+            reply = QtWidgets.QMessageBox.question(self, "确认删除配置模板",
+                                                 f"确定要删除配置模板 '{current}' 吗?\n(注: 此操作不会删除下方列表中当前的指令内容)",
                                                  QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No)
             if reply == QtWidgets.QMessageBox.Yes:
                 self.config_delete_requested.emit(current)
@@ -1117,8 +1308,25 @@ class UDSSequenceView(QtWidgets.QWidget):
             self.config_combo.setCurrentIndex(0)
         self.config_combo.blockSignals(False)
 
-    def _update_3e_text(self, checked):
-        self.btn_3e.setText("3E 00" if checked else "3E 80")
+    def _on_3e_toggled(self, checked):
+        """3E 按钮切换：仅控制心跳启停，模式由独立下拉框选择。"""
+        self.tp_toggled.emit(checked)
+
+    def _on_3e_mode_changed(self, text):
+        """3E 模式下拉框切换：独立切换 3E 80 / 3E 00 模式。"""
+        mode = "00" if "00" in text else "80"
+        self.tp_mode_changed.emit(mode)
+
+    def _on_infinite_toggled(self, state):
+        """无限复选框切换：勾选时禁用次数输入框。"""
+        self.send_times_spin.setEnabled(state != QtCore.Qt.Checked)
+
+    def _on_run_btn_clicked(self):
+        """执行序列按钮点击：根据无限复选框状态发送 -1（无限）或具体次数。"""
+        if self.infinite_checkbox.isChecked():
+            self.run_sequence_requested.emit(-1)
+        else:
+            self.run_sequence_requested.emit(self.send_times_spin.value())
 
     def _apply_toggle_style(self, btn, active_color):
         btn.setStyleSheet(f"""

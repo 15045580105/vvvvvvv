@@ -182,6 +182,7 @@ class LogConfigController(BaseController):
         if getattr(self, '_is_ecu_status_refreshing', False):
             self.view.show_message("正在读取 ECU 日志等级，请稍候...", "info")
             return
+        
         self._is_ecu_status_refreshing = True
         self.view.ecu_status_refresh_btn.setEnabled(False)
         self.view.append_log("开始回读 ECU 日志等级状态...")
@@ -249,6 +250,8 @@ class LogConfigController(BaseController):
             self.view.show_message("ECU 日志等级配置执行中，请稍候...", "info")
             return
 
+        device_service = self.log_config_service._device_service
+
         selected_ecus = list(self.view.ecu_select_combo.currentSelection())
         log_level = self.view.ecu_log_level_combo.currentText().strip().upper()
         if not selected_ecus:
@@ -256,7 +259,6 @@ class LogConfigController(BaseController):
             return
 
         # 检查设备是否连接
-        device_service = self.log_config_service._device_service
         doip_client = device_service.get_doip_client() if device_service else None
         is_connected = False
         if doip_client:

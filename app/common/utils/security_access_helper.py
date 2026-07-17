@@ -7,6 +7,9 @@ import tempfile
 from typing import Optional, Tuple
 
 class SecurityAccessHelper:
+    _cached_python_32bit = None
+    _cached_shim_script = None
+
     @staticmethod
     def calculate_key(level: int, seed: bytes, dll_path: str = None) -> Tuple[Optional[bytes], str]:
         """
@@ -32,10 +35,15 @@ class SecurityAccessHelper:
         if not dll_path:
             return None, "错误: 未配置 DLL 路径"
 
-        shim_script = SecurityAccessHelper._create_shim_script()
+        if not SecurityAccessHelper._cached_shim_script:
+            SecurityAccessHelper._cached_shim_script = SecurityAccessHelper._create_shim_script()
+        shim_script = SecurityAccessHelper._cached_shim_script
 
-        # 尝试寻找 32 位 Python
-        python_32bit = SecurityAccessHelper._find_32bit_python()
+        if SecurityAccessHelper._cached_python_32bit is None:
+            found = SecurityAccessHelper._find_32bit_python()
+            SecurityAccessHelper._cached_python_32bit = found if found else ""
+        python_32bit = SecurityAccessHelper._cached_python_32bit
+
         if not python_32bit:
             return None, "错误: 未找到 32 位 Python 环境，无法加载 32 位 DLL"
 
