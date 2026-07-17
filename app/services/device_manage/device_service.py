@@ -1147,11 +1147,16 @@ class DeviceService(QObject):
         self._debug_log("[升级屏障] 已解除：恢复所有模块的 DoIP 访问")
 
     def is_upgrade_active(self) -> bool:
-        """检查升级屏障是否处于激活状态（供外部模块在执行 DoIP 操作前检查并提示用户）。"""
-        active_service = self._get_active_service()
-        if active_service is not self:
-            return active_service.is_upgrade_active()
-        return self._upgrade_active
+        """检查升级屏障是否处于激活状态（已放开限制：升级期间允许其他模块执行 DoIP 诊断）。
+
+        如需恢复升级屏障，取消下方注释并删除 return False 即可。
+        """
+        # [升级屏障-已放开] 恢复时取消以下3行注释，并删除 return False
+        # active_service = self._get_active_service()
+        # if active_service is not self:
+        #     return active_service.is_upgrade_active()
+        # return self._upgrade_active
+        return False
 
     # 升级期间 DoIP 操作被拦截时的统一提示文本
     UPGRADE_BLOCKED_MSG = "当前设备正在升级中，无法执行其他 DoIP 诊断操作，请等待升级完成后再试"
@@ -1167,9 +1172,10 @@ class DeviceService(QObject):
     ) -> bytes | None:
         """统一的 DoIP 发送接口，供 Topology/Diagnostic 等业务 Service 重用。
 
-        升级期间（_upgrade_active=True），非升级模块的所有请求（含3E心跳）
-        被静默拦截，返回 None。UpgradeWorker 使用 _send_doip_payload_for_upgrade
-        绕过屏障。
+        升级期间不再拦截其他模块的 DoIP 请求，允许诊断与升级并行。
+        UpgradeWorker 使用 _send_doip_payload_for_upgrade 专属通道。
+
+        如需恢复升级屏障拦截，取消下方被注释的 if self._upgrade_active 代码块即可。
         """
         active_service = self._get_active_service()
         if active_service is not self:
@@ -1181,19 +1187,20 @@ class DeviceService(QObject):
                 prefer_last=prefer_last,
             )
 
-        if self._upgrade_active:
-            is_tester_present = bool(payload and payload[0] == 0x3E)
-            if is_tester_present:
-                self._append_tester_present_operation_log("外部3E被升级屏障拦截")
-            else:
-                # 非3E请求被拦截时打印提示，让调用方明确知道是升级屏障导致的无响应
-                self._get_log_emit()(self.UPGRADE_BLOCKED_MSG)
-            # 节流发射拦截信号（3s 内仅触发一次），供全局 Toast 使用
-            now = time.time()
-            if now - self._last_upgrade_blocked_time > 3.0:
-                self._last_upgrade_blocked_time = now
-                self.upgrade_blocked_signal.emit(self.UPGRADE_BLOCKED_MSG)
-            return None
+        # [升级屏障-已放开] 恢复时取消以下注释块
+        # if self._upgrade_active:
+        #     is_tester_present = bool(payload and payload[0] == 0x3E)
+        #     if is_tester_present:
+        #         self._append_tester_present_operation_log("外部3E被升级屏障拦截")
+        #     else:
+        #         # 非3E请求被拦截时打印提示，让调用方明确知道是升级屏障导致的无响应
+        #         self._get_log_emit()(self.UPGRADE_BLOCKED_MSG)
+        #     # 节流发射拦截信号（3s 内仅触发一次），供全局 Toast 使用
+        #     now = time.time()
+        #     if now - self._last_upgrade_blocked_time > 3.0:
+        #         self._last_upgrade_blocked_time = now
+        #         self.upgrade_blocked_signal.emit(self.UPGRADE_BLOCKED_MSG)
+        #     return None
 
         with self._doip_send_lock:
             return self._send_doip_payload_locked(
