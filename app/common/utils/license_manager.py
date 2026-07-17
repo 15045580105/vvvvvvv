@@ -11,9 +11,8 @@ from app.common.utils.license_codec_core import (
     ActivationCodeError,
     DecodedLicense,
     LicenseCodec,
-    LicenseUserInfo,
 )
-from app.common.utils.machine_code import get_machine_code
+from app.common.utils.machine_code import get_machine_code_candidates
 from app.common.utils.path_utils import get_app_config_path
 
 
@@ -217,8 +216,8 @@ def get_license_info() -> LicenseInfo:
         return info
 
     try:
-        # 第二步：获取当前设备机器码，并校验格式是否正常。
-        current_machine = normalize_machine_id(get_machine_code())
+        # 第二步：获取当前设备稳定机器码候选集合，并校验格式是否正常。
+        current_machines = {normalize_machine_id(machine_code) for machine_code in get_machine_code_candidates()}
     except ActivationCodeError as exc:
         info = _build_license_info(
             decoded,
@@ -231,7 +230,7 @@ def get_license_info() -> LicenseInfo:
         return info
 
     # 第三步：机器码匹配校验。激活码只能在生成时指定的设备上使用。
-    if decoded.machine_id != current_machine:
+    if decoded.machine_id not in current_machines:
         info = _build_license_info(
             decoded,
             stored_code,
@@ -288,13 +287,13 @@ def activate(activation_code: str) -> ActivationResult:
         return ActivationResult(False, str(exc))
 
     try:
-        # 第二步：检查当前设备机器码是否合法。
-        current_machine = normalize_machine_id(get_machine_code())
+        # 第二步：检查当前设备稳定机器码候选集合是否合法。
+        current_machines = {normalize_machine_id(machine_code) for machine_code in get_machine_code_candidates()}
     except ActivationCodeError as exc:
         return ActivationResult(False, f"当前机器码无效：{exc}")
 
     # 第三步：机器码绑定校验。
-    if decoded.machine_id != current_machine:
+    if decoded.machine_id not in current_machines:
         return ActivationResult(False, "激活码中的 Machine ID 与当前设备不匹配！")
 
     now = datetime.now().replace(microsecond=0)
