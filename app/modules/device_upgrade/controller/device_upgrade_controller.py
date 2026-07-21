@@ -1110,7 +1110,7 @@ class UpgradeController(BaseController):
 
         # Stress Upgrade Actions
         self.view.stress_start_btn.clicked.connect(self._start_stress_upgrade)
-        self.view.stress_stop_btn.clicked.connect(self._stop_stress_upgrade)
+        self.view.stress_stop_btn.clicked.connect(lambda: self._stop_stress_upgrade())
 
         # Log Actions
         self.view.clear_btn.clicked.connect(self.view.upgrade_log.clear)
@@ -1284,14 +1284,14 @@ class UpgradeController(BaseController):
         device_service.end_upgrade_session()
 
         if self.is_stress_mode:
-             # Handle Loop
              if success:
-
                  # Proceed to next package or next loop
                  self._log("升级完成，准备自动进入下一轮...", is_info=True)
                  QTimer.singleShot(2000, self._run_next_stress_step) # 2s delay
              else:
-                 self._stop_stress_upgrade() # Error stops stress
+                 # 任何步骤失败都立即停止整个压测
+                 self._log(f"压测过程中升级失败，停止全部压测: {msg}", is_info=True)
+                 self._stop_stress_upgrade(reason=f"升级失败 - {msg}")
         else:
             self.view.start_btn.setEnabled(True)
             self.view.stop_btn.setEnabled(False)
@@ -1418,7 +1418,7 @@ class UpgradeController(BaseController):
                 self.upgrade_config = json.load(f)
         except Exception as e:
             self._log(f"加载任务配置失败: {e}", is_info=True)
-            self._stop_stress_upgrade()
+            self._stop_stress_upgrade(reason=f"配置加载失败 - {e}")
             return
 
         # Start Worker
@@ -1435,16 +1435,24 @@ class UpgradeController(BaseController):
         self.thread.finished_signal.connect(self._on_worker_finished)
         self.thread.start()
 
-    def _stop_stress_upgrade(self):
+    def _stop_stress_upgrade(self, reason="用户手动停止"):
+        """停止压测（支持用户手动停止和失败自动停止两种场景）。
+
+        Args:
+            reason: 停止原因，用于日志区分是用户手动停止还是某步骤失败导致停止
+        """
+        # 立即标记非压测模式，阻止任何已排队的 QTimer 触发下一轮
+        self.is_stress_mode = False
+
         if self.thread and self.thread.running:
             self.thread.stop()
             self.thread.wait()
 
-        # 解除升级屏障
+        # 解除升级屏障（幂等操作，即使 _on_worker_finished 已调用也无害）
         device_service: DeviceService = di_container.resolve(DeviceService)
         device_service.end_upgrade_session()
 
-        self._log("Stress Upgrade Stopped (User Terminated)", is_info=True)
+        self._log(f"压测已停止 ({reason})", is_info=True)
         self.view.stress_start_btn.setEnabled(True)
         self.view.stress_stop_btn.setEnabled(False)
         self.view.stress_progress.setValue(0)
