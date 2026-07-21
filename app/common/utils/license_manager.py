@@ -12,12 +12,27 @@ from app.common.utils.license_codec_core import (
     DecodedLicense,
     LicenseCodec,
 )
+from app.common.utils.crypto_utils import dpt_encryptor
 from app.common.utils.machine_code import get_machine_code_candidates
 from app.common.utils.path_utils import get_app_config_path
 
 
 APP_DIR = Path(get_app_config_path())
 LICENSE_FILE = APP_DIR / "license.json"
+
+# license.json 不再直接保存明文授权字段，而是保存如下包装结构：
+# {
+#   "encrypted": true,
+#   "version": 1,
+#   "payload": "...Fernet加密后的授权JSON..."
+# }
+# Fernet 自带完整性校验，用户手动篡改 payload 后会导致解密失败，从而无法绕过过期时间校验。
+LICENSE_ENCRYPTED_FLAG: Final[str] = "encrypted"
+LICENSE_ENCRYPTED_VERSION_KEY: Final[str] = "version"
+LICENSE_ENCRYPTED_PAYLOAD_KEY: Final[str] = "payload"
+LICENSE_ENCRYPTED_VERSION: Final[int] = 1
+# 仅在内存中使用：标记本次读取来源是旧明文文件，后续同步时必须重写为加密格式。
+LICENSE_LEGACY_PLAINTEXT_MARKER: Final[str] = "__legacy_plaintext_license__"
 
 STATUS_KEY: Final[str] = "激活状态:"
 MACHINE_ID_KEY: Final[str] = "Machine ID:"
@@ -62,20 +77,68 @@ def _ensure_app_dir():
     APP_DIR.mkdir(parents=True, exist_ok=True)
 
 
-def _load_license():
+def _decrypt_license_payload(encrypted_payload: str) -> dict:
+    """解密 license.json 中保存的加密载荷，并还原为授权信息字典。
+
+    注意：这里仅负责“文件存储层”的解密；激活码合法性、机器码匹配、是否过期等
+    业务校验仍由 get_license_info()/activate() 执行，避免把存储加密和授权规则混在一起。
+    """
+    if not encrypted_payload:
+        return {}
+    try:
+        decrypted_text = dpt_encryptor.decrypt(encrypted_payload.encode("utf-8"))
+        decrypted_data = json.loads(decrypted_text)
+        return decrypted_data if isinstance(decrypted_data, dict) else {}
+    except Exception:
+        # Fernet 解密失败通常表示文件被篡改、密钥不匹配或内容损坏；此时按无有效授权处理。
+        return {}
+
+
+def _encrypt_license_payload(payload: dict) -> str:
+    """把授权信息字典序列化后加密，返回可写入 JSON 文件的文本密文。"""
+    # separators 去掉不必要空格，减少明文长度；ensure_ascii=False 保留中文字段名。
+    plaintext = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+    return dpt_encryptor.encrypt(plaintext).decode("utf-8")
+
+
+def _load_license() -> dict:
     if not LICENSE_FILE.exists():
         return {}
     try:
-        with LICENSE_FILE.open("r", encoding="utf-8") as f:
-            return json.load(f)
+        raw_text = LICENSE_FILE.read_text(encoding="utf-8").strip()
+        if not raw_text:
+            return {}
+
+        try:
+            data = json.loads(raw_text)
+        except json.JSONDecodeError:
+            # 兼容“整个文件直接保存为 Fernet token”的加密形式，便于以后格式调整。
+            return _decrypt_license_payload(raw_text)
+
+        if not isinstance(data, dict):
+            return {}
+
+        if data.get(LICENSE_ENCRYPTED_FLAG) is True:
+            # 新格式：license.json 只暴露加密包装信息，真实授权字段必须解密后才能获取。
+            return _decrypt_license_payload(str(data.get(LICENSE_ENCRYPTED_PAYLOAD_KEY) or ""))
+
+        # 兼容旧版本明文 license.json：打上内存标记，确保首次读取后会触发同步并重新加密保存。
+        data[LICENSE_LEGACY_PLAINTEXT_MARKER] = True
+        return data
     except Exception:
         return {}
 
 
 def _save_license(payload: dict):
     _ensure_app_dir()
+    encrypted_data = {
+        LICENSE_ENCRYPTED_FLAG: True,
+        LICENSE_ENCRYPTED_VERSION_KEY: LICENSE_ENCRYPTED_VERSION,
+        LICENSE_ENCRYPTED_PAYLOAD_KEY: _encrypt_license_payload(payload),
+    }
     with LICENSE_FILE.open("w", encoding="utf-8") as f:
-        json.dump(payload, f, ensure_ascii=False, indent=2)
+        # 文件仍保持 JSON 结构，便于排查“是否为加密格式”；授权明细字段不再明文落盘。
+        json.dump(encrypted_data, f, ensure_ascii=False, indent=2)
 
 
 def normalize_machine_id(machine_id: str) -> str:
@@ -177,9 +240,14 @@ def _is_expected_license_payload(data: object) -> bool:
     }
 
 
+def _is_legacy_plaintext_payload(data: object) -> bool:
+    """判断本次读取是否来自旧版明文 license.json，用于触发加密迁移。"""
+    return isinstance(data, dict) and data.get(LICENSE_LEGACY_PLAINTEXT_MARKER) is True
+
+
 def _sync_persisted_license_payload(info: LicenseInfo, data: object) -> None:
     expected_payload = _persisted_license_payload(info)
-    if isinstance(data, dict) and _is_expected_license_payload(data):
+    if isinstance(data, dict) and _is_expected_license_payload(data) and not _is_legacy_plaintext_payload(data):
         if all(data.get(key) == value for key, value in expected_payload.items()):
             return
     _save_license(expected_payload)
@@ -205,6 +273,9 @@ def get_license_info() -> LicenseInfo:
     data = _load_license()
     stored_code = _extract_stored_activation_code(data)
     if not stored_code:
+        if _is_legacy_plaintext_payload(data):
+            # 旧明文文件即使没有激活码，也重写为加密空授权，避免继续暴露 license.json 明文字段。
+            _save_license(_persisted_license_payload(_build_empty_license_info("未找到激活文件，请先录入激活码")))
         return _build_empty_license_info("未找到激活文件，请先录入激活码")
 
     try:
@@ -213,6 +284,9 @@ def get_license_info() -> LicenseInfo:
     except ActivationCodeError as exc:
         info = _build_empty_license_info(f"本地激活信息无效：{exc}", status_text="校验失败")
         info.activation_code = stored_code
+        if _is_legacy_plaintext_payload(data):
+            # 激活码无效时也要迁移为加密格式，避免用户从明文文件继续修改授权字段。
+            _save_license(_persisted_license_payload(info))
         return info
 
     try:
