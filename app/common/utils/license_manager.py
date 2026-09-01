@@ -13,7 +13,7 @@ from app.common.utils.license_codec_core import (
     LicenseCodec,
 )
 from app.common.utils.crypto_utils import dpt_encryptor
-from app.common.utils.machine_code import get_machine_code_candidates
+from app.common.utils.machine_code import MachineCodeError, get_machine_code_candidates
 from app.common.utils.path_utils import get_app_config_path
 
 
@@ -290,9 +290,9 @@ def get_license_info() -> LicenseInfo:
         return info
 
     try:
-        # 第二步：获取当前设备稳定机器码候选集合，并校验格式是否正常。
+        # 第二步：获取当前设备唯一稳定机器码，并校验格式是否正常。
         current_machines = {normalize_machine_id(machine_code) for machine_code in get_machine_code_candidates()}
-    except ActivationCodeError as exc:
+    except (ActivationCodeError, MachineCodeError) as exc:
         info = _build_license_info(
             decoded,
             stored_code,
@@ -361,9 +361,9 @@ def activate(activation_code: str) -> ActivationResult:
         return ActivationResult(False, str(exc))
 
     try:
-        # 第二步：检查当前设备稳定机器码候选集合是否合法。
+        # 第二步：获取当前设备唯一稳定机器码，并校验格式是否正常。
         current_machines = {normalize_machine_id(machine_code) for machine_code in get_machine_code_candidates()}
-    except ActivationCodeError as exc:
+    except (ActivationCodeError, MachineCodeError) as exc:
         return ActivationResult(False, f"当前机器码无效：{exc}")
 
     # 第三步：机器码绑定校验。

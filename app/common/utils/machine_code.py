@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import hashlib
 import re
-import subprocess
 import winreg
 from functools import lru_cache
+
+
+class MachineCodeError(RuntimeError):
+    """无法从本机获取唯一且稳定的机器码身份源时抛出。"""
 
 
 _INVALID_SERIAL_VALUES = {
@@ -51,26 +54,6 @@ def _is_valid_identifier(value: str) -> bool:
     return True
 
 
-def _run_powershell(script: str) -> str:
-    try:
-        result = subprocess.check_output(
-            [
-                "powershell.exe",
-                "-NoProfile",
-                "-ExecutionPolicy",
-                "Bypass",
-                "-Command",
-                script,
-            ],
-            stderr=subprocess.DEVNULL,
-            text=True,
-            timeout=5,
-        )
-    except Exception:
-        return ""
-    return result.strip()
-
-
 def _read_machine_guid() -> str:
     try:
         with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\Cryptography") as key:
@@ -80,51 +63,26 @@ def _read_machine_guid() -> str:
         return ""
 
 
-def _read_cim_values(class_name: str, property_name: str, *, filters: str = "") -> list[str]:
-    where_clause = f" | Where-Object {{ {filters} }}" if filters else ""
-    script = (
-        f"Get-CimInstance -ClassName {class_name}{where_clause} "
-        f"| Select-Object -ExpandProperty {property_name} -ErrorAction SilentlyContinue"
-    )
-    values: list[str] = []
-    for line in _run_powershell(script).splitlines():
-        normalized = _normalize_identifier(line)
-        if _is_valid_identifier(normalized):
-            values.append(normalized)
-    return sorted(set(values))
-
-
 @lru_cache(maxsize=1)
 def _stable_machine_components() -> tuple[str, ...]:
-    """返回用于生成机器码的稳定身份组件。
+    """返回用于生成机器码的唯一身份组件。
 
-    不再使用 IP、当前活动网卡、MAC、主机名、系统版本等会因网络环境或配置变化而变化的字段。
+    设计约定：机器码只绑定 Windows MachineGuid（注册表
+    HKLM\\SOFTWARE\\Microsoft\\Cryptography\\MachineGuid）。
 
-    主机器码优先只绑定 Windows MachineGuid。原因是 BIOS/主板/CPU/磁盘序列号并不保证所有 PC
-    都存在或始终可读；如果把它们全部拼进主机器码，任意一个字段读取失败或硬件更换都会导致
-    授权失效。硬件序列号仅在 MachineGuid 不可用时作为兜底。
+    不再使用任何兜底规则（硬件序列号兜底、常量兜底均已移除）：
+    兜底路径一旦在某次启动时被触发，会导致机器码与激活时不一致，
+    使原本有效的激活码被判定为"机器不匹配"而要求重新激活，
+    这违背"同一台 PC 机器码必须唯一且不变"的设计初衷。
+    MachineGuid 在系统安装后保持稳定，读取失败时直接抛出异常，
+    由业务层提示用户，而不是悄悄换一个机器码。
     """
     machine_guid = _read_machine_guid()
-    if _is_valid_identifier(machine_guid):
-        return (f"WINDOWS_MACHINE_GUID={machine_guid}",)
-
-    components: list[str] = []
-    hardware_sources = [
-        ("BIOS_SERIAL", "Win32_BIOS", "SerialNumber", ""),
-        ("BASEBOARD_SERIAL", "Win32_BaseBoard", "SerialNumber", ""),
-        ("CPU_PROCESSOR_ID", "Win32_Processor", "ProcessorId", ""),
-        (
-            "SYSTEM_DISK_SERIAL",
-            "Win32_DiskDrive",
-            "SerialNumber",
-            "$_.Index -eq 0 -and $_.MediaType -notmatch 'Removable'",
-        ),
-    ]
-    for label, class_name, property_name, filters in hardware_sources:
-        for value in _read_cim_values(class_name, property_name, filters=filters):
-            components.append(f"{label}={value}")
-
-    return tuple(sorted(set(components)))
+    if not _is_valid_identifier(machine_guid):
+        raise MachineCodeError(
+            "无法读取本机唯一身份标识（MachineGuid），无法生成稳定的机器码。"
+        )
+    return (f"WINDOWS_MACHINE_GUID={machine_guid}",)
 
 
 def _hash_components(components: tuple[str, ...]) -> str:
@@ -133,15 +91,12 @@ def _hash_components(components: tuple[str, ...]) -> str:
 
 
 def get_machine_code_candidates() -> tuple[str, ...]:
-    """返回当前设备可接受的稳定机器码候选集合。
+    """返回当前设备唯一的稳定机器码候选集合。
 
-    当前版本只生成一个主机器码；保留候选集合接口，是为了后续如果需要兼容旧算法或新增算法，
-    授权校验层无需再改协议层和界面层。
+    当前规则只产生一个机器码，不存在多候选、不存在兜底候选；
+    保留候选集合接口是为了后续新增算法时无需改动协议层和界面层。
     """
-    components = _stable_machine_components()
-    if not components:
-        return (hashlib.sha256(b"VCC_STABLE_MACHINE_CODE_FALLBACK").hexdigest().upper(),)
-    return (_hash_components(components),)
+    return (_hash_components(_stable_machine_components()),)
 
 
 def get_machine_code() -> str:

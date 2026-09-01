@@ -4,7 +4,7 @@ from PyQt5.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel,
                              QPushButton, QMessageBox, QTextEdit, QWidget)
 from PyQt5.QtCore import pyqtSignal, Qt
 
-from app.common.utils.machine_code import get_machine_code
+from app.common.utils.machine_code import MachineCodeError, get_machine_code
 from app.common.utils.license_manager import activate
 
 
@@ -37,13 +37,19 @@ class LoginDialog(QDialog):
         title.setStyleSheet("font-size: 18px; font-weight: bold;")
         layout.addWidget(title)
 
-        # 机器码一排：标签 + 可复制的多行文本
-        machine_code = get_machine_code()
+        # 机器码一排：标签 + 可复制的多行文本。
+        # 机器码只绑定本机唯一身份源（MachineGuid），读取失败时不再兜底生成其它码，
+        # 避免与激活码中绑定的机器码不一致，此处直接提示用户。
+        try:
+            machine_code = get_machine_code()
+        except MachineCodeError as exc:
+            machine_code = ""
+            QMessageBox.critical(self, "机器码获取失败", str(exc))
         self.machine_code = machine_code
         mc_layout = QHBoxLayout()
         mc_label = QLabel("机器码:")
         mc_layout.addWidget(mc_label)
-        machine_value = QLabel(machine_code)
+        machine_value = QLabel(machine_code or "机器码获取失败，请联系管理员")
         machine_value.setTextInteractionFlags(Qt.TextSelectableByMouse)
         machine_value.setWordWrap(True)
         machine_value.setStyleSheet(
