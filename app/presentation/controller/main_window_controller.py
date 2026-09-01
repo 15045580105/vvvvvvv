@@ -310,6 +310,8 @@ class MainController(BaseController):
             # Ensure view is hidden initially if it's a QWidget and not added to tab yet
             if hasattr(ctrl, 'view') and isinstance(ctrl.view, QtWidgets.QWidget):
                 ctrl.view.hide()
+            # 以太网仿真/追踪页面绑定：共享模型
+            self._try_bind_ethernet_trace(reg_key, ctrl)
 
         return ctrl
 
@@ -408,6 +410,25 @@ class MainController(BaseController):
                 self.view.central_stack.setCurrentIndex(1)
         except Exception:
             logger.exception(f"Open tab failed: {display_text}")
+
+    def _try_bind_ethernet_trace(self, reg_key: str, ctrl: object) -> None:
+        """当以太网仿真或报文追踪控制器被创建时，尝试将两者绑定共享模型。"""
+        from app.modules.ethernet_simulation.controller.ethernet_trace_controller import EthernetTraceController
+        from app.modules.ethernet_simulation.controller.ethernet_simulation_controller import EthernetSimulationController
+
+        sim_key = PageConfig.PAGE_ETHERNET_SIM
+        trace_key = PageConfig.PAGE_ETHERNET_TRACE
+
+        if reg_key == trace_key and isinstance(ctrl, EthernetTraceController):
+            # Trace 控制器刚创建，尝试获取已存在的仿真控制器
+            sim_ctrl = self.model.get(sim_key)
+            if sim_ctrl and hasattr(sim_ctrl, 'model'):
+                ctrl.bind_model(sim_ctrl.model)
+        elif reg_key == sim_key and isinstance(ctrl, EthernetSimulationController):
+            # 仿真控制器刚创建，尝试获取已存在的 Trace 控制器
+            trace_ctrl = self.model.get(trace_key)
+            if trace_ctrl and isinstance(trace_ctrl, EthernetTraceController):
+                trace_ctrl.bind_model(ctrl.model)
 
     # ----------------- Tab管理 -----------------
     def on_tab_context_menu(self, point: QtCore.QPoint) -> None:

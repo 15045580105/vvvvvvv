@@ -17,6 +17,8 @@ from app.modules.someip_signboard.controller.someip_signboard_controller import 
 from app.modules.someipsd_signboard.controller.someipsd_signboard_controller import SomeIpSignboardController
 # from app.modules.script_exec.controller.script_exec_controller import ScriptExecController
 from app.modules.uds_sequence.controller.uds_sequence_controller import UDSSequenceController
+from app.modules.ethernet_simulation.controller.ethernet_simulation_controller import EthernetSimulationController
+from app.modules.ethernet_simulation.controller.ethernet_trace_controller import EthernetTraceController
 
 
 class PageConfig:
@@ -47,6 +49,10 @@ class PageConfig:
     EMOJI_COMMON_CONFIG = "🔧"
     # 新增：SomeIP emoji
     EMOJI_SOMEIP = "🌐"
+    # 新增：以太网仿真 emoji
+    EMOJI_ETHERNET_SIM = "🔌"
+    # 新增：报文追踪 emoji
+    EMOJI_ETHERNET_TRACE = "📡"
 
     # 页面注册名常量
     PAGE_DEVICE = "设备管理"
@@ -66,6 +72,8 @@ class PageConfig:
     PAGE_DATA_CONVERTER = "数据格式转换"
     PAGE_SOMEIP = "服务发现信息面板"
     PAGE_SOMEIP_PARSER = "报文解析界面"
+    PAGE_ETHERNET_SIM = "以太网仿真"
+    PAGE_ETHERNET_TRACE = "报文追踪"
     PAGE_DEMO = "示例页面"
 
     # 导航分组常量（之前缺失，补上）
@@ -75,6 +83,7 @@ class PageConfig:
     NAV_GROUP_UPGRADE = "🚀 设备升级"
     NAV_GROUP_CONFIG = "⚙️ 配置中心"
     NAV_GROUP_SOMEIP = "🌐 Someip功能"
+    NAV_GROUP_ETHERNET_SIM = "🔌 以太网仿真"
     NAV_GROUP_ADV = "🧬 高级功能"
     NAV_GROUP_DEMO = "🎉 示例"
 
@@ -96,6 +105,8 @@ class PageConfig:
     PAGE_DATA_CONVERTER_DISPLAY = f"{EMOJI_DATA_CONVERTER} {PAGE_DATA_CONVERTER}"
     PAGE_SOMEIP_DISPLAY = f"{EMOJI_SOMEIP} {PAGE_SOMEIP}"
     PAGE_SOMEIP_PARSER_DISPLAY = f"{EMOJI_SOMEIP} {PAGE_SOMEIP_PARSER}"
+    PAGE_ETHERNET_SIM_DISPLAY = f"{EMOJI_ETHERNET_SIM} {PAGE_ETHERNET_SIM}"
+    PAGE_ETHERNET_TRACE_DISPLAY = f"{EMOJI_ETHERNET_TRACE} {PAGE_ETHERNET_TRACE}"
     PAGE_DEMO_DISPLAY = f"🎉 {PAGE_DEMO}"
 
 
@@ -117,6 +128,8 @@ class PageConfig:
     DATA_CONVERTER_TAB_NAME = PAGE_DATA_CONVERTER_DISPLAY
     SOMEIP_SIGNBOARD_TAB_NAME = PAGE_SOMEIP_DISPLAY
     SOMEIP_PARSER_TAB_NAME = PAGE_SOMEIP_PARSER_DISPLAY
+    ETHERNET_SIM_TAB_NAME = PAGE_ETHERNET_SIM_DISPLAY
+    ETHERNET_TRACE_TAB_NAME = PAGE_ETHERNET_TRACE_DISPLAY
     DEMO_TAB_NAME = PAGE_DEMO_DISPLAY
 
     # 统一页面定义：(注册名, 显示名, 控制器类, 是否对话框)
@@ -138,6 +151,8 @@ class PageConfig:
         (PAGE_CLOCK, PAGE_CLOCK_DISPLAY, ClockManagementController, PAGE_TYPE_TAB),
         (PAGE_SOMEIP, PAGE_SOMEIP_DISPLAY, SomeIpSignboardController, PAGE_TYPE_TAB),
         (PAGE_SOMEIP_PARSER, PAGE_SOMEIP_PARSER_DISPLAY, PacketParserController, PAGE_TYPE_TAB),
+        (PAGE_ETHERNET_SIM, PAGE_ETHERNET_SIM_DISPLAY, EthernetSimulationController, PAGE_TYPE_TAB),
+        (PAGE_ETHERNET_TRACE, PAGE_ETHERNET_TRACE_DISPLAY, EthernetTraceController, PAGE_TYPE_TAB),
         #(PAGE_DEMO, PAGE_DEMO_DISPLAY, DemoPageController, PAGE_TYPE_TAB),
     ]
 
@@ -159,6 +174,7 @@ class PageConfig:
         NAV_GROUP_UPGRADE: {"children": [PAGE_UPGRADE_DISPLAY]},
         NAV_GROUP_CONFIG: {"children": [PAGE_LOG_CONFIG_DISPLAY, PAGE_COMMON_CONFIG_DISPLAY]},
         NAV_GROUP_SOMEIP: {"children": [PAGE_SOMEIP_DISPLAY, PAGE_SOMEIP_PARSER_DISPLAY]},
+        NAV_GROUP_ETHERNET_SIM: {"children": [PAGE_ETHERNET_SIM_DISPLAY, PAGE_ETHERNET_TRACE_DISPLAY]},
         #NAV_GROUP_ADV: {"children": [PAGE_SCRIPT_DISPLAY]},
         #NAV_GROUP_DEMO: {"children": [PAGE_DEMO_DISPLAY]},
     }
