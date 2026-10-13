@@ -17,8 +17,6 @@ from app.modules.someip_signboard.controller.someip_signboard_controller import 
 from app.modules.someipsd_signboard.controller.someipsd_signboard_controller import SomeIpSignboardController
 # from app.modules.script_exec.controller.script_exec_controller import ScriptExecController
 from app.modules.uds_sequence.controller.uds_sequence_controller import UDSSequenceController
-from app.modules.ethernet_simulation.controller.ethernet_simulation_controller import EthernetSimulationController
-from app.modules.ethernet_simulation.controller.ethernet_trace_controller import EthernetTraceController
 
 
 class PageConfig:
@@ -151,8 +149,9 @@ class PageConfig:
         (PAGE_CLOCK, PAGE_CLOCK_DISPLAY, ClockManagementController, PAGE_TYPE_TAB),
         (PAGE_SOMEIP, PAGE_SOMEIP_DISPLAY, SomeIpSignboardController, PAGE_TYPE_TAB),
         (PAGE_SOMEIP_PARSER, PAGE_SOMEIP_PARSER_DISPLAY, PacketParserController, PAGE_TYPE_TAB),
-        (PAGE_ETHERNET_SIM, PAGE_ETHERNET_SIM_DISPLAY, EthernetSimulationController, PAGE_TYPE_TAB),
-        (PAGE_ETHERNET_TRACE, PAGE_ETHERNET_TRACE_DISPLAY, EthernetTraceController, PAGE_TYPE_TAB),
+        # 临时屏蔽以太网仿真界面入口
+        # (PAGE_ETHERNET_SIM, PAGE_ETHERNET_SIM_DISPLAY, EthernetSimulationController, PAGE_TYPE_TAB),
+        # (PAGE_ETHERNET_TRACE, PAGE_ETHERNET_TRACE_DISPLAY, EthernetTraceController, PAGE_TYPE_TAB),
         #(PAGE_DEMO, PAGE_DEMO_DISPLAY, DemoPageController, PAGE_TYPE_TAB),
     ]
 
@@ -174,7 +173,8 @@ class PageConfig:
         NAV_GROUP_UPGRADE: {"children": [PAGE_UPGRADE_DISPLAY]},
         NAV_GROUP_CONFIG: {"children": [PAGE_LOG_CONFIG_DISPLAY, PAGE_COMMON_CONFIG_DISPLAY]},
         NAV_GROUP_SOMEIP: {"children": [PAGE_SOMEIP_DISPLAY, PAGE_SOMEIP_PARSER_DISPLAY]},
-        NAV_GROUP_ETHERNET_SIM: {"children": [PAGE_ETHERNET_SIM_DISPLAY, PAGE_ETHERNET_TRACE_DISPLAY]},
+        # 临时屏蔽以太网仿真菜单
+        # NAV_GROUP_ETHERNET_SIM: {"children": [PAGE_ETHERNET_SIM_DISPLAY, PAGE_ETHERNET_TRACE_DISPLAY]},
         #NAV_GROUP_ADV: {"children": [PAGE_SCRIPT_DISPLAY]},
         #NAV_GROUP_DEMO: {"children": [PAGE_DEMO_DISPLAY]},
     }

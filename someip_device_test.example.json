@@ -1,0 +1,63 @@
+{
+  "network": {
+    "local_ip": "172.16.64.47",
+    "device_ip": "172.16.66.79",
+    "multicast_ip": "239.71.0.2",
+    "sd_port": 30490
+  },
+  "timeout": 5.0,
+  "duration": 15.0,
+  "clients": [
+    {
+      "client_id": "0x7001",
+      "local_port": 30810,
+      "vlan_id": null,
+      "client_mac": null,
+      "target_mac": null
+    },
+    {
+      "client_id": "0x7002",
+      "local_port": 30811,
+      "vlan_id": null,
+      "client_mac": null,
+      "target_mac": null
+    }
+  ],
+  "remote_services": [
+    {
+      "service_id": "0x1055",
+      "instance_id": "0x0001",
+      "endpoint_port": 30500,
+      "method_id": "0x0001",
+      "request_payload_hex": "00",
+      "expected_response_hex": null
+    },
+    {
+      "service_id": "0x1056",
+      "instance_id": "0x0001",
+      "endpoint_port": 30501,
+      "method_id": "0x0002",
+      "request_payload_hex": "0102",
+      "expected_response_hex": null
+    }
+  ],
+  "provided_services": [
+    {
+      "service_id": "0x2055",
+      "instance_id": "0x0001",
+      "endpoint_port": 30600,
+      "method_id": "0x0001",
+      "response_payload_hex": "00",
+      "expected_requests": 1
+    },
+    {
+      "service_id": "0x2056",
+      "instance_id": "0x0001",
+      "endpoint_port": 30601,
+      "method_id": "0x0002",
+      "response_payload_hex": "0100",
+      "expected_requests": 1
+    }
+  ]
+}
+
